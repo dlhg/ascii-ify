@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Simon Says</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+      function resize() { source.width = window.innerWidth; source.height = window.innerHeight; }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ─── Constants ────────────────────────────────────────
+      const COLORS = [
+        [204, 34, 51],   // top-left: red
+        [34, 68, 204],   // top-right: blue
+        [34, 170, 51],   // bottom-left: green
+        [204, 170, 34],  // bottom-right: yellow
+      ];
+      const DIM = 0.3, BG = '#08080c';
+      const FLASH_ON = 0.5, FLASH_GAP = 0.2, SUCCESS_PAUSE = 0.6, FAIL_PAUSE = 1.5;
+
+      // ─── Game State ───────────────────────────────────────
+      let state = 'waiting'; // waiting | showing | input | success | fail
+      let sequence = [], inputIndex = 0, round = 0, highScore = 0;
+      let activeQuadrant = -1, hoverQuadrant = -1;
+      let showIndex = 0, showTimer = 0, showGap = false, stateTimer = 0;
+      let overlayColor = null, overlayAlpha = 0;
+      let lastTime = 0;
+
+      // ─── Quadrant Geometry ────────────────────────────────
+      function getQuadRects() {
+        const w = source.width, h = source.height;
+        const cx = w / 2, cy = h / 2;
+        const gap = Math.min(w, h) * 0.03, qw = w * 0.4, qh = h * 0.4;
+        return [
+          { x: cx - gap - qw, y: cy - gap - qh, w: qw, h: qh },
+          { x: cx + gap,      y: cy - gap - qh, w: qw, h: qh },
+          { x: cx - gap - qw, y: cy + gap,      w: qw, h: qh },
+          { x: cx + gap,      y: cy + gap,      w: qw, h: qh },
+        ];
+      }
+
+      function hitTest(mx, my) {
+        const rects = getQuadRects();
+        for (let i = 0; i < 4; i++) {
+          const r = rects[i];
+          if (mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h) return i;
+        }
+        return -1;
+      }
+
+      // ─── Game Logic ───────────────────────────────────────
+      function startGame() { sequence = []; round = 0; addStep(); }
+
+      function addStep() {
+        sequence.push(Math.floor(Math.random() * 4));
+        round = sequence.length;
+        state = 'showing'; showIndex = 0; showTimer = 0.3; showGap = true; activeQuadrant = -1;
+      }
+
+      function handleClick(quadrant) {
+        if (state === 'waiting' || (state === 'fail' && stateTimer <= 0)) { startGame(); return; }
+        if (state !== 'input' || quadrant < 0) return;
+
+        activeQuadrant = quadrant;
+        setTimeout(() => { if (state === 'input') activeQuadrant = -1; }, 200);
+
+        if (quadrant === sequence[inputIndex]) {
+          inputIndex++;
+          if (inputIndex >= sequence.length) {
+            state = 'success'; stateTimer = SUCCESS_PAUSE;
+            overlayColor = 'green'; overlayAlpha = 0.4;
+            if (round > highScore) highScore = round;
+          }
+        } else {
+          state = 'fail'; stateTimer = FAIL_PAUSE;
+          overlayColor = 'red'; overlayAlpha = 0.5;
+          if (round - 1 > highScore) highScore = round - 1;
+        }
+      }
+
+      // ─── Input Events ────────────────────────────────────
+      function canvasCoords(e) {
+        const rect = source.getBoundingClientRect();
+        return [
+          (e.clientX - rect.left) * (source.width / rect.width),
+          (e.clientY - rect.top) * (source.height / rect.height),
+        ];
+      }
+
+      source.addEventListener('click', (e) => {
+        const [mx, my] = canvasCoords(e);
+        handleClick(hitTest(mx, my));
+      });
+
+      source.addEventListener('mousemove', (e) => {
+        const [mx, my] = canvasCoords(e);
+        hoverQuadrant = (state === 'input') ? hitTest(mx, my) : -1;
+      });
+
+      // ─── Drawing Helper ───────────────────────────────────
+      function rrect(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+      }
+
+      // ─── Main Draw ───────────────────────────────────────
+      function draw(time) {
+        const w = source.width, h = source.height;
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        const cx = w / 2, cy = h / 2;
+        const u = Math.min(w, h); // unit for responsive sizing
+
+        // ── Update showing sequence ──
+        if (state === 'showing') {
+          showTimer -= dt;
+          if (showTimer <= 0) {
+            if (showGap) {
+              if (showIndex < sequence.length) {
+                activeQuadrant = sequence[showIndex];
+                showTimer = FLASH_ON; showGap = false;
+              }
+            } else {
+              activeQuadrant = -1; showIndex++;
+              if (showIndex >= sequence.length) {
+                state = 'input'; inputIndex = 0; activeQuadrant = -1;
+              } else { showTimer = FLASH_GAP; showGap = true; }
+            }
+          }
+        }
+
+        // ── Update success/fail timers ──
+        if (state === 'success') { stateTimer -= dt; if (stateTimer <= 0) { overlayAlpha = 0; addStep(); } }
+        if (state === 'fail') { stateTimer -= dt; if (stateTimer <= 0) overlayAlpha = 0; }
+        if (overlayAlpha > 0 && state !== 'success' && state !== 'fail') overlayAlpha *= 0.9;
+
+        // ── Background ──
+        ctx.fillStyle = BG;
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Quadrants ──
+        const rects = getQuadRects();
+        const rad = u * 0.02;
+
+        for (let i = 0; i < 4; i++) {
+          const r = rects[i], c = COLORS[i];
+          const isActive = activeQuadrant === i;
+          const isHover = hoverQuadrant === i && state === 'input';
+          const mult = isActive ? 1.0 : isHover ? 0.5 : DIM;
+
+          rrect(r.x, r.y, r.w, r.h, rad);
+          ctx.fillStyle = `rgb(${c[0] * mult | 0}, ${c[1] * mult | 0}, ${c[2] * mult | 0})`;
+          ctx.fill();
+
+          if (isActive) {
+            rrect(r.x, r.y, r.w, r.h, rad);
+            const g = ctx.createRadialGradient(
+              r.x + r.w / 2, r.y + r.h / 2, 0,
+              r.x + r.w / 2, r.y + r.h / 2, Math.max(r.w, r.h) * 0.6
+            );
+            g.addColorStop(0, 'rgba(255,255,255,0.35)');
+            g.addColorStop(0.5, 'rgba(255,255,255,0.1)');
+            g.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = g; ctx.fill();
+          }
+        }
+
+        // ── Center circle with round number ──
+        const centerR = u * 0.04;
+        ctx.beginPath(); ctx.arc(cx, cy, centerR, 0, Math.PI * 2);
+        ctx.fillStyle = '#111118'; ctx.fill();
+
+        if (state !== 'waiting') {
+          ctx.font = `bold ${centerR * 1.2 | 0}px monospace`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillStyle = 'rgba(255,255,255,0.7)';
+          ctx.fillText(round, cx, cy);
+        }
+
+        // ── High score (top-right) ──
+        if (highScore > 0) {
+          ctx.font = `bold ${u * 0.025 | 0}px monospace`;
+          ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+          ctx.fillStyle = 'rgba(255,255,255,0.3)';
+          ctx.fillText(`best: ${highScore}`, w - 20, 20);
+        }
+
+        // ── Overlay flash ──
+        if (overlayAlpha > 0.01) {
+          const oc = overlayColor === 'green' ? '0,255,80' : '255,40,40';
+          ctx.fillStyle = `rgba(${oc},${overlayAlpha})`; ctx.fillRect(0, 0, w, h);
+        }
+
+        // ── Status messages ──
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        if (state === 'waiting') {
+          ctx.font = `bold ${u * 0.04 | 0}px monospace`;
+          ctx.fillStyle = 'rgba(255,255,255,0.5)';
+          ctx.fillText('click to start', cx, cy);
+        }
+        if (state === 'fail' && stateTimer <= 0) {
+          ctx.font = `bold ${u * 0.05 | 0}px monospace`;
+          ctx.fillStyle = 'rgba(255,80,80,0.7)';
+          ctx.fillText('game over', cx, cy - u * 0.04);
+          ctx.font = `${u * 0.03 | 0}px monospace`;
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+          ctx.fillText(`score: ${round - 1}`, cx, cy + u * 0.02);
+          ctx.font = `${u * 0.02 | 0}px monospace`;
+          ctx.fillStyle = 'rgba(255,255,255,0.25)';
+          ctx.fillText('click to restart', cx, cy + u * 0.06);
+        }
+
+        // ── Instructions ──
+        if (state === 'waiting') {
+          ctx.font = `${u * 0.015 | 0}px monospace`;
+          ctx.fillStyle = 'rgba(255,255,255,0.15)';
+          ctx.fillText('click to start \u00b7 watch the sequence \u00b7 repeat it \u00b7 P panel \u00b7 E toggle', cx, h - 30);
+        }
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+        speed: 1,
+      });
+
+      // Layer 1: Quadrants — blocks for solid colored areas
+      ascii.addLayer({
+        source, fontSize: 18, charset: 'blocks',
+        colorScheme: 'vapor', blendMode: 'replace', opacity: 1,
+      });
+
+      // Layer 2: Flash effect — kaleidoscope pattern with DYNAMIC opacity
+      const layer2 = ascii.addLayer({
+        source, fontSize: 8, charset: 'braille',
+        colorScheme: 'neon', pattern: 'kaleidoscope', patternMix: 0.6,
+        blendMode: 'add', opacity: 0,
+      });
+
+      // Layer 3: Ambient — spiral pattern for subtle background movement
+      ascii.addLayer({
+        source, fontSize: 12, charset: 'density',
+        colorScheme: 'acid', pattern: 'spiral', patternMix: 0.3,
+        blendMode: 'add', opacity: 0.1,
+      });
+
+      // ─── Keyboard Controls ────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      // ─── Animation Loop ──────────────────────────────────
+      function loop(time) {
+        draw(time);
+        // Dynamic layer 2 opacity: pulse up when a quadrant is active, decay smoothly
+        if (activeQuadrant >= 0) layer2.set('opacity', 0.8);
+        else layer2.set('opacity', layer2.get('opacity') * 0.92);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

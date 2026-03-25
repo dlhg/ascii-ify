@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Flappy Bird</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ─── Constants ─────────────────────────────────────
+      const GRAVITY = 0.5;
+      const FLAP_STRENGTH = -8;
+      const PIPE_WIDTH = 60;
+      const PIPE_SPACING = 250;
+      const PIPE_SPEED = 3;
+      const BIRD_RADIUS = 14;
+      const GROUND_RATIO = 0.1;
+
+      // ─── Game State ────────────────────────────────────
+      let state = 'waiting'; // 'waiting' | 'playing' | 'dead'
+      let birdY, birdVY, score, pipes, feathers;
+      let deathTimer = 0;
+      let flashTimer = 0;
+      let globalTime = 0;
+
+      function resetGame() {
+        const h = source.height;
+        birdY = h * 0.45;
+        birdVY = 0;
+        score = 0;
+        pipes = [];
+        feathers = [];
+        deathTimer = 0;
+        flashTimer = 0;
+      }
+      resetGame();
+
+      function getBirdX() { return source.width * 0.25; }
+      function getGroundY() { return source.height * (1 - GROUND_RATIO); }
+      function getGapSize() { return source.height * 0.25; }
+
+      // ─── Pipes ─────────────────────────────────────────
+      function spawnPipe() {
+        const h = source.height;
+        const groundY = getGroundY();
+        const gap = getGapSize();
+        const minCenter = h * 0.25;
+        const maxCenter = groundY - h * 0.25;
+        const gapCenter = minCenter + Math.random() * (maxCenter - minCenter);
+        pipes.push({ x: source.width + PIPE_WIDTH, gapCenter, scored: false });
+      }
+
+      // ─── Feathers ──────────────────────────────────────
+      function emitFeathers() {
+        const bx = getBirdX();
+        for (let i = 0; i < 3; i++) {
+          feathers.push({
+            x: bx + (Math.random() - 0.5) * 10,
+            y: birdY + (Math.random() - 0.5) * 10,
+            vx: (Math.random() - 0.5) * 2,
+            vy: -Math.random() * 2,
+            life: 1.0,
+            size: 2 + Math.random() * 3,
+          });
+        }
+      }
+
+      // ─── Input ─────────────────────────────────────────
+      function flap() {
+        if (state === 'waiting') {
+          state = 'playing';
+          resetGame();
+          birdVY = FLAP_STRENGTH;
+          emitFeathers();
+        } else if (state === 'playing') {
+          birdVY = FLAP_STRENGTH;
+          emitFeathers();
+        } else if (state === 'dead' && deathTimer <= 0) {
+          state = 'waiting';
+          resetGame();
+        }
+      }
+
+      document.addEventListener('keydown', e => {
+        if (e.code === 'Space') { e.preventDefault(); flap(); }
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      source.addEventListener('click', flap);
+      source.addEventListener('touchstart', e => { e.preventDefault(); flap(); });
+
+      // ─── Collision ─────────────────────────────────────
+      function checkCollision() {
+        const bx = getBirdX();
+        const groundY = getGroundY();
+        const gap = getGapSize();
+
+        // Ground or ceiling
+        if (birdY + BIRD_RADIUS > groundY || birdY - BIRD_RADIUS < 0) return true;
+
+        // Pipes
+        for (const pipe of pipes) {
+          if (bx + BIRD_RADIUS > pipe.x && bx - BIRD_RADIUS < pipe.x + PIPE_WIDTH) {
+            const topPipeBottom = pipe.gapCenter - gap / 2;
+            const bottomPipeTop = pipe.gapCenter + gap / 2;
+            if (birdY - BIRD_RADIUS < topPipeBottom || birdY + BIRD_RADIUS > bottomPipeTop) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
+      // ─── Draw ──────────────────────────────────────────
+      function draw(time) {
+        const w = source.width;
+        const h = source.height;
+        const bx = getBirdX();
+        const groundY = getGroundY();
+        const gap = getGapSize();
+        globalTime = time * 0.001;
+
+        // ── Update physics ──
+        if (state === 'playing') {
+          birdVY += GRAVITY;
+          birdY += birdVY;
+
+          // Move pipes
+          for (const pipe of pipes) pipe.x -= PIPE_SPEED;
+
+          // Remove off-screen pipes
+          pipes = pipes.filter(p => p.x + PIPE_WIDTH > -10);
+
+          // Spawn new pipes
+          if (pipes.length === 0 || pipes[pipes.length - 1].x < w - PIPE_SPACING) {
+            spawnPipe();
+          }
+
+          // Score
+          for (const pipe of pipes) {
+            if (!pipe.scored && pipe.x + PIPE_WIDTH < bx) {
+              pipe.scored = true;
+              score++;
+            }
+          }
+
+          // Collision
+          if (checkCollision()) {
+            state = 'dead';
+            deathTimer = 1.5;
+            flashTimer = 0.15;
+          }
+        } else if (state === 'dead') {
+          deathTimer -= 1 / 60;
+          flashTimer -= 1 / 60;
+          // Bird falls after death
+          birdVY += GRAVITY;
+          birdY = Math.min(birdY + birdVY, groundY - BIRD_RADIUS);
+        } else if (state === 'waiting') {
+          // Idle bob
+          birdY = h * 0.45 + Math.sin(globalTime * 3) * 10;
+        }
+
+        // Update feathers
+        for (const f of feathers) {
+          f.x += f.vx;
+          f.y += f.vy;
+          f.vy += 0.1;
+          f.life -= 0.02;
+        }
+        feathers = feathers.filter(f => f.life > 0);
+
+        // ── Background: dark blue gradient sky ──
+        const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
+        skyGrad.addColorStop(0, '#0a0a20');
+        skyGrad.addColorStop(1, '#0a1428');
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Ground ──
+        const groundGrad = ctx.createLinearGradient(0, groundY, 0, h);
+        groundGrad.addColorStop(0, '#2a4a1a');
+        groundGrad.addColorStop(0.3, '#1a3010');
+        groundGrad.addColorStop(1, '#0f1a08');
+        ctx.fillStyle = groundGrad;
+        ctx.fillRect(0, groundY, w, h - groundY);
+
+        // Ground line
+        ctx.strokeStyle = '#3a6a2a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, groundY);
+        ctx.lineTo(w, groundY);
+        ctx.stroke();
+
+        // ── Pipes ──
+        for (const pipe of pipes) {
+          const topPipeBottom = pipe.gapCenter - gap / 2;
+          const bottomPipeTop = pipe.gapCenter + gap / 2;
+
+          // Top pipe
+          const topGrad = ctx.createLinearGradient(pipe.x, 0, pipe.x + PIPE_WIDTH, 0);
+          topGrad.addColorStop(0, '#126a1a');
+          topGrad.addColorStop(0.15, '#1a8a2a');
+          topGrad.addColorStop(0.85, '#1a8a2a');
+          topGrad.addColorStop(1, '#0e5a14');
+          ctx.fillStyle = topGrad;
+          ctx.fillRect(pipe.x, 0, PIPE_WIDTH, topPipeBottom);
+
+          // Top pipe lip
+          ctx.fillStyle = '#22aa34';
+          ctx.fillRect(pipe.x - 4, topPipeBottom - 20, PIPE_WIDTH + 8, 20);
+          ctx.strokeStyle = '#0e5a14';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(pipe.x - 4, topPipeBottom - 20, PIPE_WIDTH + 8, 20);
+
+          // Bottom pipe
+          const botGrad = ctx.createLinearGradient(pipe.x, 0, pipe.x + PIPE_WIDTH, 0);
+          botGrad.addColorStop(0, '#126a1a');
+          botGrad.addColorStop(0.15, '#1a8a2a');
+          botGrad.addColorStop(0.85, '#1a8a2a');
+          botGrad.addColorStop(1, '#0e5a14');
+          ctx.fillStyle = botGrad;
+          ctx.fillRect(pipe.x, bottomPipeTop, PIPE_WIDTH, groundY - bottomPipeTop);
+
+          // Bottom pipe lip
+          ctx.fillStyle = '#22aa34';
+          ctx.fillRect(pipe.x - 4, bottomPipeTop, PIPE_WIDTH + 8, 20);
+          ctx.strokeStyle = '#0e5a14';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(pipe.x - 4, bottomPipeTop, PIPE_WIDTH + 8, 20);
+        }
+
+        // ── Bird ──
+        ctx.save();
+        ctx.translate(bx, birdY);
+        const angle = Math.atan2(birdVY, 6);
+        ctx.rotate(Math.max(-0.5, Math.min(1.2, angle)));
+
+        // Body
+        ctx.beginPath();
+        ctx.ellipse(0, 0, BIRD_RADIUS, BIRD_RADIUS * 0.85, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffcc00';
+        ctx.shadowColor = 'rgba(255, 200, 0, 0.5)';
+        ctx.shadowBlur = 12;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Wing
+        const wingFlap = state === 'playing' && birdVY < 0
+          ? Math.sin(globalTime * 20) * 0.4
+          : 0.2;
+        ctx.beginPath();
+        ctx.moveTo(-4, 0);
+        ctx.lineTo(-BIRD_RADIUS - 4, 6 + wingFlap * 15);
+        ctx.lineTo(-2, 6);
+        ctx.closePath();
+        ctx.fillStyle = '#e6a800';
+        ctx.fill();
+
+        // Eye
+        ctx.beginPath();
+        ctx.arc(6, -4, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(7, -4, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#111';
+        ctx.fill();
+
+        // Beak
+        ctx.beginPath();
+        ctx.moveTo(BIRD_RADIUS - 2, -2);
+        ctx.lineTo(BIRD_RADIUS + 8, 1);
+        ctx.lineTo(BIRD_RADIUS - 2, 4);
+        ctx.closePath();
+        ctx.fillStyle = '#ff6633';
+        ctx.fill();
+
+        ctx.restore();
+
+        // ── Feather particles ──
+        for (const f of feathers) {
+          ctx.beginPath();
+          ctx.arc(f.x, f.y, f.size, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 220, 100, ${f.life * 0.7})`;
+          ctx.fill();
+        }
+
+        // ── Death flash ──
+        if (flashTimer > 0) {
+          ctx.fillStyle = `rgba(255, 40, 40, ${flashTimer * 2})`;
+          ctx.fillRect(0, 0, w, h);
+        }
+
+        // ── Score ──
+        ctx.font = `bold ${Math.min(w * 0.1, 100)}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = `rgba(255, 255, 255, ${state === 'dead' ? 0.4 : 0.15})`;
+        ctx.fillText(score, w / 2, h * 0.08);
+
+        // ── Game Over overlay ──
+        if (state === 'dead' && deathTimer < 1.0) {
+          ctx.font = `bold ${Math.min(w * 0.06, 60)}px monospace`;
+          ctx.fillStyle = `rgba(255, 80, 80, ${0.7 + Math.sin(globalTime * 4) * 0.1})`;
+          ctx.fillText('GAME OVER', w / 2, h * 0.35);
+
+          ctx.font = `${Math.min(w * 0.03, 28)}px monospace`;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+          ctx.fillText(`score: ${score}`, w / 2, h * 0.45);
+
+          ctx.font = '14px monospace';
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.2 + Math.sin(globalTime * 3) * 0.1})`;
+          ctx.fillText('click or press space to restart', w / 2, h * 0.55);
+        }
+
+        // ── Instructions (waiting state) ──
+        if (state === 'waiting') {
+          ctx.font = '14px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.15 + Math.sin(globalTime * 2) * 0.05})`;
+          ctx.fillText('press space or click to flap · P panel · E toggle', w / 2, h - 30);
+        }
+      }
+
+      // ─── ASCII-ify with Layers ─────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+        speed: 1,
+      });
+
+      // Layer 1: Sky background — large font, spiral pattern for hypnotic depth
+      ascii.addLayer({
+        source: source,
+        fontSize: 20,
+        charset: 'density',
+        colorScheme: 'ocean',
+        pattern: 'spiral',
+        patternMix: 0.5,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Pipes and ground — blocks for solid structures
+      ascii.addLayer({
+        source: source,
+        fontSize: 10,
+        charset: 'blocks',
+        colorScheme: 'acid',
+        blendMode: 'add',
+        opacity: 0.8,
+      });
+
+      // Layer 3: Bird and particles — fine detail
+      ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'braille',
+        colorScheme: 'neon',
+        blendMode: 'add',
+        opacity: 0.6,
+      });
+
+      // ─── Main Loop ─────────────────────────────────────
+      function loop(time) {
+        draw(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

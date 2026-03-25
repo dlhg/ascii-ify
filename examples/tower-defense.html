@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Tower Defense</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+        buildGrid();
+      }
+
+      // ─── Grid & Path ────────────────────────────────────────
+      const CELL = 40;
+      let cols = 0, rows = 0;
+      let pathCells = new Set();   // "col,row" strings for fast lookup
+      let pathWaypoints = [];       // pixel coordinates for enemy movement
+
+      function buildGrid() {
+        cols = Math.floor(source.width / CELL);
+        rows = Math.floor(source.height / CELL);
+        pathCells.clear();
+        pathWaypoints = [];
+
+        // S-shaped path defined as grid-relative fractions
+        const turns = [
+          { x: 0, y: 0.25 }, { x: 0.7, y: 0.25 },
+          { x: 0.7, y: 0.5 }, { x: 0.2, y: 0.5 },
+          { x: 0.2, y: 0.75 }, { x: 1.0, y: 0.75 },
+        ];
+
+        // Convert fractions to grid coords
+        const gridPts = turns.map(p => ({
+          gx: Math.round(p.x * (cols - 1)),
+          gy: Math.round(p.y * (rows - 1)),
+        }));
+
+        // Walk the segments and mark path cells (2 cells wide)
+        for (let s = 0; s < gridPts.length - 1; s++) {
+          const a = gridPts[s], b = gridPts[s + 1];
+          const dx = Math.sign(b.gx - a.gx);
+          const dy = Math.sign(b.gy - a.gy);
+          let cx = a.gx, cy = a.gy;
+          while (cx !== b.gx || cy !== b.gy) {
+            markPathCell(cx, cy);
+            if (cx !== b.gx) cx += dx;
+            else if (cy !== b.gy) cy += dy;
+          }
+          markPathCell(b.gx, b.gy);
+        }
+
+        // Build pixel waypoints for enemies
+        for (const g of gridPts) {
+          pathWaypoints.push({
+            x: g.gx * CELL + CELL / 2,
+            y: g.gy * CELL + CELL / 2,
+          });
+        }
+      }
+
+      function markPathCell(gx, gy) {
+        // Mark a 2-cell wide strip
+        pathCells.add(`${gx},${gy}`);
+        pathCells.add(`${gx},${gy + 1}`);
+        pathCells.add(`${gx + 1},${gy}`);
+        pathCells.add(`${gx + 1},${gy + 1}`);
+      }
+
+      function isPath(gx, gy) {
+        return pathCells.has(`${gx},${gy}`);
+      }
+
+      // ─── Game State ─────────────────────────────────────────
+      let gold = 100;
+      let lives = 20;
+      let wave = 0;
+      let waveActive = false;
+      let waveTimer = 0;
+      let waveCountdown = 5;
+      let spawnTimer = 0;
+      let enemiesLeftToSpawn = 0;
+      let gameOver = false;
+      let lastTime = 0;
+      let selectedTurret = 0; // 0=basic, 1=heavy, 2=frost
+      let mouseGX = -1, mouseGY = -1;
+
+      const TURRET_TYPES = [
+        { name: 'Basic',  cost: 10, range: 120, fireRate: 0.25, damage: 8,  speed: 600, color: '#4488ff', key: '1' },
+        { name: 'Heavy',  cost: 25, range: 100, fireRate: 0.7,  damage: 30, speed: 400, color: '#ff4444', key: '2' },
+        { name: 'Frost',  cost: 40, range: 140, fireRate: 0.5,  damage: 5,  speed: 500, color: '#44ffee', key: '3', slow: true },
+      ];
+
+      const turrets = [];      // { gx, gy, type, lastFire }
+      const enemies = [];       // { x, y, hp, maxHp, speed, wpIdx, progress, reward, slowTimer, baseSpeed }
+      const projectiles = [];   // { x, y, tx, ty, speed, damage, slow, target }
+      const effects = [];       // { x, y, timer, color }
+
+      // ─── Waves ──────────────────────────────────────────────
+      function startWave() {
+        wave++;
+        waveActive = true;
+        waveCountdown = 5;
+        const count = 8 + wave * 2;
+        enemiesLeftToSpawn = count;
+        spawnTimer = 0;
+      }
+
+      function spawnEnemy() {
+        const hp = 30 + wave * 15;
+        const speed = 50 + Math.min(wave * 5, 60);
+        const reward = 3 + Math.floor(wave * 1.5);
+        enemies.push({
+          x: pathWaypoints[0].x,
+          y: pathWaypoints[0].y,
+          hp, maxHp: hp,
+          speed, baseSpeed: speed,
+          wpIdx: 1,
+          reward,
+          slowTimer: 0,
+        });
+      }
+
+      // ─── Turret Placement ───────────────────────────────────
+      function canPlace(gx, gy) {
+        if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) return false;
+        if (isPath(gx, gy)) return false;
+        for (const t of turrets) {
+          if (t.gx === gx && t.gy === gy) return false;
+        }
+        // Must be adjacent to at least one path cell
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            if (dx === 0 && dy === 0) continue;
+            if (isPath(gx + dx, gy + dy)) return true;
+          }
+        }
+        return false;
+      }
+
+      function placeTurret(gx, gy) {
+        const type = TURRET_TYPES[selectedTurret];
+        if (gold < type.cost) return;
+        if (!canPlace(gx, gy)) return;
+        gold -= type.cost;
+        turrets.push({ gx, gy, type: selectedTurret, lastFire: 0 });
+      }
+
+      // ─── Input ──────────────────────────────────────────────
+      source.addEventListener('mousemove', e => {
+        const rect = source.getBoundingClientRect();
+        mouseGX = Math.floor((e.clientX - rect.left) / CELL);
+        mouseGY = Math.floor((e.clientY - rect.top) / CELL);
+      });
+
+      source.addEventListener('click', e => {
+        if (gameOver) {
+          // Restart
+          gold = 100; lives = 20; wave = 0;
+          waveActive = false; waveCountdown = 5;
+          gameOver = false;
+          turrets.length = 0; enemies.length = 0;
+          projectiles.length = 0; effects.length = 0;
+          return;
+        }
+        const rect = source.getBoundingClientRect();
+        const gx = Math.floor((e.clientX - rect.left) / CELL);
+        const gy = Math.floor((e.clientY - rect.top) / CELL);
+
+        // Check if clicked on "NEXT WAVE" area
+        const btnX = source.width / 2;
+        const btnY = 22;
+        if (!waveActive && Math.abs(e.clientX - rect.left - btnX) < 70 && e.clientY - rect.top < 40) {
+          startWave();
+          return;
+        }
+
+        placeTurret(gx, gy);
+      });
+
+      document.addEventListener('keydown', e => {
+        if (e.key === '1') selectedTurret = 0;
+        if (e.key === '2') selectedTurret = 1;
+        if (e.key === '3') selectedTurret = 2;
+        if (e.key === ' ' || e.key === 'Space') {
+          e.preventDefault();
+          if (!waveActive && !gameOver) startWave();
+        }
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      // ─── Update ─────────────────────────────────────────────
+      function update(dt) {
+        if (gameOver) return;
+
+        // Wave spawning
+        if (waveActive) {
+          if (enemiesLeftToSpawn > 0) {
+            spawnTimer -= dt;
+            if (spawnTimer <= 0) {
+              spawnEnemy();
+              enemiesLeftToSpawn--;
+              spawnTimer = 0.5 + Math.random() * 0.3;
+            }
+          } else if (enemies.length === 0) {
+            waveActive = false;
+            waveCountdown = 8;
+          }
+        } else {
+          waveCountdown -= dt;
+          if (waveCountdown <= 0) startWave();
+        }
+
+        // Move enemies
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          const en = enemies[i];
+          if (en.slowTimer > 0) {
+            en.slowTimer -= dt;
+            en.speed = en.baseSpeed * 0.4;
+          } else {
+            en.speed = en.baseSpeed;
+          }
+
+          if (en.wpIdx >= pathWaypoints.length) {
+            // Reached the end
+            lives--;
+            enemies.splice(i, 1);
+            if (lives <= 0) { gameOver = true; lives = 0; }
+            continue;
+          }
+
+          const wp = pathWaypoints[en.wpIdx];
+          const dx = wp.x - en.x;
+          const dy = wp.y - en.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 3) {
+            en.wpIdx++;
+          } else {
+            en.x += (dx / dist) * en.speed * dt;
+            en.y += (dy / dist) * en.speed * dt;
+          }
+        }
+
+        // Turret firing
+        const now = performance.now() / 1000;
+        for (const turret of turrets) {
+          const type = TURRET_TYPES[turret.type];
+          if (now - turret.lastFire < type.fireRate) continue;
+
+          const tx = turret.gx * CELL + CELL / 2;
+          const ty = turret.gy * CELL + CELL / 2;
+
+          // Find nearest enemy in range
+          let nearest = null, nearDist = Infinity;
+          for (const en of enemies) {
+            const dx = en.x - tx, dy = en.y - ty;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < type.range && d < nearDist) {
+              nearest = en; nearDist = d;
+            }
+          }
+
+          if (nearest) {
+            turret.lastFire = now;
+            projectiles.push({
+              x: tx, y: ty,
+              target: nearest,
+              speed: type.speed,
+              damage: type.damage,
+              slow: type.slow || false,
+              color: type.color,
+            });
+          }
+        }
+
+        // Move projectiles
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+          const p = projectiles[i];
+          // If target is dead, remove projectile
+          if (!enemies.includes(p.target)) {
+            projectiles.splice(i, 1);
+            continue;
+          }
+          const dx = p.target.x - p.x;
+          const dy = p.target.y - p.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 8) {
+            // Hit
+            p.target.hp -= p.damage;
+            if (p.slow) p.target.slowTimer = 2;
+            effects.push({ x: p.target.x, y: p.target.y, timer: 0.2, color: p.color });
+            if (p.target.hp <= 0) {
+              gold += p.target.reward;
+              effects.push({ x: p.target.x, y: p.target.y, timer: 0.4, color: '#ffff44' });
+              const idx = enemies.indexOf(p.target);
+              if (idx >= 0) enemies.splice(idx, 1);
+            }
+            projectiles.splice(i, 1);
+          } else {
+            p.x += (dx / dist) * p.speed * dt;
+            p.y += (dy / dist) * p.speed * dt;
+          }
+        }
+
+        // Effects decay
+        for (let i = effects.length - 1; i >= 0; i--) {
+          effects[i].timer -= dt;
+          if (effects[i].timer <= 0) effects.splice(i, 1);
+        }
+      }
+
+      // ─── Draw ───────────────────────────────────────────────
+      function draw(time) {
+        const w = source.width, h = source.height;
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+
+        update(dt);
+
+        // Background terrain
+        ctx.fillStyle = '#1a1a0f';
+        ctx.fillRect(0, 0, w, h);
+
+        // Grid lines (very subtle)
+        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= cols; x++) {
+          ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, h); ctx.stroke();
+        }
+        for (let y = 0; y <= rows; y++) {
+          ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(w, y * CELL); ctx.stroke();
+        }
+
+        // Path cells
+        for (const key of pathCells) {
+          const [gx, gy] = key.split(',').map(Number);
+          if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+            ctx.fillStyle = '#151510';
+            ctx.fillRect(gx * CELL, gy * CELL, CELL, CELL);
+          }
+        }
+
+        // Path direction dots
+        ctx.fillStyle = 'rgba(255,255,200,0.06)';
+        for (let i = 0; i < pathWaypoints.length - 1; i++) {
+          const a = pathWaypoints[i], b = pathWaypoints[i + 1];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const steps = Math.floor(dist / 20);
+          for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            ctx.beginPath();
+            ctx.arc(a.x + dx * t, a.y + dy * t, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Hover preview
+        if (!gameOver && mouseGX >= 0 && mouseGY >= 0 && mouseGX < cols && mouseGY < rows) {
+          const type = TURRET_TYPES[selectedTurret];
+          const px = mouseGX * CELL, py = mouseGY * CELL;
+          const valid = canPlace(mouseGX, mouseGY) && gold >= type.cost;
+
+          // Range circle
+          ctx.beginPath();
+          ctx.arc(px + CELL / 2, py + CELL / 2, type.range, 0, Math.PI * 2);
+          ctx.fillStyle = valid ? 'rgba(255,255,255,0.04)' : 'rgba(255,0,0,0.04)';
+          ctx.fill();
+          ctx.strokeStyle = valid ? 'rgba(255,255,255,0.12)' : 'rgba(255,0,0,0.12)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          // Turret preview
+          ctx.beginPath();
+          ctx.arc(px + CELL / 2, py + CELL / 2, CELL * 0.35, 0, Math.PI * 2);
+          ctx.fillStyle = valid ? type.color + '66' : 'rgba(255,0,0,0.25)';
+          ctx.fill();
+        }
+
+        // Turrets
+        const t = time * 0.001;
+        for (const turret of turrets) {
+          const type = TURRET_TYPES[turret.type];
+          const tx = turret.gx * CELL + CELL / 2;
+          const ty = turret.gy * CELL + CELL / 2;
+
+          // Base
+          ctx.fillStyle = '#222218';
+          ctx.fillRect(turret.gx * CELL + 4, turret.gy * CELL + 4, CELL - 8, CELL - 8);
+
+          // Turret body
+          ctx.beginPath();
+          ctx.arc(tx, ty, CELL * 0.32, 0, Math.PI * 2);
+          ctx.fillStyle = type.color;
+          ctx.fill();
+
+          // Inner glow
+          ctx.beginPath();
+          ctx.arc(tx, ty, CELL * 0.18, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff44';
+          ctx.fill();
+        }
+
+        // Enemies
+        for (const en of enemies) {
+          const hpFrac = en.hp / en.maxHp;
+          const radius = 6 + (en.maxHp / 100) * 6;
+
+          // Enemy body color based on wave
+          let color;
+          if (wave <= 2) color = '#44cc44';
+          else if (wave <= 5) color = '#cccc44';
+          else if (wave <= 8) color = '#cc8844';
+          else color = '#cc4444';
+
+          // Slow tint
+          if (en.slowTimer > 0) color = '#44aacc';
+
+          // Body
+          ctx.beginPath();
+          ctx.arc(en.x, en.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+
+          // HP bar background
+          const barW = radius * 2.5;
+          const barH = 3;
+          const barX = en.x - barW / 2;
+          const barY = en.y - radius - 6;
+          ctx.fillStyle = '#331111';
+          ctx.fillRect(barX, barY, barW, barH);
+
+          // HP bar fill
+          const hpColor = hpFrac > 0.5 ? '#44cc44' : hpFrac > 0.25 ? '#cccc44' : '#cc4444';
+          ctx.fillStyle = hpColor;
+          ctx.fillRect(barX, barY, barW * hpFrac, barH);
+        }
+
+        // Projectiles
+        for (const p of projectiles) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.fill();
+          // Glow
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+          ctx.fillStyle = p.color + '33';
+          ctx.fill();
+        }
+
+        // Hit effects
+        for (const fx of effects) {
+          const alpha = fx.timer / 0.4;
+          const r = 12 * (1 - alpha) + 4;
+          ctx.beginPath();
+          ctx.arc(fx.x, fx.y, r, 0, Math.PI * 2);
+          ctx.fillStyle = fx.color + Math.floor(alpha * 128).toString(16).padStart(2, '0');
+          ctx.fill();
+        }
+
+        // ─── HUD ───
+        ctx.textAlign = 'left';
+        ctx.font = 'bold 16px monospace';
+
+        // Gold
+        ctx.fillStyle = '#ffd700';
+        ctx.fillText(`Gold: ${gold}`, 14, 22);
+
+        // Lives
+        ctx.fillStyle = '#ff6666';
+        ctx.fillText(`Lives: ${lives}`, 14, 44);
+
+        // Wave
+        ctx.fillStyle = '#aaaaaa';
+        ctx.fillText(`Wave: ${wave}`, 14, 66);
+
+        // Next Wave button / countdown
+        ctx.textAlign = 'center';
+        if (!waveActive && !gameOver) {
+          const countdown = Math.ceil(waveCountdown);
+          ctx.fillStyle = '#66ff66';
+          ctx.font = 'bold 16px monospace';
+          ctx.fillText(`[ NEXT WAVE ] (${countdown}s)`, w / 2, 22);
+          ctx.font = '11px monospace';
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
+          ctx.fillText('click or press space', w / 2, 38);
+        } else if (waveActive) {
+          ctx.fillStyle = '#ff8844';
+          ctx.font = 'bold 14px monospace';
+          ctx.fillText(`~ WAVE ${wave} ~`, w / 2, 22);
+        }
+
+        // Turret selection bar (bottom center)
+        ctx.textAlign = 'center';
+        const barBaseY = h - 34;
+        ctx.font = '13px monospace';
+        for (let i = 0; i < TURRET_TYPES.length; i++) {
+          const tt = TURRET_TYPES[i];
+          const bx = w / 2 + (i - 1) * 140;
+          const selected = i === selectedTurret;
+          ctx.fillStyle = selected ? tt.color : 'rgba(255,255,255,0.3)';
+          ctx.fillText(`[${i + 1}] ${tt.name} (${tt.cost}g)`, bx, barBaseY);
+          if (selected) {
+            ctx.fillStyle = tt.color + '44';
+            ctx.fillRect(bx - 60, barBaseY - 14, 120, 18);
+          }
+        }
+
+        // Instructions
+        if (wave === 0) {
+          ctx.font = '12px monospace';
+          ctx.fillStyle = 'rgba(255,255,255,0.15)';
+          ctx.fillText('click to place turrets \u00b7 1/2/3 select type \u00b7 space for next wave \u00b7 P panel \u00b7 E toggle', w / 2, h - 8);
+        }
+
+        // Game Over overlay
+        if (gameOver) {
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.fillRect(0, 0, w, h);
+          ctx.textAlign = 'center';
+          ctx.font = `bold ${Math.min(w * 0.06, 60)}px monospace`;
+          ctx.fillStyle = '#ff4444';
+          ctx.fillText('GAME OVER', w / 2, h / 2 - 20);
+          ctx.font = '18px monospace';
+          ctx.fillStyle = '#aaaaaa';
+          ctx.fillText(`Survived ${wave} waves`, w / 2, h / 2 + 20);
+          ctx.font = '14px monospace';
+          ctx.fillStyle = 'rgba(255,255,255,0.3)';
+          ctx.fillText('click to restart', w / 2, h / 2 + 55);
+        }
+      }
+
+      // ─── ASCII-ify with Layers ──────────────────────────────
+      resize();
+      window.addEventListener('resize', resize);
+
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+        speed: 1,
+      });
+
+      // Layer 1: Terrain and path
+      ascii.addLayer({
+        source: source,
+        fontSize: 16,
+        charset: 'blocks',
+        colorScheme: 'mono',
+        pattern: 'diamond',
+        patternMix: 0.15,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Enemies and turrets
+      ascii.addLayer({
+        source: source,
+        fontSize: 10,
+        charset: 'density',
+        colorScheme: 'fire',
+        blendMode: 'add',
+        opacity: 0.85,
+      });
+
+      // Layer 3: Projectiles and effects
+      ascii.addLayer({
+        source: source,
+        fontSize: 6,
+        charset: 'binary',
+        colorScheme: 'neon',
+        blendMode: 'add',
+        opacity: 0.5,
+      });
+
+      // ─── Main Loop ─────────────────────────────────────────
+      function loop(time) {
+        draw(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

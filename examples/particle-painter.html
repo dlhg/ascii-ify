@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Particle Painter</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+        // Re-fill with dark background after resize to reset trails
+        sCtx.fillStyle = 'rgba(5, 5, 10, 1)';
+        sCtx.fillRect(0, 0, source.width, source.height);
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── State ──────────────────────────────────────────
+      const particles = [];
+      const attractors = [];
+      const MAX_PARTICLES = 2000;
+      const MAX_ATTRACTORS = 8;
+      const GRAVITY = 0.15;
+      const DRAG = 0.99;
+      const BOUNCE_LOSS = 0.65;
+
+      let mouseX = 0;
+      let mouseY = 0;
+      let mouseDown = false;
+      let brushMode = 1;       // 1=spray, 2=fountain, 3=firework, 4=orbit
+      let brushSize = 20;      // 5..50
+      let hue = 0;
+      let sizeIndicatorTimer = 0;
+
+      const BRUSH_NAMES = ['', 'Spray', 'Fountain', 'Firework', 'Orbit'];
+
+      // ─── Particle Factory ────────────────────────────────
+      function spawnParticle(x, y, vx, vy) {
+        const life = 120 + Math.random() * 180;
+        particles.push({
+          x, y, vx, vy,
+          life,
+          maxLife: life,
+          hue: hue + (Math.random() - 0.5) * 20,
+          size: 1.5 + Math.random() * 2.5,
+        });
+        if (particles.length > MAX_PARTICLES) {
+          particles.shift();
+        }
+      }
+
+      // ─── Brush Emitters ──────────────────────────────────
+      function emitSpray() {
+        for (let i = 0; i < 4; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 1 + Math.random() * 3;
+          const ox = (Math.random() - 0.5) * brushSize;
+          const oy = (Math.random() - 0.5) * brushSize;
+          spawnParticle(
+            mouseX + ox, mouseY + oy,
+            Math.cos(angle) * speed,
+            Math.sin(angle) * speed,
+          );
+        }
+      }
+
+      function emitFountain() {
+        for (let i = 0; i < 4; i++) {
+          const spread = (Math.random() - 0.5) * brushSize * 0.1;
+          const speed = 3 + Math.random() * 4;
+          spawnParticle(
+            mouseX + (Math.random() - 0.5) * brushSize * 0.5,
+            mouseY,
+            spread,
+            -speed,
+          );
+        }
+      }
+
+      function emitFirework() {
+        const count = 50 + Math.floor(Math.random() * 30);
+        for (let i = 0; i < count; i++) {
+          const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+          const speed = 2 + Math.random() * 5;
+          spawnParticle(
+            mouseX, mouseY,
+            Math.cos(angle) * speed,
+            Math.sin(angle) * speed,
+          );
+        }
+      }
+
+      function emitOrbit() {
+        for (let i = 0; i < 4; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const dist = brushSize * 0.5 + Math.random() * brushSize * 0.5;
+          const x = mouseX + Math.cos(angle) * dist;
+          const y = mouseY + Math.sin(angle) * dist;
+          // Tangential velocity (perpendicular to radius)
+          const tangentAngle = angle + Math.PI * 0.5;
+          const speed = 2 + Math.random() * 2;
+          spawnParticle(
+            x, y,
+            Math.cos(tangentAngle) * speed,
+            Math.sin(tangentAngle) * speed,
+          );
+        }
+      }
+
+      // ─── Physics Update ──────────────────────────────────
+      function updateParticles() {
+        const w = source.width;
+        const h = source.height;
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+
+          // Attractor / repulsor forces
+          for (const a of attractors) {
+            const dx = a.x - p.x;
+            const dy = a.y - p.y;
+            const distSq = dx * dx + dy * dy + 100; // +100 softening
+            const dist = Math.sqrt(distSq);
+            const force = a.strength / distSq * 80;
+            p.vx += (dx / dist) * force;
+            p.vy += (dy / dist) * force;
+          }
+
+          // Orbit mode: particles attracted toward last cursor pos
+          if (brushMode === 4 && mouseDown) {
+            const dx = mouseX - p.x;
+            const dy = mouseY - p.y;
+            const distSq = dx * dx + dy * dy + 200;
+            const dist = Math.sqrt(distSq);
+            const force = 0.3;
+            p.vx += (dx / dist) * force;
+            p.vy += (dy / dist) * force;
+          }
+
+          // Gravity
+          p.vy += GRAVITY;
+
+          // Drag
+          p.vx *= DRAG;
+          p.vy *= DRAG;
+
+          // Position
+          p.x += p.vx;
+          p.y += p.vy;
+
+          // Bounce off walls
+          if (p.x < 0) {
+            p.x = 0;
+            p.vx = Math.abs(p.vx) * BOUNCE_LOSS;
+          } else if (p.x > w) {
+            p.x = w;
+            p.vx = -Math.abs(p.vx) * BOUNCE_LOSS;
+          }
+          if (p.y < 0) {
+            p.y = 0;
+            p.vy = Math.abs(p.vy) * BOUNCE_LOSS;
+          } else if (p.y > h) {
+            p.y = h;
+            p.vy = -Math.abs(p.vy) * BOUNCE_LOSS;
+          }
+
+          // Life
+          p.life--;
+          if (p.life <= 0) {
+            particles.splice(i, 1);
+          }
+        }
+      }
+
+      // ─── Draw Source ─────────────────────────────────────
+      function drawSource(time) {
+        const w = source.width;
+        const h = source.height;
+
+        // Semi-transparent overlay for trail effect (never fully clear)
+        sCtx.fillStyle = 'rgba(5, 5, 10, 0.03)';
+        sCtx.fillRect(0, 0, w, h);
+
+        // Hue cycles continuously
+        hue = (time * 0.03) % 360;
+
+        // Emit particles based on brush mode
+        if (mouseDown) {
+          if (brushMode === 1) emitSpray();
+          if (brushMode === 2) emitFountain();
+          // Firework emits on click only, handled in mousedown
+          if (brushMode === 4) emitOrbit();
+        }
+
+        // Update physics
+        updateParticles();
+
+        // Draw particles
+        for (const p of particles) {
+          const alpha = (p.life / p.maxLife);
+          const h = ((p.hue % 360) + 360) % 360;
+          const lightness = 50 + alpha * 30;
+          sCtx.fillStyle = `hsla(${h}, 90%, ${lightness}%, ${alpha})`;
+          sCtx.beginPath();
+          sCtx.arc(p.x, p.y, p.size * alpha + 0.5, 0, Math.PI * 2);
+          sCtx.fill();
+
+          // Glow for brighter particles
+          if (alpha > 0.6) {
+            const glowAlpha = (alpha - 0.6) * 0.4;
+            sCtx.fillStyle = `hsla(${h}, 80%, 70%, ${glowAlpha})`;
+            sCtx.beginPath();
+            sCtx.arc(p.x, p.y, p.size * 3, 0, Math.PI * 2);
+            sCtx.fill();
+          }
+        }
+
+        // Draw attractors as pulsing rings
+        const pulse = 0.7 + 0.3 * Math.sin(time * 0.005);
+        for (const a of attractors) {
+          const radius = 15 + pulse * 10;
+          const isRepulsor = a.strength < 0;
+          const ringColor = isRepulsor
+            ? `rgba(255, 80, 80, ${0.3 + pulse * 0.2})`
+            : `rgba(80, 180, 255, ${0.3 + pulse * 0.2})`;
+          const glowColor = isRepulsor
+            ? `rgba(255, 40, 40, ${0.05 + pulse * 0.05})`
+            : `rgba(40, 120, 255, ${0.05 + pulse * 0.05})`;
+
+          // Outer glow
+          const grad = sCtx.createRadialGradient(a.x, a.y, 0, a.x, a.y, radius * 2.5);
+          grad.addColorStop(0, glowColor);
+          grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          sCtx.fillStyle = grad;
+          sCtx.fillRect(a.x - radius * 2.5, a.y - radius * 2.5, radius * 5, radius * 5);
+
+          // Ring
+          sCtx.strokeStyle = ringColor;
+          sCtx.lineWidth = 1.5;
+          sCtx.beginPath();
+          sCtx.arc(a.x, a.y, radius, 0, Math.PI * 2);
+          sCtx.stroke();
+
+          // Inner ring
+          sCtx.strokeStyle = ringColor;
+          sCtx.lineWidth = 1;
+          sCtx.beginPath();
+          sCtx.arc(a.x, a.y, radius * 0.5 * pulse, 0, Math.PI * 2);
+          sCtx.stroke();
+
+          // Center dot
+          sCtx.fillStyle = ringColor;
+          sCtx.beginPath();
+          sCtx.arc(a.x, a.y, 2, 0, Math.PI * 2);
+          sCtx.fill();
+        }
+
+        // Brush size indicator (fades out)
+        if (sizeIndicatorTimer > 0) {
+          sizeIndicatorTimer--;
+          const indicatorAlpha = Math.min(sizeIndicatorTimer / 30, 1) * 0.5;
+          sCtx.strokeStyle = `rgba(255, 255, 255, ${indicatorAlpha})`;
+          sCtx.lineWidth = 1;
+          sCtx.beginPath();
+          sCtx.arc(mouseX, mouseY, brushSize, 0, Math.PI * 2);
+          sCtx.stroke();
+        }
+      }
+
+      // ─── Mouse & Keyboard Input ──────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+
+      window.addEventListener('mousedown', (e) => {
+        if (e.button === 0) {
+          mouseDown = true;
+          mouseX = e.clientX;
+          mouseY = e.clientY;
+          // Firework: burst on click only
+          if (brushMode === 3) {
+            emitFirework();
+          }
+        }
+      });
+
+      window.addEventListener('mouseup', (e) => {
+        if (e.button === 0) {
+          mouseDown = false;
+        }
+      });
+
+      // Right-click: attractor (alt+right-click for repulsor)
+      window.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const strength = e.altKey ? -1 : 1;
+        attractors.push({ x: e.clientX, y: e.clientY, strength });
+        if (attractors.length > MAX_ATTRACTORS) {
+          attractors.shift();
+        }
+      });
+
+      // Scroll wheel: brush size
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        brushSize -= e.deltaY * 0.05;
+        brushSize = Math.max(5, Math.min(50, brushSize));
+        sizeIndicatorTimer = 45;
+      }, { passive: false });
+
+      // Keyboard controls
+      document.addEventListener('keydown', (e) => {
+        const key = e.key;
+        if (key === '1') brushMode = 1;
+        if (key === '2') brushMode = 2;
+        if (key === '3') brushMode = 3;
+        if (key === '4') brushMode = 4;
+        if (key === 'c' || key === 'C') {
+          particles.length = 0;
+          attractors.length = 0;
+          // Clear trails by filling canvas
+          sCtx.fillStyle = 'rgba(5, 5, 10, 1)';
+          sCtx.fillRect(0, 0, source.width, source.height);
+        }
+        if (key === 'p' || key === 'P') ascii.togglePanel();
+        if (key === 'e' || key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      // Touch support
+      window.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        mouseDown = true;
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+        if (brushMode === 3) emitFirework();
+      }, { passive: false });
+
+      window.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      }, { passive: false });
+
+      window.addEventListener('touchend', () => {
+        mouseDown = false;
+      });
+
+      // ─── HUD Overlay ────────────────────────────────────
+      function drawHUD() {
+        const w = source.width;
+        const h = source.height;
+
+        // Brush mode name (top-left)
+        sCtx.save();
+        sCtx.font = '14px monospace';
+        sCtx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        sCtx.fillText(`[${brushMode}] ${BRUSH_NAMES[brushMode]}`, 14, 24);
+        sCtx.restore();
+
+        // Instructions (bottom)
+        sCtx.save();
+        sCtx.font = '11px monospace';
+        sCtx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+        sCtx.textAlign = 'center';
+        sCtx.fillText(
+          'click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 E toggle',
+          w / 2,
+          h - 14,
+        );
+        sCtx.restore();
+      }
+
+      // ─── ASCII-ify with Layers ──────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+        speed: 1,
+      });
+
+      // Layer 1: Trails — braille as BASE (inverted from usual)
+      ascii.addLayer({
+        source: source,
+        fontSize: 14,
+        charset: 'braille',
+        colorScheme: 'vapor',
+        pattern: 'spiral',
+        patternMix: 0.2,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Active particles — dense detail
+      ascii.addLayer({
+        source: source,
+        fontSize: 6,
+        charset: 'density',
+        colorScheme: 'rainbow',
+        blendMode: 'add',
+        opacity: 0.9,
+      });
+
+      // Layer 3: Attractor glow — large blocks as GLOW (inverted from usual)
+      ascii.addLayer({
+        source: source,
+        fontSize: 20,
+        charset: 'blocks',
+        colorScheme: 'fire',
+        pattern: 'breathing',
+        patternMix: 0.5,
+        blendMode: 'add',
+        opacity: 0.25,
+      });
+
+      // ─── Animation Loop ─────────────────────────────────
+      function loop(time) {
+        drawSource(time);
+        drawHUD();
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
