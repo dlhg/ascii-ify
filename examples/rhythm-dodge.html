@@ -57,8 +57,10 @@
         keys[e.key] = true;
         if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
         if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-        if (e.key === ' ') {
+        if (e.key === ' ' || e.key.startsWith('Arrow')) {
           e.preventDefault();
+        }
+        if (e.key === ' ') {
           if (state === 'waiting') startGame();
           else if (state === 'gameover') startGame();
         }
@@ -163,10 +165,10 @@
         // ─── Player Movement ───
         if (state === 'playing' || state === 'waiting') {
           let mx = 0, my = 0;
-          if (keys['w'] || keys['W']) my -= 1;
-          if (keys['s'] || keys['S']) my += 1;
-          if (keys['a'] || keys['A']) mx -= 1;
-          if (keys['d'] || keys['D']) mx += 1;
+          if (keys['w'] || keys['W'] || keys['ArrowUp']) my -= 1;
+          if (keys['s'] || keys['S'] || keys['ArrowDown']) my += 1;
+          if (keys['a'] || keys['A'] || keys['ArrowLeft']) mx -= 1;
+          if (keys['d'] || keys['D'] || keys['ArrowRight']) mx += 1;
           if (mx !== 0 || my !== 0) {
             const len = Math.sqrt(mx * mx + my * my);
             mx /= len; my /= len;
@@ -247,11 +249,11 @@
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Arena inner glow on beat
-        if (beatFlash > 0) {
+        // Arena inner glow on hit only
+        if (hitFlash > 0) {
           const aGrad = ctx.createRadialGradient(cx, cy, arenaRadius * 0.7, cx, cy, arenaRadius);
-          aGrad.addColorStop(0, 'rgba(40, 60, 100, 0)');
-          aGrad.addColorStop(1, `rgba(40, 60, 100, ${beatFlash * 0.15})`);
+          aGrad.addColorStop(0, 'rgba(255, 60, 60, 0)');
+          aGrad.addColorStop(1, `rgba(255, 40, 40, ${hitFlash * 0.25})`);
           ctx.fillStyle = aGrad;
           ctx.beginPath();
           ctx.arc(cx, cy, arenaRadius, 0, Math.PI * 2);
@@ -355,48 +357,51 @@
 
         if (state === 'playing') {
           // Score
-          ctx.font = `bold ${Math.min(w * 0.04, 36)}px monospace`;
+          ctx.font = `bold ${Math.min(w * 0.12, 108)}px monospace`;
           ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-          ctx.fillText(`${score}`, cx, 45);
+          ctx.fillText(`${score}`, cx, 100);
 
-          // Lives
-          ctx.font = `${Math.min(w * 0.018, 16)}px monospace`;
-          ctx.fillStyle = `rgba(255, 100, 80, ${0.4 + hitFlash * 0.4})`;
+          // Lives — top-left, big hearts
+          ctx.save();
+          ctx.textAlign = 'left';
+          ctx.font = `${Math.min(w * 0.06, 56)}px monospace`;
+          ctx.fillStyle = `rgba(255, 100, 80, ${0.6 + hitFlash * 0.4})`;
           const livesStr = '\u2665'.repeat(lives) + '\u2661'.repeat(MAX_LIVES - lives);
-          ctx.fillText(livesStr, cx, 65);
+          ctx.fillText(livesStr, 20, 60);
+          ctx.restore();
 
           // Combo
           if (combo > 1) {
             const popScale = 1 + comboPopScale * 0.4;
-            const comboSize = Math.min(w * 0.025, 22) * popScale;
+            const comboSize = Math.min(w * 0.075, 66) * popScale;
             ctx.font = `bold ${comboSize}px monospace`;
             ctx.fillStyle = `rgba(255, 200, 50, ${0.5 + comboPopScale * 0.4})`;
-            ctx.fillText(`${combo}x combo`, cx, 90);
+            ctx.fillText(`${combo}x combo`, cx, 170);
           }
 
           // Best combo
           if (bestCombo > 1) {
-            ctx.font = '12px monospace';
+            ctx.font = '36px monospace';
             ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-            ctx.fillText(`best: ${bestCombo}x`, cx, h - 20);
+            ctx.fillText(`best: ${bestCombo}x`, cx, h - 40);
           }
         }
 
         if (state === 'waiting') {
           // Title
           const pulse = 0.5 + Math.sin(t * 2) * 0.2;
-          ctx.font = `bold ${Math.min(w * 0.06, 52)}px monospace`;
+          ctx.font = `bold ${Math.min(w * 0.18, 156)}px monospace`;
           ctx.fillStyle = `rgba(180, 240, 255, ${pulse})`;
-          ctx.fillText('WASD TO DODGE', cx, cy - 40);
+          ctx.fillText('DODGE', cx, cy - 40);
 
-          ctx.font = `${Math.min(w * 0.02, 18)}px monospace`;
+          ctx.font = `${Math.min(w * 0.06, 54)}px monospace`;
           ctx.fillStyle = `rgba(255, 255, 255, ${pulse * 0.5})`;
-          ctx.fillText('click or space to start', cx, cy + 10);
+          ctx.fillText('click or space to start', cx, cy + 50);
 
           // Instructions
-          ctx.font = '12px monospace';
+          ctx.font = '36px monospace';
           ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-          ctx.fillText('WASD to dodge \u00b7 avoid the waves \u00b7 stay in the gaps \u00b7 P panel \u00b7 E toggle', cx, h - 30);
+          ctx.fillText('arrows / WASD \u00b7 avoid waves \u00b7 P panel \u00b7 E toggle', cx, h - 50);
         }
 
         if (state === 'gameover') {
@@ -404,23 +409,23 @@
           ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
           ctx.fillRect(-10, -10, w + 20, h + 20);
 
-          ctx.font = `bold ${Math.min(w * 0.06, 52)}px monospace`;
+          ctx.font = `bold ${Math.min(w * 0.18, 156)}px monospace`;
           ctx.fillStyle = 'rgba(255, 80, 60, 0.8)';
-          ctx.fillText('GAME OVER', cx, cy - 50);
+          ctx.fillText('GAME OVER', cx, cy - 60);
 
-          ctx.font = `${Math.min(w * 0.03, 28)}px monospace`;
+          ctx.font = `${Math.min(w * 0.09, 84)}px monospace`;
           ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-          ctx.fillText(`score: ${score}`, cx, cy);
+          ctx.fillText(`score: ${score}`, cx, cy + 40);
 
           if (bestCombo > 1) {
             ctx.fillStyle = 'rgba(255, 200, 50, 0.5)';
-            ctx.fillText(`best combo: ${bestCombo}x`, cx, cy + 35);
+            ctx.fillText(`best combo: ${bestCombo}x`, cx, cy + 130);
           }
 
           const restartPulse = 0.3 + Math.sin(t * 3) * 0.15;
-          ctx.font = `${Math.min(w * 0.02, 18)}px monospace`;
+          ctx.font = `${Math.min(w * 0.06, 54)}px monospace`;
           ctx.fillStyle = `rgba(255, 255, 255, ${restartPulse})`;
-          ctx.fillText('click or space to restart', cx, cy + 80);
+          ctx.fillText('click or space to restart', cx, cy + 200);
         }
 
         ctx.restore();
