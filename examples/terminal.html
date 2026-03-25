@@ -44,11 +44,20 @@
       const FONT_SIZE = 15;
       const LINE_HEIGHT = FONT_SIZE * 1.4;
       const CHAR_WIDTH = FONT_SIZE * 0.6;
-      const MARGIN_X = 20;
       const MARGIN_Y = 20;
       const GREEN = '#33ff33';
       const DIM_GREEN = '#1a9a1a';
       const CURSOR_CHAR = '\u2588'; // full block
+
+      // Compute the widest line to center the text block
+      function getMarginX() {
+        let maxLen = 0;
+        for (const entry of BOOT_SEQUENCE) {
+          if (entry.text.length > maxLen) maxLen = entry.text.length;
+        }
+        const blockWidth = maxLen * CHAR_WIDTH;
+        return Math.max(20, (termBuffer.width - blockWidth) / 2);
+      }
 
       // Boot sequence: array of { text, speed, pause }
       // speed = ms per character, pause = ms after line completes
@@ -201,6 +210,7 @@
       function renderTermBuffer() {
         const w = termBuffer.width;
         const h = termBuffer.height;
+        const mx = getMarginX();
 
         tCtx.fillStyle = '#000';
         tCtx.fillRect(0, 0, w, h);
@@ -212,17 +222,17 @@
         let y = MARGIN_Y;
         for (let i = 0; i < lines.length; i++) {
           tCtx.fillStyle = GREEN;
-          tCtx.fillText(lines[i], MARGIN_X, y);
+          tCtx.fillText(lines[i], mx, y);
           y += LINE_HEIGHT;
         }
 
         // Draw current line with cursor
         tCtx.fillStyle = GREEN;
-        tCtx.fillText(currentLine, MARGIN_X, y);
+        tCtx.fillText(currentLine, mx, y);
 
         // Blinking cursor
         if (cursorVisible) {
-          const cursorX = MARGIN_X + currentLine.length * CHAR_WIDTH;
+          const cursorX = mx + currentLine.length * CHAR_WIDTH;
           tCtx.fillStyle = GREEN;
           tCtx.fillText(CURSOR_CHAR, cursorX, y);
         }
