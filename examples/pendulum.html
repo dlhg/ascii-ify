@@ -45,32 +45,36 @@
       // ─── State ────────────────────────────────────────────
       let phaseOffset = 0;            // reset shifts this to re-align
       let lastTime = 0;
+      let simTime = 0;                // accumulated simulation time (seconds)
+      let timeScale = 0.3;            // default speed (slower)
+      const TIME_SCALE_MIN = 0.05;
+      const TIME_SCALE_MAX = 3.0;
+      const TIME_SCALE_STEP = 0.05;
 
       // Trail history: array of arrays, one per pendulum
       const trails = Array.from({ length: NUM_PENDULUMS }, () => []);
 
       // ─── Click to Reset ───────────────────────────────────
       source.addEventListener('click', () => {
-        // Snap all pendulums to the same phase by adjusting the offset
-        // We want sin(omega(i) * t + phaseOffset) to equal the same value
-        // for all i. The simplest reset: set phaseOffset so that at current
-        // time all pendulums are at phase 0 (i.e., centered, moving forward).
-        const t = lastTime * 0.001;
-        // Align to pendulum 0's current phase
-        phaseOffset = -omega(0) * t;
-        // Round to nearest full cycle so they start from aligned position
-        phaseOffset = -omega(0) * t;
-        // Clear trails for a clean restart
+        phaseOffset = -omega(0) * simTime;
         for (let i = 0; i < NUM_PENDULUMS; i++) {
           trails[i].length = 0;
         }
       });
 
+      // ─── Speed Control (scroll wheel) ─────────────────────
+      source.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        timeScale = Math.max(TIME_SCALE_MIN, Math.min(TIME_SCALE_MAX, timeScale - e.deltaY * 0.001));
+      }, { passive: false });
+
       // ─── Draw ─────────────────────────────────────────────
       function draw(time) {
         const w = source.width, h = source.height;
+        const dt = lastTime ? (time - lastTime) * 0.001 : 0;
         lastTime = time;
-        const t = time * 0.001;
+        simTime += dt * timeScale;
+        const t = simTime;
 
         const amplitude = h * AMPLITUDE_RATIO;
         const mountY = 40;  // y position of the mounting bar
@@ -164,11 +168,20 @@
           ctx.fill();
         }
 
+        // ─── Speed Bar ───
+        const barW = 140, barH = 4;
+        const barX = w - barW - 14, barY = h - 38;
+        const fill = (timeScale - TIME_SCALE_MIN) / (TIME_SCALE_MAX - TIME_SCALE_MIN);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+        ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.fillRect(barX, barY, barW * fill, barH);
+
         // ─── HUD ───
         ctx.font = '13px monospace';
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-        ctx.fillText('click: reset phase   P: toggle panel', w - 10, h - 14);
+        ctx.fillText(`speed: ${timeScale.toFixed(2)}x   scroll: adjust   click: reset`, w - 10, h - 14);
       }
 
       // ─── ASCII-ify with Layers ────────────────────────────
