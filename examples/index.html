@@ -15,27 +15,38 @@
         right: 0;
         z-index: 10;
         display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 16px;
-        background: rgba(10, 10, 15, 0.85);
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 12px;
+        background: rgba(10, 10, 15, 0.88);
         backdrop-filter: blur(8px);
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      nav .top-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
       }
 
       nav .title {
         font-size: 14px;
         color: #666;
-        margin-right: 8px;
+      }
+
+      nav .btn-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
       }
 
       nav button {
         background: rgba(255, 255, 255, 0.06);
         border: 1px solid rgba(255, 255, 255, 0.1);
         color: #999;
-        padding: 6px 14px;
+        padding: 4px 10px;
         font-family: monospace;
-        font-size: 13px;
+        font-size: 11px;
         cursor: pointer;
         border-radius: 4px;
         transition: all 0.15s;
@@ -53,7 +64,6 @@
       }
 
       nav .keys {
-        margin-left: auto;
         font-size: 11px;
         color: #444;
       }
@@ -80,8 +90,11 @@
   </head>
   <body>
     <nav>
-      <span class="title">ascii-ify</span>
-      <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> cycle &nbsp; <kbd>P</kbd> panel &nbsp; <kbd>E</kbd> toggle filter</span>
+      <div class="top-row">
+        <span class="title">ascii-ify</span>
+        <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> cycle &nbsp; <kbd>P</kbd> panel &nbsp; <kbd>E</kbd> toggle filter</span>
+      </div>
+      <div class="btn-grid" id="btn-grid"></div>
     </nav>
     <iframe id="frame"></iframe>
 
@@ -107,9 +120,10 @@
         { name: 'Rhythm', src: 'rhythm-dodge.html' },
         { name: 'Maze', src: 'maze.html' },
         { name: 'Tower Defense', src: 'tower-defense.html' },
+        { name: 'Fireworks', src: 'fireworks.html' },
       ];
 
-      const nav = document.querySelector('nav');
+      const btnGrid = document.getElementById('btn-grid');
       const frame = document.getElementById('frame');
       let current = 0;
 
@@ -118,7 +132,7 @@
         const btn = document.createElement('button');
         btn.textContent = ex.name;
         btn.addEventListener('click', () => load(i));
-        nav.insertBefore(btn, nav.querySelector('.keys'));
+        btnGrid.appendChild(btn);
         return btn;
       });
 

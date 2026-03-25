@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Fireworks</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      // Background stars — generated once, redrawn each frame
+      let stars = [];
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+        generateStars();
+      }
+
+      function generateStars() {
+        stars = [];
+        const area = source.width * source.height;
+        const count = Math.floor(area / 2400);
+        for (let i = 0; i < count; i++) {
+          stars.push({
+            x: Math.random() * source.width,
+            y: Math.random() * source.height * 0.7,
+            size: 0.3 + Math.random() * 1.2,
+            brightness: 0.2 + Math.random() * 0.6,
+            twinkleSpeed: 0.5 + Math.random() * 3,
+            twinklePhase: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Firework Types ───────────────────────────────────
+      // Each type defines how particles are spawned at detonation
+      const FIREWORK_TYPES = [
+        {
+          name: 'peony',
+          spawn(x, y, hue, particles) {
+            // Classic spherical burst
+            const count = 120 + Math.random() * 60 | 0;
+            for (let i = 0; i < count; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const elevation = Math.acos(1 - 2 * Math.random());
+              const speed = 2.5 + Math.random() * 4;
+              const vx = Math.sin(elevation) * Math.cos(angle) * speed;
+              const vy = Math.sin(elevation) * Math.sin(angle) * speed - Math.cos(elevation) * speed * 0.6;
+              const life = 80 + Math.random() * 60;
+              particles.push({
+                x, y, vx, vy,
+                life, maxLife: life,
+                hue: hue + (Math.random() - 0.5) * 30,
+                sat: 85 + Math.random() * 15,
+                size: 1.2 + Math.random() * 1.8,
+                trail: true,
+                crackle: false,
+                secondary: false,
+              });
+            }
+          },
+        },
+        {
+          name: 'chrysanthemum',
+          spawn(x, y, hue, particles) {
+            // Dense trails that leave long streaks
+            const count = 100 + Math.random() * 40 | 0;
+            for (let i = 0; i < count; i++) {
+              const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+              const speed = 3 + Math.random() * 3.5;
+              const vx = Math.cos(angle) * speed;
+              const vy = Math.sin(angle) * speed * 0.8 - 1;
+              const life = 110 + Math.random() * 50;
+              particles.push({
+                x, y, vx, vy,
+                life, maxLife: life,
+                hue: hue + (Math.random() - 0.5) * 15,
+                sat: 90 + Math.random() * 10,
+                size: 1.5 + Math.random() * 1.5,
+                trail: true,
+                crackle: false,
+                secondary: false,
+              });
+            }
+          },
+        },
+        {
+          name: 'willow',
+          spawn(x, y, hue, particles) {
+            // Heavy gravity, droop like willow branches — golden
+            const count = 80 + Math.random() * 40 | 0;
+            const willowHue = 35 + Math.random() * 25; // golden
+            for (let i = 0; i < count; i++) {
+              const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+              const speed = 2.5 + Math.random() * 2.5;
+              const vx = Math.cos(angle) * speed;
+              const vy = Math.sin(angle) * speed * 0.7 - 1.5;
+              const life = 160 + Math.random() * 80;
+              particles.push({
+                x, y, vx, vy,
+                life, maxLife: life,
+                hue: willowHue + (Math.random() - 0.5) * 10,
+                sat: 70 + Math.random() * 20,
+                size: 1 + Math.random() * 1.5,
+                trail: true,
+                crackle: false,
+                secondary: false,
+                heavyGravity: true,
+              });
+            }
+          },
+        },
+        {
+          name: 'palm',
+          spawn(x, y, hue, particles) {
+            // Thick arcing fronds
+            const fronds = 6 + (Math.random() * 4 | 0);
+            for (let f = 0; f < fronds; f++) {
+              const baseAngle = (f / fronds) * Math.PI * 2;
+              const count = 18 + Math.random() * 8 | 0;
+              for (let i = 0; i < count; i++) {
+                const t = i / count;
+                const speed = 2 + t * 5;
+                const spread = (Math.random() - 0.5) * 0.15;
+                const vx = Math.cos(baseAngle + spread) * speed;
+                const vy = Math.sin(baseAngle + spread) * speed * 0.8 - 1;
+                const life = 80 + t * 80 + Math.random() * 20;
+                particles.push({
+                  x, y, vx, vy,
+                  life, maxLife: life,
+                  hue: hue + t * 40,
+                  sat: 80 + Math.random() * 20,
+                  size: 2 + (1 - t) * 2,
+                  trail: true,
+                  crackle: false,
+                  secondary: false,
+                });
+              }
+            }
+          },
+        },
+        {
+          name: 'ring',
+          spawn(x, y, hue, particles) {
+            // Particles form a ring shape
+            const count = 100 + Math.random() * 40 | 0;
+            for (let i = 0; i < count; i++) {
+              const angle = (i / count) * Math.PI * 2;
+              const ringSpeed = 3.5 + Math.random() * 1.5;
+              // All particles get roughly the same speed for a ring
+              const vx = Math.cos(angle) * ringSpeed;
+              const vy = Math.sin(angle) * ringSpeed * 0.7 - 0.5;
+              const life = 70 + Math.random() * 40;
+              particles.push({
+                x, y, vx, vy,
+                life, maxLife: life,
+                hue: hue + (Math.random() - 0.5) * 10,
+                sat: 90 + Math.random() * 10,
+                size: 1.8 + Math.random() * 1.2,
+                trail: true,
+                crackle: false,
+                secondary: false,
+              });
+            }
+          },
+        },
+        {
+          name: 'crossette',
+          spawn(x, y, hue, particles) {
+            // Particles that split into secondary bursts
+            const count = 30 + Math.random() * 20 | 0;
+            for (let i = 0; i < count; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 3 + Math.random() * 3;
+              const vx = Math.cos(angle) * speed;
+              const vy = Math.sin(angle) * speed * 0.8 - 1.5;
+              const life = 50 + Math.random() * 20;
+              particles.push({
+                x, y, vx, vy,
+                life, maxLife: life,
+                hue: hue + (Math.random() - 0.5) * 20,
+                sat: 85 + Math.random() * 15,
+                size: 2.5 + Math.random() * 1.5,
+                trail: true,
+                crackle: false,
+                secondary: true,  // will burst again
+              });
+            }
+          },
+        },
+        {
+          name: 'crackle',
+          spawn(x, y, hue, particles) {
+            // Bright burst that ends with tiny crackle pops
+            const count = 80 + Math.random() * 40 | 0;
+            for (let i = 0; i < count; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 2 + Math.random() * 4;
+              const vx = Math.cos(angle) * speed;
+              const vy = Math.sin(angle) * speed * 0.8 - 1;
+              const life = 60 + Math.random() * 40;
+              particles.push({
+                x, y, vx, vy,
+                life, maxLife: life,
+                hue: hue + (Math.random() - 0.5) * 20,
+                sat: 80 + Math.random() * 20,
+                size: 1.2 + Math.random() * 1.8,
+                trail: true,
+                crackle: true,
+                secondary: false,
+              });
+            }
+          },
+        },
+      ];
+
+      // ─── State ──────────────────────────────────────────
+      const rockets = [];     // ascending rockets
+      const particles = [];   // explosion particles
+      const flashes = [];     // bright detonation flashes
+      const MAX_PARTICLES = 6000;
+
+      let autoInterval = 1.2; // seconds between auto-launches
+      let autoTimer = 0.5;    // start first one quickly
+      let freqIndicatorTimer = 0;
+      let lastTime = 0;
+
+      // ─── Rocket Launch ─────────────────────────────────
+      function launchRocket(targetX, targetY) {
+        const w = source.width;
+        const h = source.height;
+        const launchX = targetX ?? (w * 0.1 + Math.random() * w * 0.8);
+        const launchY = targetY ?? (h * 0.15 + Math.random() * h * 0.35);
+        const startX = launchX + (Math.random() - 0.5) * w * 0.15;
+
+        rockets.push({
+          x: startX,
+          y: h + 5,
+          targetX: launchX,
+          targetY: launchY,
+          vx: (launchX - startX) * 0.015,
+          vy: -(4 + Math.random() * 3),
+          hue: Math.random() * 360,
+          type: FIREWORK_TYPES[Math.random() * FIREWORK_TYPES.length | 0],
+          trail: [],
+          sparkTimer: 0,
+        });
+      }
+
+      // ─── Detonate ──────────────────────────────────────
+      function detonate(rocket) {
+        rocket.type.spawn(rocket.x, rocket.y, rocket.hue, particles);
+
+        // Flash
+        flashes.push({
+          x: rocket.x,
+          y: rocket.y,
+          radius: 30 + Math.random() * 40,
+          life: 1,
+          hue: rocket.hue,
+        });
+
+        // Trim particles if over budget
+        while (particles.length > MAX_PARTICLES) {
+          particles.shift();
+        }
+      }
+
+      // ─── Secondary burst (crossette) ───────────────────
+      function secondaryBurst(p) {
+        const count = 8 + Math.random() * 6 | 0;
+        for (let i = 0; i < count; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 1.5 + Math.random() * 2;
+          const life = 30 + Math.random() * 25;
+          particles.push({
+            x: p.x, y: p.y,
+            vx: Math.cos(angle) * speed + p.vx * 0.3,
+            vy: Math.sin(angle) * speed + p.vy * 0.3,
+            life, maxLife: life,
+            hue: p.hue + (Math.random() - 0.5) * 40,
+            sat: p.sat,
+            size: 0.8 + Math.random() * 1,
+            trail: false,
+            crackle: false,
+            secondary: false,
+          });
+        }
+      }
+
+      // ─── Crackle pop ──────────────────────────────────
+      function cracklePop(p) {
+        const count = 3 + Math.random() * 3 | 0;
+        for (let i = 0; i < count; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 0.5 + Math.random() * 1.5;
+          const life = 8 + Math.random() * 12;
+          particles.push({
+            x: p.x, y: p.y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life, maxLife: life,
+            hue: 40 + Math.random() * 30,
+            sat: 30 + Math.random() * 40,
+            size: 0.6 + Math.random() * 0.8,
+            trail: false,
+            crackle: false,
+            secondary: false,
+          });
+        }
+      }
+
+      // ─── Physics ───────────────────────────────────────
+      const GRAVITY = 0.04;
+      const DRAG = 0.985;
+      const ROCKET_SPARK_INTERVAL = 2;
+
+      function update(dt) {
+        const w = source.width;
+        const h = source.height;
+
+        // Update rockets
+        for (let i = rockets.length - 1; i >= 0; i--) {
+          const r = rockets[i];
+          r.x += r.vx;
+          r.y += r.vy;
+          r.vy += GRAVITY * 0.5; // rockets fight gravity a bit
+
+          // Rocket spark trail
+          r.sparkTimer++;
+          if (r.sparkTimer >= ROCKET_SPARK_INTERVAL) {
+            r.sparkTimer = 0;
+            r.trail.push({
+              x: r.x + (Math.random() - 0.5) * 3,
+              y: r.y,
+              life: 20 + Math.random() * 15,
+              maxLife: 35,
+              size: 0.8 + Math.random() * 1.2,
+            });
+          }
+
+          // Fade trail sparks
+          for (let j = r.trail.length - 1; j >= 0; j--) {
+            r.trail[j].life--;
+            if (r.trail[j].life <= 0) r.trail.splice(j, 1);
+          }
+
+          // Detonate when reaching target height
+          if (r.y <= r.targetY) {
+            detonate(r);
+            rockets.splice(i, 1);
+          }
+          // Safety: remove if off-screen
+          else if (r.y < -50 || r.x < -50 || r.x > w + 50) {
+            rockets.splice(i, 1);
+          }
+        }
+
+        // Update particles
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          const gravity = p.heavyGravity ? GRAVITY * 2.5 : GRAVITY;
+          p.vy += gravity;
+          p.vx *= DRAG;
+          p.vy *= DRAG;
+          p.x += p.vx;
+          p.y += p.vy;
+          p.life--;
+
+          // Secondary burst on death
+          if (p.life <= 0) {
+            if (p.secondary) secondaryBurst(p);
+            if (p.crackle && Math.random() < 0.4) cracklePop(p);
+            particles.splice(i, 1);
+          }
+        }
+
+        // Update flashes
+        for (let i = flashes.length - 1; i >= 0; i--) {
+          flashes[i].life -= dt * 4;
+          if (flashes[i].life <= 0) flashes.splice(i, 1);
+        }
+
+        // Auto-launch
+        autoTimer -= dt;
+        if (autoTimer <= 0) {
+          // Sometimes launch 2-3 at once for a volley
+          const volley = Math.random() < 0.25 ? (2 + (Math.random() < 0.3 ? 1 : 0)) : 1;
+          for (let v = 0; v < volley; v++) {
+            launchRocket();
+          }
+          // Vary timing slightly for natural feel
+          autoTimer = autoInterval * (0.6 + Math.random() * 0.8);
+        }
+      }
+
+      // ─── Rendering ─────────────────────────────────────
+      function drawSource(time) {
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        const w = source.width;
+        const h = source.height;
+
+        // ── Fade previous frame (trail effect) ──
+        sCtx.globalCompositeOperation = 'source-over';
+        sCtx.fillStyle = 'rgba(2, 2, 6, 0.12)';
+        sCtx.fillRect(0, 0, w, h);
+
+        // ── Night sky gradient (subtle, not full clear) ──
+        // Only draw a very faint gradient to maintain depth
+        const skyGrad = sCtx.createLinearGradient(0, 0, 0, h);
+        skyGrad.addColorStop(0, 'rgba(3, 3, 12, 0.02)');
+        skyGrad.addColorStop(0.7, 'rgba(5, 3, 15, 0.01)');
+        skyGrad.addColorStop(1, 'rgba(8, 5, 12, 0.01)');
+        sCtx.fillStyle = skyGrad;
+        sCtx.fillRect(0, 0, w, h);
+
+        // ── Stars ──
+        const t = time * 0.001;
+        for (const star of stars) {
+          const twinkle = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * star.twinkleSpeed + star.twinklePhase));
+          const alpha = star.brightness * twinkle;
+          sCtx.fillStyle = `rgba(220, 225, 255, ${alpha})`;
+          sCtx.fillRect(star.x - star.size * 0.5, star.y - star.size * 0.5, star.size, star.size);
+        }
+
+        // ── Update physics ──
+        update(dt);
+
+        // ── Draw rocket trails ──
+        for (const r of rockets) {
+          // Trail sparks
+          for (const s of r.trail) {
+            const alpha = (s.life / s.maxLife);
+            const warm = alpha * 0.8;
+            sCtx.fillStyle = `rgba(255, ${180 + warm * 75 | 0}, ${80 + warm * 60 | 0}, ${alpha * 0.9})`;
+            sCtx.fillRect(s.x - s.size * 0.5, s.y - s.size * 0.5, s.size, s.size);
+          }
+
+          // Rocket head
+          sCtx.fillStyle = `rgba(255, 240, 200, 0.95)`;
+          sCtx.beginPath();
+          sCtx.arc(r.x, r.y, 2.5, 0, Math.PI * 2);
+          sCtx.fill();
+
+          // Rocket glow
+          const rGlow = sCtx.createRadialGradient(r.x, r.y, 0, r.x, r.y, 15);
+          rGlow.addColorStop(0, 'rgba(255, 200, 100, 0.3)');
+          rGlow.addColorStop(1, 'rgba(255, 150, 50, 0)');
+          sCtx.fillStyle = rGlow;
+          sCtx.fillRect(r.x - 15, r.y - 15, 30, 30);
+        }
+
+        // ── Draw detonation flashes ──
+        for (const f of flashes) {
+          const alpha = f.life * 0.6;
+          const radius = f.radius * (2 - f.life); // expands as it fades
+          const grad = sCtx.createRadialGradient(f.x, f.y, 0, f.x, f.y, radius);
+          grad.addColorStop(0, `hsla(${f.hue}, 60%, 95%, ${alpha * 0.8})`);
+          grad.addColorStop(0.3, `hsla(${f.hue}, 80%, 70%, ${alpha * 0.4})`);
+          grad.addColorStop(1, `hsla(${f.hue}, 80%, 50%, 0)`);
+          sCtx.fillStyle = grad;
+          sCtx.fillRect(f.x - radius, f.y - radius, radius * 2, radius * 2);
+        }
+
+        // ── Draw particles ──
+        // Batch by roughly similar color to reduce state changes
+        sCtx.globalCompositeOperation = 'lighter';
+        for (const p of particles) {
+          const alpha = p.life / p.maxLife;
+          // Quadratic ease-out for more visible middle life
+          const vis = alpha < 0.3 ? alpha / 0.3 : 1;
+          const lightness = 55 + vis * 35;
+          const h = ((p.hue % 360) + 360) % 360;
+          const size = p.size * (0.3 + vis * 0.7);
+
+          sCtx.fillStyle = `hsla(${h}, ${p.sat}%, ${lightness}%, ${vis * 0.85})`;
+          sCtx.fillRect(p.x - size * 0.5, p.y - size * 0.5, size, size);
+
+          // Core glow for brighter particles
+          if (vis > 0.5) {
+            const glowAlpha = (vis - 0.5) * 0.5;
+            const glowSize = size * 3;
+            sCtx.fillStyle = `hsla(${h}, ${p.sat * 0.7}%, 80%, ${glowAlpha * 0.3})`;
+            sCtx.fillRect(p.x - glowSize * 0.5, p.y - glowSize * 0.5, glowSize, glowSize);
+          }
+        }
+
+        // ── Ambient haze from recent explosions ──
+        // Draw a soft glow at each flash location that lingers
+        for (const f of flashes) {
+          if (f.life > 0.3) {
+            const hazeRadius = f.radius * 3;
+            const hazeAlpha = (f.life - 0.3) * 0.15;
+            const grad = sCtx.createRadialGradient(f.x, f.y, 0, f.x, f.y, hazeRadius);
+            grad.addColorStop(0, `hsla(${f.hue}, 40%, 60%, ${hazeAlpha})`);
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            sCtx.fillStyle = grad;
+            sCtx.fillRect(f.x - hazeRadius, f.y - hazeRadius, hazeRadius * 2, hazeRadius * 2);
+          }
+        }
+
+        sCtx.globalCompositeOperation = 'source-over';
+
+        // ── Subtle ground glow reflecting fireworks ──
+        if (particles.length > 50) {
+          const groundGlow = sCtx.createLinearGradient(0, h * 0.92, 0, h);
+          const intensity = Math.min(particles.length / 2000, 0.15);
+          groundGlow.addColorStop(0, 'rgba(0,0,0,0)');
+          groundGlow.addColorStop(1, `rgba(40, 30, 50, ${intensity})`);
+          sCtx.fillStyle = groundGlow;
+          sCtx.fillRect(0, h * 0.92, w, h * 0.08);
+        }
+
+        // ── Frequency indicator ──
+        if (freqIndicatorTimer > 0) {
+          freqIndicatorTimer--;
+          const ia = Math.min(freqIndicatorTimer / 30, 1) * 0.7;
+          sCtx.save();
+          sCtx.font = '13px monospace';
+          sCtx.fillStyle = `rgba(255, 255, 255, ${ia})`;
+          sCtx.textAlign = 'right';
+          sCtx.fillText(`frequency: ${autoInterval.toFixed(1)}s`, w - 16, 24);
+          sCtx.restore();
+        }
+
+        // ── Instructions ──
+        sCtx.save();
+        sCtx.font = '11px monospace';
+        sCtx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+        sCtx.textAlign = 'center';
+        sCtx.fillText(
+          'click to launch \u00B7 scroll to change frequency \u00B7 P panel \u00B7 E toggle',
+          w / 2, h - 14,
+        );
+        sCtx.restore();
+      }
+
+      // ─── Input ─────────────────────────────────────────
+      function getCanvasPos(e) {
+        const rect = source.getBoundingClientRect();
+        return {
+          x: (e.clientX - rect.left) * (source.width / rect.width),
+          y: (e.clientY - rect.top) * (source.height / rect.height),
+        };
+      }
+
+      window.addEventListener('click', (e) => {
+        const pos = getCanvasPos(e);
+        launchRocket(pos.x, pos.y);
+      });
+
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        autoInterval += e.deltaY * 0.003;
+        autoInterval = Math.max(0.15, Math.min(5, autoInterval));
+        freqIndicatorTimer = 50;
+      }, { passive: false });
+
+      window.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const pos = getCanvasPos(touch);
+        launchRocket(pos.x, pos.y);
+      }, { passive: false });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      // ─── ASCII-ify with Layers ──────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#030308',
+        sourceOpacity: 0,
+        speed: 1,
+        colorCycle: true,
+        colorCycleRate: 0.15,
+      });
+
+      // Layer 1: Sky & ambient haze — large blocks catch the broad glow
+      ascii.addLayer({
+        source: source,
+        fontSize: 22,
+        charset: 'blocks',
+        colorScheme: 'vapor',
+        pattern: 'breathing',
+        patternMix: 0.15,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Firework trails & sparkle — dense characters for detail
+      ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'rainbow',
+        blendMode: 'add',
+        opacity: 0.85,
+      });
+
+      // Layer 3: Fine shimmer & crackle — braille for texture
+      ascii.addLayer({
+        source: source,
+        fontSize: 5,
+        charset: 'braille',
+        colorScheme: 'fire',
+        pattern: 'plasma',
+        patternMix: 0.1,
+        blendMode: 'add',
+        opacity: 0.3,
+      });
+
+      // ─── Animation Loop ───────────────────────────────
+      function loop(time) {
+        drawSource(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
