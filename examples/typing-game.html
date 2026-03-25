@@ -31,9 +31,9 @@
 
       // ─── Constants ──────────────────────────────────────────
       const MAX_LIVES = 5;
-      const BASE_SPEED = 38;
-      const SPEED_PER_LEVEL = 7;
-      const MAX_SPEED = 120;
+      const BASE_SPEED = 65;
+      const SPEED_PER_LEVEL = 10;
+      const MAX_SPEED = 180;
       const BASE_SPAWN_INTERVAL = 2.2;
       const MIN_SPAWN_INTERVAL = 0.55;
       const WORDS_PER_LEVEL = 5;
@@ -749,11 +749,12 @@
         source,
         fontSize: 5,
         charset: 'binary',
-        colorScheme: 'vapor',
-        pattern: 'tunnel',
-        patternMix: 0.65,
+        colorScheme: 'ocean',
+        pattern: 'kaleidoscope',
+        patternMix: 0.77,
+        opacity: 0.15,
+        fade: 1,
         blendMode: 'replace',
-        opacity: 1,
       });
 
       // Layer 2: Game detail — words, HUD, crisp text
