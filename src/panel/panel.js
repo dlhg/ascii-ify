@@ -249,8 +249,17 @@ export class ControlPanel {
   // ─── Layer Tabs ─────────────────────────────────────
 
   _addLayerTab(layer) {
-    // Create tab button
-    const tab = h('button', 'layer-tab', `Layer ${layer.id}`);
+    // Create tab button with visibility eye toggle
+    const tab = h('button', 'layer-tab', '');
+    const tabLabel = h('span', 'layer-tab-label', `Layer ${layer.id}`);
+    const eyeBtn = h('span', 'layer-tab-eye', '●');
+    eyeBtn.title = 'Toggle visibility';
+    eyeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      layer.set('visible', !layer.get('visible'));
+    });
+    tab.appendChild(tabLabel);
+    tab.appendChild(eyeBtn);
     tab.addEventListener('click', () => this._activateLayer(layer));
     this._tabBar.appendChild(tab);
 
@@ -259,7 +268,7 @@ export class ControlPanel {
     this._buildLayerContent(layer, content);
     this._layerContent.appendChild(content);
 
-    this._layerTabs.set(layer, { tab, content });
+    this._layerTabs.set(layer, { tab, content, eyeBtn });
 
     // Show tab bar, hide placeholder
     this._tabBar.style.display = '';
@@ -432,9 +441,20 @@ export class ControlPanel {
     if (this._rafId) return;
     const sync = () => {
       for (const c of this._controls) c.sync();
+      this._syncEyeIcons();
       this._rafId = requestAnimationFrame(sync);
     };
     this._rafId = requestAnimationFrame(sync);
+  }
+
+  _syncEyeIcons() {
+    for (const [layer, entry] of this._layerTabs) {
+      if (entry.eyeBtn) {
+        const vis = layer.get('visible');
+        entry.eyeBtn.classList.toggle('off', !vis);
+        entry.tab.classList.toggle('layer-hidden', !vis);
+      }
+    }
   }
 
   _stopSync() {

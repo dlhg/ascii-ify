@@ -252,6 +252,9 @@ export const PANEL_CSS = `
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .layer-tab:hover {
@@ -264,6 +267,33 @@ export const PANEL_CSS = `
   border-color: var(--accent-dim);
   background: var(--accent-soft);
   box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.layer-tab.layer-hidden {
+  opacity: 0.45;
+}
+
+.layer-tab-label {
+  pointer-events: none;
+}
+
+.layer-tab-eye {
+  font-size: 7px;
+  line-height: 1;
+  color: var(--accent);
+  transition: all 0.15s;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.layer-tab-eye:hover {
+  opacity: 1;
+  transform: scale(1.3);
+}
+
+.layer-tab-eye.off {
+  color: var(--text-4);
+  opacity: 0.4;
 }
 
 .layer-tab-content {
