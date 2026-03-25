@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Idle</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+
+      #shop {
+        display: none;
+        position: absolute;
+        z-index: 5;
+        background: rgba(10, 8, 20, 0.92);
+        border: 1px solid rgba(120, 80, 200, 0.4);
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-family: monospace;
+        font-size: 12px;
+        color: #bba8dd;
+        pointer-events: auto;
+        backdrop-filter: blur(4px);
+        min-width: 190px;
+      }
+
+      #shop h3 {
+        margin: 0 0 6px;
+        font-size: 13px;
+        color: #ddc8ff;
+        border-bottom: 1px solid rgba(120, 80, 200, 0.25);
+        padding-bottom: 4px;
+      }
+
+      #shop .info {
+        font-size: 11px;
+        color: #8878aa;
+        margin-bottom: 6px;
+      }
+
+      #shop button {
+        display: block;
+        width: 100%;
+        margin: 3px 0;
+        padding: 6px 8px;
+        background: rgba(100, 60, 180, 0.2);
+        border: 1px solid rgba(120, 80, 200, 0.3);
+        border-radius: 4px;
+        color: #ccaaee;
+        font-family: monospace;
+        font-size: 11px;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      #shop button:hover:not(:disabled) {
+        background: rgba(120, 80, 200, 0.35);
+        color: #eeddff;
+      }
+
+      #shop button:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+      <div id="shop"></div>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Canvas Setup ───────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+      const shop = document.getElementById('shop');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+        hideShop();
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ─── Constants ──────────────────────────────────────
+      const TILE_W = 64;
+      const TILE_H = 32;
+      const GRID = 8;
+      const MAX_PARTICLES = 300;
+
+      const BUILDINGS = {
+        crystal: {
+          name: 'Crystal Node',
+          costType: 'shards',
+          baseCost: 10,
+          costScale: 2.5,
+          production: { shards: 1.0 },
+          clickYield: 1,
+          colors: ['#44aaff', '#aa44ff', '#ffaa44'],
+          glowRadius: [15, 22, 30],
+        },
+        collector: {
+          name: 'Collector',
+          costType: 'shards',
+          baseCost: 50,
+          costScale: 3,
+          production: { energy: 0.5 },
+          consumption: { shards: 2 },
+          clickYield: 0,
+          colors: ['#44ff88', '#44ffcc', '#44ffff'],
+          glowRadius: [12, 18, 24],
+        },
+        amplifier: {
+          name: 'Amplifier',
+          costType: 'energy',
+          baseCost: 200,
+          costScale: 4,
+          multiplier: [1.5, 2.0, 3.0],
+          clickYield: 0,
+          colors: ['#ff44ff', '#ff66ff', '#ff88ff'],
+          glowRadius: [18, 25, 35],
+        },
+      };
+
+      const UPGRADE_COSTS = {
+        crystal:   { costType: 'shards', costs: [0, 25, 62] },
+        collector: { costType: 'shards', costs: [0, 150, 450] },
+        amplifier: { costType: 'energy', costs: [0, 800, 3200] },
+      };
+
+      const NEXUS_UPGRADE_COST_BASE = 500;
+      const NEXUS_UPGRADE_SCALE = 5;
+
+      // ─── Game State ─────────────────────────────────────
+      let grid = [];        // [row][col] = null | { type, tier, seed }
+      let resources = { shards: 15, energy: 0 };
+      let production = { shards: 0, energy: 0 };
+      let nexusLevel = 1;
+      const nexusPos = { col: 3, row: 3 };
+      let particles = [];
+      let bgStars = [];
+      let hoverTile = null;  // { col, row } or null
+      let shopTile = null;   // { col, row } or null
+      let shopMode = null;   // 'build' | 'upgrade'
+      let resetTimer = 0;
+      let saveTimer = 0;
+      let time = 0;
+
+      function initGrid() {
+        grid = [];
+        for (let r = 0; r < GRID; r++) {
+          grid[r] = [];
+          for (let c = 0; c < GRID; c++) {
+            grid[r][c] = null;
+          }
+        }
+        // Place nexus at center
+        grid[nexusPos.row][nexusPos.col] = { type: 'nexus', tier: 1, seed: Math.random() * 1000 };
+      }
+
+      function initStars() {
+        bgStars = [];
+        for (let i = 0; i < 70; i++) {
+          bgStars.push({
+            x: Math.random(),
+            y: Math.random(),
+            brightness: 0.15 + Math.random() * 0.25,
+            speed: 0.5 + Math.random() * 2,
+            phase: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+
+      // ─── Iso Utilities ──────────────────────────────────
+      function getCenter() {
+        return {
+          x: source.width / 2,
+          y: source.height * 0.32,
+        };
+      }
+
+      function isoToScreen(col, row) {
+        const c = getCenter();
+        return {
+          x: c.x + (col - row) * TILE_W / 2,
+          y: c.y + (col + row) * TILE_H / 2,
+        };
+      }
+
+      function screenToIso(sx, sy) {
+        const c = getCenter();
+        const dx = sx - c.x;
+        const dy = sy - c.y;
+        const col = (dx / (TILE_W / 2) + dy / (TILE_H / 2)) / 2;
+        const row = (dy / (TILE_H / 2) - dx / (TILE_W / 2)) / 2;
+        return { col: Math.floor(col), row: Math.floor(row) };
+      }
+
+      function inGrid(col, row) {
+        return col >= 0 && col < GRID && row >= 0 && row < GRID;
+      }
+
+      function getAdjacent(col, row) {
+        const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+        const result = [];
+        for (const [dc, dr] of dirs) {
+          const nc = col + dc, nr = row + dr;
+          if (inGrid(nc, nr) && grid[nr][nc]) {
+            result.push({ col: nc, row: nr, building: grid[nr][nc] });
+          }
+        }
+        return result;
+      }
+
+      // ─── Production Calculation ─────────────────────────
+      function calculateProduction() {
+        let shards = 0;
+        let energy = 0;
+
+        // Build amplifier map: for each cell, what's the total multiplier?
+        const ampMap = [];
+        for (let r = 0; r < GRID; r++) {
+          ampMap[r] = [];
+          for (let c = 0; c < GRID; c++) ampMap[r][c] = 1;
+        }
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = grid[r][c];
+            if (b && b.type === 'amplifier') {
+              const mult = BUILDINGS.amplifier.multiplier[b.tier - 1];
+              for (let dr = -1; dr <= 1; dr++) {
+                for (let dc = -1; dc <= 1; dc++) {
+                  const nr = r + dr, nc = c + dc;
+                  if (inGrid(nc, nr)) ampMap[nr][nc] *= mult;
+                }
+              }
+            }
+          }
+        }
+
+        // Nexus global multiplier
+        const nexusMult = 1 + (nexusLevel - 1) * 0.25;
+
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = grid[r][c];
+            if (!b) continue;
+            const m = ampMap[r][c] * nexusMult;
+
+            if (b.type === 'crystal') {
+              const tierMult = Math.pow(2, b.tier - 1);
+              shards += BUILDINGS.crystal.production.shards * tierMult * m;
+            }
+
+            if (b.type === 'collector') {
+              // Check for adjacent crystal
+              const adj = getAdjacent(c, r);
+              const hasCrystal = adj.some(a => a.building.type === 'crystal');
+              if (hasCrystal) {
+                const tierMult = Math.pow(2, b.tier - 1);
+                energy += BUILDINGS.collector.production.energy * tierMult * m;
+              }
+            }
+          }
+        }
+
+        production.shards = shards;
+        production.energy = energy;
+      }
+
+      // ─── Building Actions ───────────────────────────────
+      function canAfford(costType, amount) {
+        return resources[costType] >= amount;
+      }
+
+      function getBuildCost(type) {
+        const info = BUILDINGS[type];
+        // Count existing of this type
+        let count = 0;
+        for (let r = 0; r < GRID; r++)
+          for (let c = 0; c < GRID; c++)
+            if (grid[r][c] && grid[r][c].type === type) count++;
+        return Math.floor(info.baseCost * Math.pow(1.15, count));
+      }
+
+      function placeBuilding(col, row, type) {
+        const cost = getBuildCost(type);
+        const costType = BUILDINGS[type].costType;
+        if (!canAfford(costType, cost)) return false;
+        if (grid[row][col]) return false;
+        resources[costType] -= cost;
+        grid[row][col] = { type, tier: 1, seed: Math.random() * 1000 };
+        calculateProduction();
+        spawnClickBurst(col, row);
+        return true;
+      }
+
+      function getUpgradeCost(type, currentTier) {
+        if (currentTier >= 3) return Infinity;
+        return UPGRADE_COSTS[type].costs[currentTier];
+      }
+
+      function upgradeBuilding(col, row) {
+        const b = grid[row][col];
+        if (!b || b.type === 'nexus' || b.tier >= 3) return false;
+        const cost = getUpgradeCost(b.type, b.tier);
+        const costType = UPGRADE_COSTS[b.type].costType;
+        if (!canAfford(costType, cost)) return false;
+        resources[costType] -= cost;
+        b.tier++;
+        calculateProduction();
+        spawnClickBurst(col, row);
+        return true;
+      }
+
+      function upgradeNexus() {
+        const cost = Math.floor(NEXUS_UPGRADE_COST_BASE * Math.pow(NEXUS_UPGRADE_SCALE, nexusLevel - 1));
+        if (!canAfford('energy', cost)) return false;
+        resources.energy -= cost;
+        nexusLevel++;
+        calculateProduction();
+        spawnClickBurst(nexusPos.col, nexusPos.row);
+        return true;
+      }
+
+      function sellBuilding(col, row) {
+        const b = grid[row][col];
+        if (!b || b.type === 'nexus') return;
+        const info = BUILDINGS[b.type];
+        resources[info.costType] += Math.floor(info.baseCost * 0.5);
+        grid[row][col] = null;
+        calculateProduction();
+      }
+
+      function getNexusUpgradeCost() {
+        return Math.floor(NEXUS_UPGRADE_COST_BASE * Math.pow(NEXUS_UPGRADE_SCALE, nexusLevel - 1));
+      }
+
+      // ─── Particles ──────────────────────────────────────
+      function spawnClickBurst(col, row) {
+        const pos = isoToScreen(col, row);
+        const count = 10;
+        for (let i = 0; i < count; i++) {
+          const angle = (i / count) * Math.PI * 2;
+          const spd = 1.5 + Math.random() * 2;
+          particles.push({
+            x: pos.x, y: pos.y,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd - 0.5,
+            life: 25 + Math.random() * 15,
+            maxLife: 40,
+            size: 2 + Math.random() * 2,
+            hue: 260 + Math.random() * 60,
+            type: 'burst',
+          });
+        }
+      }
+
+      function spawnCrystalSparkle(col, row, tier) {
+        if (particles.length >= MAX_PARTICLES) return;
+        const pos = isoToScreen(col, row);
+        const hues = [210, 280, 35];
+        particles.push({
+          x: pos.x + (Math.random() - 0.5) * 12,
+          y: pos.y - 5 - Math.random() * 10,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: -0.5 - Math.random() * 0.8,
+          life: 30 + Math.random() * 30,
+          maxLife: 60,
+          size: 1.5 + Math.random() * 1.5,
+          hue: hues[tier - 1] + (Math.random() - 0.5) * 20,
+          type: 'sparkle',
+        });
+      }
+
+      function spawnEnergyParticle(fromCol, fromRow, toCol, toRow) {
+        if (particles.length >= MAX_PARTICLES) return;
+        const from = isoToScreen(fromCol, fromRow);
+        const to = isoToScreen(toCol, toRow);
+        particles.push({
+          x: from.x, y: from.y,
+          fromX: from.x, fromY: from.y,
+          toX: to.x, toY: to.y,
+          progress: 0,
+          vx: 0, vy: 0,
+          life: 60,
+          maxLife: 60,
+          size: 2 + Math.random() * 2,
+          hue: 160 + Math.random() * 30,
+          type: 'energy',
+        });
+      }
+
+      function spawnAmbientParticle() {
+        if (particles.length >= MAX_PARTICLES) return;
+        const w = source.width, h = source.height;
+        particles.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          vx: (Math.random() - 0.5) * 0.2,
+          vy: (Math.random() - 0.5) * 0.2,
+          life: 200 + Math.random() * 200,
+          maxLife: 400,
+          size: 1 + Math.random(),
+          hue: 250 + Math.random() * 40,
+          type: 'ambient',
+        });
+      }
+
+      let sparkleTimer = 0;
+      let energyTimer = 0;
+      let ambientTimer = 0;
+
+      function updateParticles(dt) {
+        // Spawn crystal sparkles
+        sparkleTimer -= dt;
+        if (sparkleTimer <= 0) {
+          sparkleTimer = 0.15;
+          for (let r = 0; r < GRID; r++) {
+            for (let c = 0; c < GRID; c++) {
+              const b = grid[r][c];
+              if (b && b.type === 'crystal' && Math.random() < 0.4) {
+                spawnCrystalSparkle(c, r, b.tier);
+              }
+            }
+          }
+        }
+
+        // Spawn energy flow particles
+        energyTimer -= dt;
+        if (energyTimer <= 0) {
+          energyTimer = 0.3;
+          for (let r = 0; r < GRID; r++) {
+            for (let c = 0; c < GRID; c++) {
+              const b = grid[r][c];
+              if (b && b.type === 'collector') {
+                const adj = getAdjacent(c, r);
+                for (const a of adj) {
+                  if (a.building.type === 'crystal' && Math.random() < 0.5) {
+                    spawnEnergyParticle(a.col, a.row, c, r);
+                  }
+                }
+                // Flow from collector toward nexus
+                if (Math.random() < 0.3) {
+                  spawnEnergyParticle(c, r, nexusPos.col, nexusPos.row);
+                }
+              }
+            }
+          }
+        }
+
+        // Spawn ambient
+        ambientTimer -= dt;
+        if (ambientTimer <= 0) {
+          ambientTimer = 0.5;
+          if (particles.filter(p => p.type === 'ambient').length < 40) {
+            spawnAmbientParticle();
+          }
+        }
+
+        // Update all particles
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.life -= dt * 60;
+
+          if (p.type === 'energy') {
+            p.progress += dt * 1.2;
+            const t = p.progress;
+            const midY = (p.fromY + p.toY) / 2 - 15;
+            const omt = 1 - t;
+            p.x = omt * omt * p.fromX + 2 * omt * t * ((p.fromX + p.toX) / 2) + t * t * p.toX;
+            p.y = omt * omt * p.fromY + 2 * omt * t * midY + t * t * p.toY;
+            if (p.progress >= 1) p.life = 0;
+          } else {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.type === 'burst') {
+              p.vx *= 0.95;
+              p.vy *= 0.95;
+            }
+          }
+
+          if (p.life <= 0) {
+            particles.splice(i, 1);
+          }
+        }
+      }
+
+      // ─── Drawing Helpers ────────────────────────────────
+      function drawDiamond(x, y, w, h) {
+        ctx.beginPath();
+        ctx.moveTo(x, y - h / 2);
+        ctx.lineTo(x + w / 2, y);
+        ctx.lineTo(x, y + h / 2);
+        ctx.lineTo(x - w / 2, y);
+        ctx.closePath();
+      }
+
+      function drawIsland() {
+        const w = source.width, h = source.height;
+
+        // Island body — large diamond beneath grid
+        const c = getCenter();
+        const padX = TILE_W * 0.6;
+        const padY = TILE_H * 0.6;
+
+        // Corners of the grid in screen space
+        const top = isoToScreen(0, 0);
+        const right = isoToScreen(GRID - 1, 0);
+        const bottom = isoToScreen(GRID - 1, GRID - 1);
+        const left = isoToScreen(0, GRID - 1);
+
+        // Draw island shadow/glow below
+        const grad = ctx.createRadialGradient(c.x, bottom.y + 40, 10, c.x, bottom.y + 40, bottom.y - top.y + 80);
+        grad.addColorStop(0, 'rgba(80, 60, 160, 0.08)');
+        grad.addColorStop(1, 'rgba(80, 60, 160, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Island body polygon
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y - 8);
+        ctx.lineTo(right.x + padX, right.y);
+        ctx.lineTo(bottom.x, bottom.y + padY + 30);
+        ctx.lineTo(left.x - padX, left.y);
+        ctx.closePath();
+
+        const bodyGrad = ctx.createLinearGradient(c.x, top.y, c.x, bottom.y + padY + 30);
+        bodyGrad.addColorStop(0, '#1a1525');
+        bodyGrad.addColorStop(1, '#0a0a15');
+        ctx.fillStyle = bodyGrad;
+        ctx.fill();
+
+        // Edge glow
+        ctx.strokeStyle = 'rgba(100, 80, 200, 0.2)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      function drawGrid() {
+        ctx.strokeStyle = 'rgba(60, 80, 120, 0.12)';
+        ctx.lineWidth = 0.5;
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const pos = isoToScreen(c, r);
+            drawDiamond(pos.x, pos.y, TILE_W, TILE_H);
+            ctx.stroke();
+          }
+        }
+
+        // Hover highlight
+        if (hoverTile && inGrid(hoverTile.col, hoverTile.row)) {
+          const pos = isoToScreen(hoverTile.col, hoverTile.row);
+          drawDiamond(pos.x, pos.y, TILE_W, TILE_H);
+          ctx.strokeStyle = 'rgba(120, 100, 220, 0.35)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(100, 80, 200, 0.06)';
+          ctx.fill();
+        }
+      }
+
+      function drawCrystalNode(x, y, tier, t, seed) {
+        const info = BUILDINGS.crystal;
+        const color = info.colors[tier - 1];
+        const glow = info.glowRadius[tier - 1];
+        const pulse = 1 + 0.08 * Math.sin(t * 2 + seed);
+        const size = (12 + tier * 4) * pulse;
+
+        // Glow
+        const grad = ctx.createRadialGradient(x, y - 10, 0, x, y - 10, glow * pulse);
+        grad.addColorStop(0, color + 'aa');
+        grad.addColorStop(0.5, color + '44');
+        grad.addColorStop(1, color + '00');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glow * 2, y - 10 - glow * 2, glow * 4, glow * 4);
+
+        // Crystal diamond shape
+        ctx.fillStyle = color;
+        drawDiamond(x, y - 10, size, size * 1.4);
+        ctx.fill();
+
+        // Bright core
+        ctx.fillStyle = '#ffffff88';
+        drawDiamond(x, y - 10, size * 0.4, size * 0.6);
+        ctx.fill();
+      }
+
+      function drawCollector(x, y, tier, t, seed) {
+        const info = BUILDINGS.collector;
+        const color = info.colors[tier - 1];
+        const glow = info.glowRadius[tier - 1];
+        const radius = 10 + tier * 3;
+
+        // Glow
+        const grad = ctx.createRadialGradient(x, y - 8, 0, x, y - 8, glow);
+        grad.addColorStop(0, color + '66');
+        grad.addColorStop(1, color + '00');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glow * 2, y - 8 - glow * 2, glow * 4, glow * 4);
+
+        // Hexagonal base
+        ctx.fillStyle = '#0a2a1a';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
+          const px = x + Math.cos(a) * radius;
+          const py = y - 8 + Math.sin(a) * radius * 0.6;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Spinning ring(s)
+        const rings = tier;
+        for (let ri = 0; ri < rings; ri++) {
+          const dir = ri % 2 === 0 ? 1 : -1;
+          const ringR = radius * (0.7 + ri * 0.3);
+          const angle = t * 1.5 * dir + seed + ri * 2;
+          ctx.strokeStyle = color + (ri === 0 ? 'cc' : '88');
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(x, y - 8, ringR, ringR * 0.45, angle, 0, Math.PI * 0.8);
+          ctx.stroke();
+        }
+      }
+
+      function drawAmplifier(x, y, tier, t, seed) {
+        const info = BUILDINGS.amplifier;
+        const color = info.colors[tier - 1];
+        const glow = info.glowRadius[tier - 1];
+        const height = 25 + tier * 12;
+        const width = 6 + tier * 2;
+
+        // Glow
+        const grad = ctx.createRadialGradient(x, y - height / 2, 0, x, y - height / 2, glow);
+        grad.addColorStop(0, color + '55');
+        grad.addColorStop(1, color + '00');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glow * 2, y - height - glow, glow * 4, height + glow * 2);
+
+        // Prism body
+        const bodyGrad = ctx.createLinearGradient(x, y, x, y - height);
+        bodyGrad.addColorStop(0, '#4444ff');
+        bodyGrad.addColorStop(1, color);
+        ctx.fillStyle = bodyGrad;
+        ctx.beginPath();
+        ctx.moveTo(x - width / 2, y);
+        ctx.lineTo(x, y - height);
+        ctx.lineTo(x + width / 2, y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Upward column particles (drawn as part of building)
+        for (let i = 0; i < 3 + tier; i++) {
+          const phase = (t * 1.5 + seed + i * 0.7) % 1;
+          const py = y - phase * height;
+          const alpha = Math.sin(phase * Math.PI);
+          ctx.fillStyle = `hsla(290, 100%, 75%, ${alpha * 0.8})`;
+          ctx.beginPath();
+          ctx.arc(x + Math.sin(t * 3 + i * 2) * 3, py, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawNexus(x, y, level, t) {
+        const radius = 16 + level * 4;
+        const glowR = 50 + level * 12;
+        const breathe = 0.92 + 0.08 * Math.sin(t * 0.8);
+
+        // Large glow
+        const grad = ctx.createRadialGradient(x, y - 12, 0, x, y - 12, glowR * breathe);
+        grad.addColorStop(0, 'rgba(180, 120, 255, 0.25)');
+        grad.addColorStop(0.4, 'rgba(120, 80, 220, 0.1)');
+        grad.addColorStop(1, 'rgba(80, 50, 180, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glowR * 2, y - 12 - glowR * 2, glowR * 4, glowR * 4);
+
+        // Central orb
+        const orbGrad = ctx.createRadialGradient(x, y - 12, 0, x, y - 12, radius * breathe);
+        orbGrad.addColorStop(0, '#ffffffcc');
+        orbGrad.addColorStop(0.3, '#cc88ffaa');
+        orbGrad.addColorStop(0.7, '#8844cc66');
+        orbGrad.addColorStop(1, '#44228800');
+        ctx.fillStyle = orbGrad;
+        ctx.beginPath();
+        ctx.arc(x, y - 12, radius * breathe, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Orbiting dots
+        const orbitR = radius * 1.8;
+        const dotCount = 4 + level;
+        for (let i = 0; i < dotCount; i++) {
+          const angle = t * 0.5 + (i / dotCount) * Math.PI * 2;
+          const dx = Math.cos(angle) * orbitR;
+          const dy = Math.sin(angle) * orbitR * 0.45;
+          ctx.fillStyle = `hsla(${270 + i * 30}, 80%, 75%, 0.7)`;
+          ctx.beginPath();
+          ctx.arc(x + dx, y - 12 + dy, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Level indicator
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(200, 160, 255, 0.6)';
+        ctx.fillText(`Lv${level}`, x, y + radius * 0.7);
+      }
+
+      function drawEnergyBeams(t) {
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = grid[r][c];
+            if (!b || b.type !== 'collector') continue;
+            const adj = getAdjacent(c, r);
+            const from = isoToScreen(c, r);
+            for (const a of adj) {
+              if (a.building.type !== 'crystal') continue;
+              const to = isoToScreen(a.col, a.row);
+              const alpha = 0.15 + 0.1 * Math.sin(t * 3 + b.seed + a.col * 7);
+              ctx.strokeStyle = `rgba(100, 255, 200, ${alpha})`;
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.moveTo(from.x, from.y - 8);
+              ctx.lineTo(to.x, to.y - 10);
+              ctx.stroke();
+            }
+            // Beam to nexus
+            const nPos = isoToScreen(nexusPos.col, nexusPos.row);
+            const alpha = 0.08 + 0.06 * Math.sin(t * 2 + b.seed);
+            ctx.strokeStyle = `rgba(180, 120, 255, ${alpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(from.x, from.y - 8);
+            ctx.lineTo(nPos.x, nPos.y - 12);
+            ctx.stroke();
+          }
+        }
+      }
+
+      function drawParticles() {
+        for (const p of particles) {
+          const alpha = Math.max(0, p.life / p.maxLife);
+          const s = p.type === 'ambient' ? 40 : 80;
+          const l = p.type === 'ambient' ? 40 : 70;
+          ctx.fillStyle = `hsla(${p.hue}, ${s}%, ${l}%, ${alpha})`;
+
+          if (p.type === 'energy') {
+            // Brighter energy particles
+            ctx.fillStyle = `hsla(${p.hue}, 90%, 75%, ${alpha * 0.9})`;
+          }
+
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawHUD() {
+        const w = source.width;
+        const h = source.height;
+
+        // Resources — top left
+        ctx.font = 'bold 16px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        const shardsText = formatNum(resources.shards);
+        const shardsRate = `+${formatNum(production.shards)}/s`;
+        ctx.fillStyle = '#66bbff';
+        ctx.fillText(`Shards: ${shardsText}`, 18, 18);
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.4)';
+        ctx.font = '12px monospace';
+        ctx.fillText(shardsRate, 18, 38);
+
+        ctx.font = 'bold 16px monospace';
+        const energyText = formatNum(resources.energy);
+        const energyRate = `+${formatNum(production.energy)}/s`;
+        ctx.fillStyle = '#ffcc44';
+        ctx.fillText(`Energy: ${energyText}`, 18, 58);
+        ctx.fillStyle = 'rgba(255, 200, 80, 0.4)';
+        ctx.font = '12px monospace';
+        ctx.fillText(energyRate, 18, 78);
+
+        // Nexus level — top right
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#cc88ff';
+        ctx.fillText(`Nexus Lv.${nexusLevel}`, w - 18, 18);
+
+        // Controls — bottom center
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.13)';
+        ctx.fillText('click tile to build \u00b7 click building to upgrade \u00b7 P panel \u00b7 E toggle \u00b7 R reset', w / 2, h - 16);
+      }
+
+      function formatNum(n) {
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        if (n >= 100) return Math.floor(n).toString();
+        return n.toFixed(1);
+      }
+
+      // ─── Shop Panel UI ──────────────────────────────────
+      function showBuildPanel(col, row, sx, sy) {
+        shopTile = { col, row };
+        shopMode = 'build';
+        let html = '<h3>Build</h3>';
+
+        for (const type of ['crystal', 'collector', 'amplifier']) {
+          const info = BUILDINGS[type];
+          const cost = getBuildCost(type);
+          const afford = canAfford(info.costType, cost);
+          const unit = info.costType === 'shards' ? 'shards' : 'energy';
+          html += `<button data-action="build" data-type="${type}" ${afford ? '' : 'disabled'}>`;
+          html += `${info.name} — ${cost} ${unit}`;
+          html += `</button>`;
+        }
+
+        shop.innerHTML = html;
+        positionShop(sx, sy);
+        shop.style.display = 'block';
+        bindShopButtons();
+      }
+
+      function showUpgradePanel(col, row, sx, sy) {
+        const b = grid[row][col];
+        if (!b) return;
+        shopTile = { col, row };
+        shopMode = 'upgrade';
+
+        if (b.type === 'nexus') {
+          const cost = getNexusUpgradeCost();
+          const afford = canAfford('energy', cost);
+          let html = `<h3>Nexus Lv.${nexusLevel}</h3>`;
+          html += `<div class="info">+${nexusLevel * 25}% global production</div>`;
+          html += `<button data-action="nexus-upgrade" ${afford ? '' : 'disabled'}>Upgrade — ${formatNum(cost)} energy</button>`;
+          shop.innerHTML = html;
+        } else {
+          const info = BUILDINGS[b.type];
+          let html = `<h3>${info.name} T${b.tier}</h3>`;
+
+          if (b.type === 'crystal') {
+            const rate = BUILDINGS.crystal.production.shards * Math.pow(2, b.tier - 1);
+            html += `<div class="info">${formatNum(rate)} shards/s</div>`;
+          } else if (b.type === 'collector') {
+            const rate = BUILDINGS.collector.production.energy * Math.pow(2, b.tier - 1);
+            html += `<div class="info">${formatNum(rate)} energy/s</div>`;
+          } else if (b.type === 'amplifier') {
+            html += `<div class="info">${BUILDINGS.amplifier.multiplier[b.tier - 1]}x area boost</div>`;
+          }
+
+          if (b.tier < 3) {
+            const cost = getUpgradeCost(b.type, b.tier);
+            const costType = UPGRADE_COSTS[b.type].costType;
+            const afford = canAfford(costType, cost);
+            html += `<button data-action="upgrade" ${afford ? '' : 'disabled'}>Upgrade to T${b.tier + 1} — ${formatNum(cost)} ${costType}</button>`;
+          } else {
+            html += `<div class="info" style="color:#88ff88">Max tier</div>`;
+          }
+
+          html += `<button data-action="sell">Sell (${Math.floor(info.baseCost * 0.5)} ${info.costType})</button>`;
+          shop.innerHTML = html;
+        }
+
+        positionShop(sx, sy);
+        shop.style.display = 'block';
+        bindShopButtons();
+      }
+
+      function positionShop(sx, sy) {
+        const pad = 12;
+        let left = sx + 20;
+        let top = sy - 40;
+        // Clamp to viewport
+        const rect = shop.getBoundingClientRect();
+        const w = 200, h = 160;
+        if (left + w > window.innerWidth - pad) left = sx - w - 20;
+        if (top + h > window.innerHeight - pad) top = window.innerHeight - pad - h;
+        if (top < pad) top = pad;
+        if (left < pad) left = pad;
+        shop.style.left = left + 'px';
+        shop.style.top = top + 'px';
+      }
+
+      function bindShopButtons() {
+        shop.querySelectorAll('button').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const action = btn.dataset.action;
+            if (!shopTile) return;
+            const { col, row } = shopTile;
+
+            if (action === 'build') {
+              placeBuilding(col, row, btn.dataset.type);
+              hideShop();
+            } else if (action === 'upgrade') {
+              upgradeBuilding(col, row);
+              hideShop();
+            } else if (action === 'nexus-upgrade') {
+              upgradeNexus();
+              hideShop();
+            } else if (action === 'sell') {
+              sellBuilding(col, row);
+              hideShop();
+            }
+          });
+        });
+      }
+
+      function hideShop() {
+        shop.style.display = 'none';
+        shopTile = null;
+        shopMode = null;
+      }
+
+      // ─── Input ──────────────────────────────────────────
+      source.addEventListener('mousemove', (e) => {
+        const rect = source.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const iso = screenToIso(sx, sy);
+        if (inGrid(iso.col, iso.row)) {
+          hoverTile = iso;
+        } else {
+          hoverTile = null;
+        }
+      });
+
+      source.addEventListener('mouseleave', () => { hoverTile = null; });
+
+      source.addEventListener('click', (e) => {
+        const rect = source.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const iso = screenToIso(sx, sy);
+
+        if (!inGrid(iso.col, iso.row)) {
+          hideShop();
+          return;
+        }
+
+        const b = grid[iso.row][iso.col];
+
+        if (b) {
+          // Click boost for crystals
+          if (b.type === 'crystal') {
+            const yield_ = BUILDINGS.crystal.clickYield * Math.pow(2, b.tier - 1);
+            resources.shards += yield_;
+            spawnClickBurst(iso.col, iso.row);
+          }
+          showUpgradePanel(iso.col, iso.row, e.clientX, e.clientY);
+        } else {
+          showBuildPanel(iso.col, iso.row, e.clientX, e.clientY);
+        }
+      });
+
+      // Prevent click on shop from propagating to canvas
+      shop.addEventListener('click', (e) => e.stopPropagation());
+
+      document.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        if (key === 'p') ascii.togglePanel();
+        if (key === 'e') ascii.set('enabled', !ascii.get('enabled'));
+        if (key === 'escape') hideShop();
+        if (key === 'r') {
+          const now = performance.now();
+          if (now - resetTimer < 1000) {
+            resetGame();
+            resetTimer = 0;
+          } else {
+            resetTimer = now;
+          }
+        }
+      });
+
+      // ─── Save / Load ───────────────────────────────────
+      const SAVE_KEY = 'ascii-ify-idle-save';
+      const SAVE_VERSION = 1;
+
+      function saveGame() {
+        const data = {
+          v: SAVE_VERSION,
+          grid: grid.map(row => row.map(cell => cell ? { t: cell.type, r: cell.tier, s: cell.seed } : null)),
+          shards: resources.shards,
+          energy: resources.energy,
+          nexus: nexusLevel,
+        };
+        try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (_) {}
+      }
+
+      function loadGame() {
+        try {
+          const raw = localStorage.getItem(SAVE_KEY);
+          if (!raw) return false;
+          const data = JSON.parse(raw);
+          if (data.v !== SAVE_VERSION) return false;
+          for (let r = 0; r < GRID; r++) {
+            for (let c = 0; c < GRID; c++) {
+              const cell = data.grid[r]?.[c];
+              grid[r][c] = cell ? { type: cell.t, tier: cell.r, seed: cell.s } : null;
+            }
+          }
+          resources.shards = data.shards || 0;
+          resources.energy = data.energy || 0;
+          nexusLevel = data.nexus || 1;
+          // Ensure nexus exists
+          if (!grid[nexusPos.row][nexusPos.col] || grid[nexusPos.row][nexusPos.col].type !== 'nexus') {
+            grid[nexusPos.row][nexusPos.col] = { type: 'nexus', tier: 1, seed: Math.random() * 1000 };
+          }
+          calculateProduction();
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function resetGame() {
+        localStorage.removeItem(SAVE_KEY);
+        resources.shards = 15;
+        resources.energy = 0;
+        nexusLevel = 1;
+        particles = [];
+        initGrid();
+        calculateProduction();
+        hideShop();
+      }
+
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        // Accumulate resources
+        resources.shards += production.shards * dt;
+        resources.energy += production.energy * dt;
+
+        // Update particles
+        updateParticles(dt);
+
+        // Auto-save
+        saveTimer -= dt;
+        if (saveTimer <= 0) {
+          saveTimer = 10;
+          saveGame();
+        }
+      }
+
+      // ─── Draw ───────────────────────────────────────────
+      function draw(t) {
+        const w = source.width, h = source.height;
+
+        // Clear
+        ctx.fillStyle = '#050510';
+        ctx.fillRect(0, 0, w, h);
+
+        // Background stars
+        for (const s of bgStars) {
+          const twinkle = 0.5 + 0.5 * Math.sin(t * s.speed + s.phase);
+          ctx.fillStyle = `rgba(180, 170, 220, ${s.brightness * twinkle})`;
+          ctx.beginPath();
+          ctx.arc(s.x * w, s.y * h, 0.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Island body
+        drawIsland();
+
+        // Grid lines
+        drawGrid();
+
+        // Energy beams (below buildings)
+        drawEnergyBeams(t);
+
+        // Buildings — back to front (iso sort)
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = grid[r][c];
+            if (!b) continue;
+            const pos = isoToScreen(c, r);
+            const x = pos.x, y = pos.y;
+
+            if (b.type === 'crystal')     drawCrystalNode(x, y, b.tier, t, b.seed);
+            else if (b.type === 'collector')  drawCollector(x, y, b.tier, t, b.seed);
+            else if (b.type === 'amplifier')  drawAmplifier(x, y, b.tier, t, b.seed);
+            else if (b.type === 'nexus')      drawNexus(x, y, nexusLevel, t);
+          }
+        }
+
+        // Particles (above buildings)
+        drawParticles();
+
+        // HUD
+        drawHUD();
+      }
+
+      // ─── ascii-ify Setup ────────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#050510',
+        sourceOpacity: 0,
+        speed: 1,
+      });
+
+      // Layer 1 — Ground & Structure: blocks + vapor
+      ascii.addLayer({
+        source,
+        fontSize: 18,
+        charset: 'blocks',
+        colorScheme: 'vapor',
+        pattern: 'diamond',
+        patternMix: 0.08,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2 — Detail & Energy: density + neon
+      ascii.addLayer({
+        source,
+        fontSize: 10,
+        charset: 'density',
+        colorScheme: 'neon',
+        blendMode: 'add',
+        opacity: 0.8,
+      });
+
+      // Layer 3 — Atmosphere: braille + ocean
+      ascii.addLayer({
+        source,
+        fontSize: 6,
+        charset: 'braille',
+        colorScheme: 'ocean',
+        pattern: 'breathing',
+        patternMix: 0.2,
+        blendMode: 'add',
+        opacity: 0.25,
+      });
+
+      // ─── Init & Main Loop ───────────────────────────────
+      initGrid();
+      initStars();
+      if (!loadGame()) {
+        calculateProduction();
+      }
+      window.addEventListener('beforeunload', saveGame);
+
+      let prevTime = performance.now();
+
+      function frame(now) {
+        const dt = Math.min((now - prevTime) / 1000, 0.05);
+        prevTime = now;
+        time = now * 0.001;
+
+        update(dt);
+        draw(time);
+        ascii.render();
+
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>
