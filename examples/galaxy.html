@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Galaxy</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Galaxy Parameters ────────────────────────────────
+      const NUM_STARS = 2500;
+      const NUM_ARMS = 3;
+      const ARM_SPREAD = 0.45;        // angular spread of each arm
+      const SPIRAL_TIGHTNESS = 0.3;   // logarithmic spiral factor
+      const GALAXY_RADIUS_FRAC = 0.35; // fraction of min(w,h)
+      const ROTATION_SPEED = 0.015;    // base rotation rad/s
+      const CORE_RADIUS_FRAC = 0.06;
+
+      // ─── Star Generation ──────────────────────────────────
+      // Each star: { arm, armAngle, dist, orbitSpeed, size, brightness, hue, sat, light }
+      const stars = [];
+
+      function initStars() {
+        stars.length = 0;
+        for (let i = 0; i < NUM_STARS; i++) {
+          const arm = Math.floor(Math.random() * NUM_ARMS);
+          const armBaseAngle = (arm / NUM_ARMS) * Math.PI * 2;
+
+          // Distance from center: biased toward inner regions for density
+          const t = Math.random();
+          const dist = Math.pow(t, 0.6); // 0..1 normalized distance
+
+          // Angular offset along the spiral arm (logarithmic spiral)
+          const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+          const scatter = (Math.random() - 0.5) * ARM_SPREAD * (0.3 + dist * 0.7);
+          const armAngle = armBaseAngle + spiralAngle + scatter;
+
+          // Keplerian orbital speed: faster near center
+          const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+
+          // Size: inner stars slightly larger (brighter core region)
+          const size = 0.5 + Math.random() * 2.5 * (1 - dist * 0.5);
+
+          // Brightness
+          const brightness = 0.3 + Math.random() * 0.7 * (1 - dist * 0.3);
+
+          // Color temperature: warm near center, cool at edges
+          // Inner: yellow-white (hue 40-60, high lightness)
+          // Outer: blue-purple (hue 220-280)
+          let hue, sat, light;
+          if (dist < 0.2) {
+            hue = 30 + Math.random() * 40;    // warm yellow/white
+            sat = 40 + Math.random() * 30;
+            light = 70 + Math.random() * 25;
+          } else if (dist < 0.5) {
+            hue = 40 + Math.random() * 60 + dist * 200; // transition
+            sat = 50 + Math.random() * 30;
+            light = 50 + Math.random() * 30;
+          } else {
+            hue = 200 + Math.random() * 80;   // cool blues/purples
+            sat = 50 + Math.random() * 40;
+            light = 35 + Math.random() * 35;
+          }
+
+          stars.push({
+            arm, armAngle, dist, orbitSpeed, size, brightness,
+            hue, sat, light,
+            // Perturbation state for gravitational pull
+            dx: 0, dy: 0,
+            // Original angle for resettling
+            baseAngle: armAngle,
+          });
+        }
+      }
+      initStars();
+
+      // ─── Dust Lane Stars (darker particles between arms) ─
+      const NUM_DUST = 800;
+      const dustParticles = [];
+
+      function initDust() {
+        dustParticles.length = 0;
+        for (let i = 0; i < NUM_DUST; i++) {
+          const arm = Math.floor(Math.random() * NUM_ARMS);
+          const armBaseAngle = (arm / NUM_ARMS) * Math.PI * 2;
+          const t = Math.random();
+          const dist = Math.pow(t, 0.5);
+
+          // Dust sits between arms: offset by half an arm spacing
+          const interArmOffset = Math.PI / NUM_ARMS;
+          const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+          const scatter = (Math.random() - 0.5) * ARM_SPREAD * 1.5;
+          const armAngle = armBaseAngle + spiralAngle + interArmOffset + scatter;
+
+          const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+
+          dustParticles.push({
+            armAngle, dist, orbitSpeed,
+            opacity: 0.05 + Math.random() * 0.12,
+            size: 3 + Math.random() * 8,
+            baseAngle: armAngle,
+            dx: 0, dy: 0,
+          });
+        }
+      }
+      initDust();
+
+      // ─── Camera / Zoom ────────────────────────────────────
+      let zoom = 1.0;
+      const ZOOM_MIN = 0.5;
+      const ZOOM_MAX = 2.0;
+
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        zoom -= e.deltaY * 0.001;
+        zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+      }, { passive: false });
+
+      // ─── Mouse Gravity Well ───────────────────────────────
+      let mouseDown = false;
+      let mouseX = 0;
+      let mouseY = 0;
+
+      window.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mouseup', () => {
+        mouseDown = false;
+      });
+
+      // Touch support
+      window.addEventListener('touchstart', (e) => {
+        mouseDown = true;
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      });
+      window.addEventListener('touchmove', (e) => {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      });
+      window.addEventListener('touchend', () => {
+        mouseDown = false;
+      });
+
+      // ─── Draw Galaxy ──────────────────────────────────────
+      let globalTime = 0;
+
+      function drawGalaxy(timestamp) {
+        const dt = 1 / 60;
+        globalTime += dt;
+
+        const w = source.width;
+        const h = source.height;
+        const cx = w / 2;
+        const cy = h / 2;
+        const galaxyRadius = Math.min(w, h) * GALAXY_RADIUS_FRAC * zoom;
+        const coreRadius = Math.min(w, h) * CORE_RADIUS_FRAC * zoom;
+        const rotation = globalTime * ROTATION_SPEED;
+
+        // Clear
+        ctx.fillStyle = '#04040a';
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Background: faint distant stars ──
+        ctx.save();
+        if (!drawGalaxy._bgStars) {
+          drawGalaxy._bgStars = [];
+          for (let i = 0; i < 200; i++) {
+            drawGalaxy._bgStars.push({
+              x: Math.random(),
+              y: Math.random(),
+              r: 0.3 + Math.random() * 0.8,
+              b: 0.15 + Math.random() * 0.35,
+              twinkleSpeed: 0.5 + Math.random() * 2,
+              twinklePhase: Math.random() * Math.PI * 2,
+            });
+          }
+        }
+        for (const s of drawGalaxy._bgStars) {
+          const alpha = s.b * (0.6 + 0.4 * Math.sin(globalTime * s.twinkleSpeed + s.twinklePhase));
+          ctx.fillStyle = `rgba(200, 210, 255, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        // ── Dust lanes (dark absorbing regions between arms) ──
+        for (const d of dustParticles) {
+          const angle = d.armAngle + rotation * d.orbitSpeed;
+          let sx = cx + Math.cos(angle) * d.dist * galaxyRadius + d.dx;
+          let sy = cy + Math.sin(angle) * d.dist * galaxyRadius * 0.55 + d.dy; // flatten elliptically
+
+          // Gravitational perturbation settle-back
+          if (!mouseDown) {
+            d.dx *= 0.96;
+            d.dy *= 0.96;
+          } else {
+            const gdx = mouseX - sx;
+            const gdy = mouseY - sy;
+            const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+            const pullRadius = 250;
+            if (gDist < pullRadius) {
+              const force = (1 - gDist / pullRadius) * 2.5;
+              d.dx += gdx * force * dt * 0.3;
+              d.dy += gdy * force * dt * 0.3;
+            }
+            d.dx *= 0.99;
+            d.dy *= 0.99;
+          }
+
+          ctx.fillStyle = `rgba(4, 4, 15, ${d.opacity})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, d.size * zoom, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Core glow ──
+        const coreGlow1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 3);
+        coreGlow1.addColorStop(0, 'rgba(255, 240, 200, 0.45)');
+        coreGlow1.addColorStop(0.2, 'rgba(255, 220, 150, 0.25)');
+        coreGlow1.addColorStop(0.5, 'rgba(255, 180, 100, 0.08)');
+        coreGlow1.addColorStop(1, 'rgba(255, 150, 80, 0)');
+        ctx.fillStyle = coreGlow1;
+        ctx.fillRect(0, 0, w, h);
+
+        // Inner bright core
+        const coreGlow2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius);
+        coreGlow2.addColorStop(0, 'rgba(255, 255, 240, 0.9)');
+        coreGlow2.addColorStop(0.3, 'rgba(255, 240, 200, 0.5)');
+        coreGlow2.addColorStop(0.7, 'rgba(255, 200, 130, 0.15)');
+        coreGlow2.addColorStop(1, 'rgba(200, 150, 100, 0)');
+        ctx.fillStyle = coreGlow2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Pulsing core
+        const pulse = 0.8 + 0.2 * Math.sin(globalTime * 0.5);
+        const coreGlow3 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 0.5 * pulse);
+        coreGlow3.addColorStop(0, `rgba(255, 255, 250, ${0.8 * pulse})`);
+        coreGlow3.addColorStop(1, 'rgba(255, 230, 180, 0)');
+        ctx.fillStyle = coreGlow3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreRadius * 0.5 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        // ── Stars (spiral arms) ──
+        for (const s of stars) {
+          const angle = s.armAngle + rotation * s.orbitSpeed;
+          let sx = cx + Math.cos(angle) * s.dist * galaxyRadius + s.dx;
+          let sy = cy + Math.sin(angle) * s.dist * galaxyRadius * 0.55 + s.dy; // elliptical flattening
+
+          // Gravitational perturbation
+          if (!mouseDown) {
+            s.dx *= 0.96;
+            s.dy *= 0.96;
+          } else {
+            const gdx = mouseX - sx;
+            const gdy = mouseY - sy;
+            const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+            const pullRadius = 300;
+            if (gDist < pullRadius) {
+              const force = (1 - gDist / pullRadius) * 3;
+              s.dx += gdx * force * dt * 0.4;
+              s.dy += gdy * force * dt * 0.4;
+            }
+            s.dx *= 0.99;
+            s.dy *= 0.99;
+          }
+
+          // Twinkle
+          const twinkle = 0.7 + 0.3 * Math.sin(globalTime * 3 + s.armAngle * 100 + s.dist * 50);
+          const alpha = s.brightness * twinkle;
+
+          // Glow for brighter stars
+          if (s.size > 1.5 && s.brightness > 0.6) {
+            const glowRadius = s.size * zoom * 3;
+            const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowRadius);
+            glow.addColorStop(0, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha * 0.3})`);
+            glow.addColorStop(1, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, 0)`);
+            ctx.fillStyle = glow;
+            ctx.fillRect(sx - glowRadius, sy - glowRadius, glowRadius * 2, glowRadius * 2);
+          }
+
+          // Star point
+          ctx.fillStyle = `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.size * zoom * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Outer halo (faint diffuse glow) ──
+        const halo = ctx.createRadialGradient(cx, cy, galaxyRadius * 0.3, cx, cy, galaxyRadius * 1.2);
+        halo.addColorStop(0, 'rgba(100, 80, 160, 0.02)');
+        halo.addColorStop(0.5, 'rgba(60, 50, 120, 0.015)');
+        halo.addColorStop(1, 'rgba(30, 20, 60, 0)');
+        ctx.fillStyle = halo;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#04040a',
+        sourceOpacity: 0,
+      });
+
+      // Layer 1 (core): large blocks, fire palette
+      const coreLayer = ascii.addLayer({
+        source: source,
+        fontSize: 18,
+        charset: 'blocks',
+        colorScheme: 'fire',
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2 (arms/stars): small density characters, vapor palette
+      const armsLayer = ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'vapor',
+        blendMode: 'add',
+        opacity: 0.6,
+      });
+
+      // Layer 3 (cosmic dust): braille characters, ocean palette with moire pattern
+      const dustLayer = ascii.addLayer({
+        source: source,
+        fontSize: 12,
+        charset: 'braille',
+        colorScheme: 'ocean',
+        pattern: 'moiré',
+        patternMix: 0.5,
+        blendMode: 'add',
+        opacity: 0.15,
+      });
+
+      // ─── Keyboard Controls ────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+      });
+
+      // ─── Main Loop ────────────────────────────────────────
+      function loop(time) {
+        drawGalaxy(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

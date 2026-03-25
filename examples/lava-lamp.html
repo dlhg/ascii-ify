@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Lava Lamp</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Metaball Blobs ───────────────────────────────────
+      class Blob {
+        constructor(x, y, radius, vy) {
+          this.x = x;
+          this.y = y;
+          this.radius = radius;
+          this.vx = (Math.random() - 0.5) * 0.4;
+          this.vy = vy !== undefined ? vy : (Math.random() - 0.5) * 1.2;
+          this.baseVx = this.vx;
+          this.phase = Math.random() * Math.PI * 2;
+          this.driftFreq = 0.3 + Math.random() * 0.4;
+          this.driftAmp = 0.3 + Math.random() * 0.5;
+          this.pulsePhase = Math.random() * Math.PI * 2;
+          this.pulseFreq = 0.5 + Math.random() * 0.5;
+          this.pulseAmp = 0.08 + Math.random() * 0.07;
+        }
+
+        update(dt, w, h) {
+          const t = performance.now() * 0.001;
+
+          // Buoyancy: blobs near bottom rise, blobs near top sink
+          const normalizedY = this.y / h;
+          const buoyancy = (normalizedY - 0.5) * -0.015;
+          this.vy += buoyancy;
+
+          // Gentle thermal drift — sinusoidal horizontal wander
+          this.vx = this.baseVx + Math.sin(t * this.driftFreq + this.phase) * this.driftAmp;
+
+          // Damping for smooth motion
+          this.vy *= 0.998;
+          this.vx *= 0.995;
+
+          // Clamp max speed
+          const maxSpeed = 1.8;
+          this.vy = Math.max(-maxSpeed, Math.min(maxSpeed, this.vy));
+          this.vx = Math.max(-maxSpeed, Math.min(maxSpeed, this.vx));
+
+          this.x += this.vx * dt * 60;
+          this.y += this.vy * dt * 60;
+
+          // Radius pulsing
+          this.currentRadius = this.radius * (1 + Math.sin(t * this.pulseFreq + this.pulsePhase) * this.pulseAmp);
+
+          // Vertical wrapping with margin
+          const margin = this.radius * 2;
+          if (this.y < -margin) {
+            this.y = h + margin * 0.5;
+          } else if (this.y > h + margin) {
+            this.y = -margin * 0.5;
+          }
+
+          // Horizontal soft bounce off walls
+          if (this.x < this.radius) {
+            this.x = this.radius;
+            this.vx = Math.abs(this.vx) * 0.5;
+            this.baseVx = Math.abs(this.baseVx);
+          } else if (this.x > w - this.radius) {
+            this.x = w - this.radius;
+            this.vx = -Math.abs(this.vx) * 0.5;
+            this.baseVx = -Math.abs(this.baseVx);
+          }
+        }
+      }
+
+      // Initialize blobs scattered across the canvas
+      const blobs = [];
+      function initBlobs() {
+        blobs.length = 0;
+        const w = source.width;
+        const h = source.height;
+        const count = 7;
+        for (let i = 0; i < count; i++) {
+          const radius = 30 + Math.random() * 50;
+          const x = w * 0.15 + Math.random() * w * 0.7;
+          const y = h * 0.1 + Math.random() * h * 0.8;
+          const vy = (Math.random() - 0.5) * 1.0;
+          blobs.push(new Blob(x, y, radius, vy));
+        }
+      }
+      initBlobs();
+
+      // Click to spawn new blob
+      source.addEventListener('click', (e) => {
+        const rect = source.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * (source.width / rect.width);
+        const y = (e.clientY - rect.top) * (source.height / rect.height);
+        const radius = 35 + Math.random() * 40;
+        blobs.push(new Blob(x, y, radius, -1.0 - Math.random() * 0.8));
+        // Keep blob count reasonable
+        if (blobs.length > 16) blobs.shift();
+      });
+
+      // ─── Rendering ────────────────────────────────────────
+      // Render at reduced resolution for performance, then upscale
+      const scale = 4;
+      const offscreen = document.createElement('canvas');
+      const offCtx = offscreen.getContext('2d');
+
+      let lastTime = 0;
+
+      function drawSource(time) {
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+
+        const w = source.width;
+        const h = source.height;
+        const ow = Math.ceil(w / scale);
+        const oh = Math.ceil(h / scale);
+
+        if (offscreen.width !== ow || offscreen.height !== oh) {
+          offscreen.width = ow;
+          offscreen.height = oh;
+        }
+
+        // Update blob physics
+        for (const blob of blobs) {
+          blob.update(dt, w, h);
+        }
+
+        // Compute metaball field at reduced resolution
+        const imageData = offCtx.createImageData(ow, oh);
+        const data = imageData.data;
+
+        const threshold = 1.0;
+        const softEdge = 0.6;
+
+        for (let py = 0; py < oh; py++) {
+          for (let px = 0; px < ow; px++) {
+            // Map pixel back to full-res coordinates
+            const wx = px * scale + scale * 0.5;
+            const wy = py * scale + scale * 0.5;
+
+            // Sum metaball field contributions
+            let field = 0;
+            for (const blob of blobs) {
+              const dx = wx - blob.x;
+              const dy = wy - blob.y;
+              const distSq = dx * dx + dy * dy;
+              const r = blob.currentRadius || blob.radius;
+              field += (r * r) / (distSq + 1);
+            }
+
+            const idx = (py * ow + px) * 4;
+
+            if (field > softEdge) {
+              // Normalize field intensity for color mapping
+              const intensity = Math.min((field - softEdge) / (threshold * 2.5), 1.0);
+
+              // Warm lava palette: dark red -> red -> orange -> yellow -> white core
+              let r, g, b;
+              if (intensity < 0.25) {
+                // Dark red to red
+                const t = intensity / 0.25;
+                r = 60 + t * 140;
+                g = t * 15;
+                b = t * 5;
+              } else if (intensity < 0.5) {
+                // Red to orange
+                const t = (intensity - 0.25) / 0.25;
+                r = 200 + t * 55;
+                g = 15 + t * 100;
+                b = 5;
+              } else if (intensity < 0.75) {
+                // Orange to yellow
+                const t = (intensity - 0.5) / 0.25;
+                r = 255;
+                g = 115 + t * 120;
+                b = 5 + t * 30;
+              } else {
+                // Yellow to hot white
+                const t = (intensity - 0.75) / 0.25;
+                r = 255;
+                g = 235 + t * 20;
+                b = 35 + t * 160;
+              }
+
+              // Smooth fade at the outer edge
+              let alpha = 1;
+              if (field < threshold) {
+                alpha = (field - softEdge) / (threshold - softEdge);
+                alpha = alpha * alpha; // Ease-in for softer edges
+              }
+
+              data[idx]     = Math.min(255, r | 0);
+              data[idx + 1] = Math.min(255, g | 0);
+              data[idx + 2] = Math.min(255, b | 0);
+              data[idx + 3] = (alpha * 255) | 0;
+            } else {
+              // Background — very dark with subtle warm tint
+              data[idx]     = 8;
+              data[idx + 1] = 6;
+              data[idx + 2] = 10;
+              data[idx + 3] = 255;
+            }
+          }
+        }
+
+        offCtx.putImageData(imageData, 0, 0);
+
+        // Draw upscaled to main canvas
+        sCtx.imageSmoothingEnabled = true;
+        sCtx.imageSmoothingQuality = 'high';
+        sCtx.fillStyle = '#08060a';
+        sCtx.fillRect(0, 0, w, h);
+        sCtx.drawImage(offscreen, 0, 0, ow, oh, 0, 0, w, h);
+
+        // Add a subtle radial glow around each blob for extra warmth
+        for (const blob of blobs) {
+          const r = (blob.currentRadius || blob.radius) * 2.5;
+          const grad = sCtx.createRadialGradient(blob.x, blob.y, 0, blob.x, blob.y, r);
+          grad.addColorStop(0, 'rgba(255, 80, 20, 0.06)');
+          grad.addColorStop(0.5, 'rgba(200, 40, 10, 0.03)');
+          grad.addColorStop(1, 'rgba(100, 10, 0, 0)');
+          sCtx.fillStyle = grad;
+          sCtx.fillRect(blob.x - r, blob.y - r, r * 2, r * 2);
+        }
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+        speed: 1,
+      });
+
+      // Layer 1: Base — large block characters picking up the lava colors
+      ascii.addLayer({
+        source: source,
+        fontSize: 20,
+        charset: 'blocks',
+        colorScheme: 'fire',
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Shimmer — fine detail with plasma pattern
+      ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'fire',
+        pattern: 'plasma',
+        patternMix: 0.4,
+        blendMode: 'add',
+        opacity: 0.35,
+      });
+
+      // Layer 3: Ambient — braille overlay with breathing pattern
+      ascii.addLayer({
+        source: source,
+        fontSize: 14,
+        charset: 'braille',
+        colorScheme: 'vapor',
+        pattern: 'breathing',
+        patternMix: 0.7,
+        blendMode: 'add',
+        opacity: 0.2,
+      });
+
+      // Toggle panel with P key
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+      });
+
+      // ─── Animation Loop ───────────────────────────────────
+      function loop(time) {
+        drawSource(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

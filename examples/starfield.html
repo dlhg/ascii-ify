@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Starfield</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Starfield State ──────────────────────────────────
+      const NUM_STARS = 800;
+      const MAX_DEPTH = 1500;
+      const FOCAL_LENGTH = 300;
+
+      let speed = 1.0;
+      let mouseX = 0.5; // normalized 0–1
+      let mouseY = 0.5;
+
+      class Star {
+        constructor() {
+          this.reset(true);
+        }
+
+        reset(randomZ = false) {
+          // Spread stars in a wide volume around the camera axis
+          this.x = (Math.random() - 0.5) * 2000;
+          this.y = (Math.random() - 0.5) * 2000;
+          this.z = randomZ ? Math.random() * MAX_DEPTH : MAX_DEPTH;
+          this.prevScreenX = null;
+          this.prevScreenY = null;
+
+          // Color variation — mostly cool/white, occasional warm
+          const roll = Math.random();
+          if (roll < 0.65) {
+            // White / blue-white
+            const temp = 200 + Math.random() * 40;
+            const sat = 5 + Math.random() * 25;
+            const lit = 80 + Math.random() * 20;
+            this.color = `hsl(${temp} ${sat}% ${lit}%)`;
+          } else if (roll < 0.85) {
+            // Blue
+            const temp = 210 + Math.random() * 30;
+            const sat = 40 + Math.random() * 40;
+            const lit = 70 + Math.random() * 25;
+            this.color = `hsl(${temp} ${sat}% ${lit}%)`;
+          } else if (roll < 0.95) {
+            // Warm yellow/orange
+            const temp = 30 + Math.random() * 30;
+            const sat = 50 + Math.random() * 40;
+            const lit = 70 + Math.random() * 25;
+            this.color = `hsl(${temp} ${sat}% ${lit}%)`;
+          } else {
+            // Red/crimson
+            const temp = 0 + Math.random() * 20;
+            const sat = 60 + Math.random() * 30;
+            const lit = 60 + Math.random() * 20;
+            this.color = `hsl(${temp} ${sat}% ${lit}%)`;
+          }
+        }
+      }
+
+      const stars = [];
+      for (let i = 0; i < NUM_STARS; i++) {
+        stars.push(new Star());
+      }
+
+      // ─── Mouse / Input ────────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = e.clientY / window.innerHeight;
+      });
+
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        speed += e.deltaY * -0.002;
+        speed = Math.max(0.2, Math.min(5.0, speed));
+      }, { passive: false });
+
+      // Touch support for mobile
+      window.addEventListener('touchmove', (e) => {
+        const touch = e.touches[0];
+        mouseX = touch.clientX / window.innerWidth;
+        mouseY = touch.clientY / window.innerHeight;
+      });
+
+      // ─── Draw Starfield ───────────────────────────────────
+      function drawStarfield(dt) {
+        const w = source.width;
+        const h = source.height;
+
+        // Vanishing point follows mouse
+        const cx = w * mouseX;
+        const cy = h * mouseY;
+
+        // Clear to deep space
+        sCtx.fillStyle = '#02020a';
+        sCtx.fillRect(0, 0, w, h);
+
+        // Subtle radial glow at vanishing point for warp effect
+        const glowRadius = Math.min(w, h) * (0.3 + speed * 0.15);
+        const glow = sCtx.createRadialGradient(cx, cy, 0, cx, cy, glowRadius);
+        glow.addColorStop(0, `rgba(40, 60, 120, ${0.03 * speed})`);
+        glow.addColorStop(0.5, `rgba(20, 30, 80, ${0.015 * speed})`);
+        glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        sCtx.fillStyle = glow;
+        sCtx.fillRect(0, 0, w, h);
+
+        // Move & draw stars
+        const moveSpeed = 400 * speed * dt;
+
+        for (let i = 0; i < NUM_STARS; i++) {
+          const star = stars[i];
+
+          // Save previous screen position before moving
+          const prevZ = star.z;
+          const prevScreenX = prevZ > 0 ? (star.x / prevZ) * FOCAL_LENGTH + cx : null;
+          const prevScreenY = prevZ > 0 ? (star.y / prevZ) * FOCAL_LENGTH + cy : null;
+
+          // Move star toward camera
+          star.z -= moveSpeed;
+
+          // Respawn if behind camera or too close
+          if (star.z <= 1) {
+            star.reset();
+            continue;
+          }
+
+          // Project to 2D
+          const screenX = (star.x / star.z) * FOCAL_LENGTH + cx;
+          const screenY = (star.y / star.z) * FOCAL_LENGTH + cy;
+
+          // Skip if off screen (with generous margin for streaks)
+          const margin = 200;
+          if (screenX < -margin || screenX > w + margin || screenY < -margin || screenY > h + margin) {
+            continue;
+          }
+
+          // Brightness & size inversely proportional to depth
+          const depthFactor = 1 - star.z / MAX_DEPTH;
+          const brightness = Math.pow(depthFactor, 1.5);
+          const size = 0.5 + depthFactor * 3;
+
+          // Draw streak/trail line (warp effect)
+          if (prevScreenX !== null && prevZ > 1) {
+            const streakAlpha = brightness * 0.6;
+            sCtx.strokeStyle = star.color.replace(')', ` / ${streakAlpha})`).replace('hsl(', 'hsl(');
+
+            // Streak length scales with speed and proximity
+            const streakFactor = speed * depthFactor;
+            const trailX = prevScreenX + (prevScreenX - screenX) * streakFactor * 0.5;
+            const trailY = prevScreenY + (prevScreenY - screenY) * streakFactor * 0.5;
+
+            sCtx.lineWidth = Math.max(0.5, size * 0.6);
+            sCtx.beginPath();
+            sCtx.moveTo(trailX, trailY);
+            sCtx.lineTo(screenX, screenY);
+            sCtx.stroke();
+          }
+
+          // Draw star point
+          const alpha = brightness;
+          sCtx.globalAlpha = alpha;
+          sCtx.fillStyle = star.color;
+          sCtx.beginPath();
+          sCtx.arc(screenX, screenY, size, 0, Math.PI * 2);
+          sCtx.fill();
+
+          // Bright glow for close stars
+          if (depthFactor > 0.7) {
+            const glowAlpha = (depthFactor - 0.7) * 2.5;
+            sCtx.globalAlpha = glowAlpha * 0.3;
+            sCtx.beginPath();
+            sCtx.arc(screenX, screenY, size * 3, 0, Math.PI * 2);
+            sCtx.fill();
+          }
+
+          sCtx.globalAlpha = 1;
+        }
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#02020a',
+        sourceOpacity: 0,
+      });
+
+      // Layer 1: Distant stars — large, sparse, monochrome
+      const distantLayer = ascii.addLayer({
+        source: source,
+        fontSize: 16,
+        charset: 'minimal',
+        colorScheme: 'mono',
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Close stars / streaks — small, dense, neon glow
+      const streakLayer = ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'neon',
+        blendMode: 'add',
+        opacity: 0.7,
+      });
+
+      // Layer 3: Warp glow — braille tunnel overlay
+      const warpLayer = ascii.addLayer({
+        source: source,
+        fontSize: 10,
+        charset: 'braille',
+        colorScheme: 'ocean',
+        pattern: 'tunnel',
+        patternMix: 0.3,
+        blendMode: 'add',
+        opacity: 0.15,
+      });
+
+      // ─── Controls ─────────────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+      });
+
+      // ─── Main Loop ────────────────────────────────────────
+      let lastTime = 0;
+
+      function loop(time) {
+        const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
+        lastTime = time;
+
+        drawStarfield(dt);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

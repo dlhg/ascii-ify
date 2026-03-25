@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Pendulum Waves</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ─── Pendulum Config ──────────────────────────────────
+      const NUM_PENDULUMS = 15;
+      const CYCLE_DURATION = 60;      // seconds for the full wave cycle
+      const BOB_RADIUS = 17;
+      const TRAIL_LENGTH = 20;
+      const AMPLITUDE_RATIO = 0.35;   // fraction of canvas height
+
+      // Each pendulum i completes (51 + i) oscillations in CYCLE_DURATION seconds
+      // angular frequency = 2 * PI * (51 + i) / CYCLE_DURATION
+      function omega(i) {
+        return 2 * Math.PI * (51 + i) / CYCLE_DURATION;
+      }
+
+      // ─── State ────────────────────────────────────────────
+      let phaseOffset = 0;            // reset shifts this to re-align
+      let lastTime = 0;
+
+      // Trail history: array of arrays, one per pendulum
+      const trails = Array.from({ length: NUM_PENDULUMS }, () => []);
+
+      // ─── Click to Reset ───────────────────────────────────
+      source.addEventListener('click', () => {
+        // Snap all pendulums to the same phase by adjusting the offset
+        // We want sin(omega(i) * t + phaseOffset) to equal the same value
+        // for all i. The simplest reset: set phaseOffset so that at current
+        // time all pendulums are at phase 0 (i.e., centered, moving forward).
+        const t = lastTime * 0.001;
+        // Align to pendulum 0's current phase
+        phaseOffset = -omega(0) * t;
+        // Round to nearest full cycle so they start from aligned position
+        phaseOffset = -omega(0) * t;
+        // Clear trails for a clean restart
+        for (let i = 0; i < NUM_PENDULUMS; i++) {
+          trails[i].length = 0;
+        }
+      });
+
+      // ─── Draw ─────────────────────────────────────────────
+      function draw(time) {
+        const w = source.width, h = source.height;
+        lastTime = time;
+        const t = time * 0.001;
+
+        const amplitude = h * AMPLITUDE_RATIO;
+        const mountY = 40;  // y position of the mounting bar
+        const centerY = h * 0.45; // vertical center of swing
+
+        // ─── Background ───
+        const bg = ctx.createRadialGradient(w / 2, h * 0.4, 0, w / 2, h * 0.4, Math.max(w, h) * 0.8);
+        bg.addColorStop(0, '#0c0a14');
+        bg.addColorStop(1, '#06060e');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // ─── Mounting Bar ───
+        ctx.strokeStyle = 'rgba(150, 160, 180, 0.25)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(w * 0.04, mountY);
+        ctx.lineTo(w * 0.96, mountY);
+        ctx.stroke();
+
+        // Small mounting points
+        for (let i = 0; i < NUM_PENDULUMS; i++) {
+          const x = w * (0.08 + 0.84 * i / (NUM_PENDULUMS - 1));
+          ctx.beginPath();
+          ctx.arc(x, mountY, 3, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(150, 160, 180, 0.35)';
+          ctx.fill();
+        }
+
+        // ─── Pendulums ───
+        for (let i = 0; i < NUM_PENDULUMS; i++) {
+          const x = w * (0.08 + 0.84 * i / (NUM_PENDULUMS - 1));
+          const phase = omega(i) * t + phaseOffset;
+          const swing = Math.sin(phase);
+          const bobY = centerY + swing * amplitude;
+
+          // Store trail position
+          trails[i].push({ x, y: bobY, swing });
+          if (trails[i].length > TRAIL_LENGTH) {
+            trails[i].shift();
+          }
+
+          const hue = (i / NUM_PENDULUMS) * 360;
+
+          // ─── Motion Trail ───
+          for (let j = 0; j < trails[i].length - 1; j++) {
+            const trail = trails[i][j];
+            const alpha = (j + 1) / trails[i].length;
+            const trailRadius = BOB_RADIUS * 0.6 * alpha;
+            ctx.beginPath();
+            ctx.arc(trail.x, trail.y, trailRadius, 0, Math.PI * 2);
+            ctx.fillStyle = `hsla(${hue} 80% 55% / ${alpha * 0.25})`;
+            ctx.fill();
+          }
+
+          // ─── String / Rod ───
+          ctx.strokeStyle = `rgba(200, 210, 230, ${0.08 + 0.04 * Math.abs(swing)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, mountY);
+          ctx.lineTo(x, bobY);
+          ctx.stroke();
+
+          // ─── Glow Effect ───
+          const glowGrad = ctx.createRadialGradient(x, bobY, 0, x, bobY, BOB_RADIUS * 3);
+          glowGrad.addColorStop(0, `hsla(${hue} 90% 60% / 0.25)`);
+          glowGrad.addColorStop(0.4, `hsla(${hue} 80% 50% / 0.08)`);
+          glowGrad.addColorStop(1, 'transparent');
+          ctx.fillStyle = glowGrad;
+          ctx.beginPath();
+          ctx.arc(x, bobY, BOB_RADIUS * 3, 0, Math.PI * 2);
+          ctx.fill();
+
+          // ─── Bob ───
+          const bobGrad = ctx.createRadialGradient(
+            x - BOB_RADIUS * 0.3, bobY - BOB_RADIUS * 0.3, 0,
+            x, bobY, BOB_RADIUS
+          );
+          bobGrad.addColorStop(0, `hsla(${hue} 85% 75% / 1)`);
+          bobGrad.addColorStop(0.7, `hsla(${hue} 80% 55% / 1)`);
+          bobGrad.addColorStop(1, `hsla(${hue} 75% 35% / 1)`);
+          ctx.beginPath();
+          ctx.arc(x, bobY, BOB_RADIUS, 0, Math.PI * 2);
+          ctx.fillStyle = bobGrad;
+          ctx.fill();
+
+          // Specular highlight
+          ctx.beginPath();
+          ctx.arc(x - BOB_RADIUS * 0.25, bobY - BOB_RADIUS * 0.25, BOB_RADIUS * 0.35, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 255, 255, 0.15)`;
+          ctx.fill();
+        }
+
+        // ─── HUD ───
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+        ctx.fillText('click: reset phase   P: toggle panel', w - 10, h - 14);
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#06060e',
+        sourceOpacity: 0,
+      });
+
+      // Layer 1: Bobs and structure
+      const bobsLayer = ascii.addLayer({
+        source: source,
+        fontSize: 16,
+        charset: 'blocks',
+        colorScheme: 'rainbow',
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Motion trails
+      const trailsLayer = ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'vapor',
+        blendMode: 'add',
+        opacity: 0.5,
+      });
+
+      // Layer 3: Atmospheric
+      const atmosphereLayer = ascii.addLayer({
+        source: source,
+        fontSize: 12,
+        charset: 'braille',
+        colorScheme: 'ocean',
+        pattern: 'waves',
+        patternMix: 0.4,
+        blendMode: 'add',
+        opacity: 0.15,
+      });
+
+      // ─── Keyboard ──────────────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+        if (e.key === '1') bobsLayer.set('visible', !bobsLayer.get('visible'));
+        if (e.key === '2') trailsLayer.set('visible', !trailsLayer.get('visible'));
+        if (e.key === '3') atmosphereLayer.set('visible', !atmosphereLayer.get('visible'));
+      });
+
+      // ─── Main Loop ─────────────────────────────────────────
+      function loop(time) {
+        draw(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
