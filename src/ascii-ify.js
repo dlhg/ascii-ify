@@ -23,6 +23,8 @@ export class AsciiIfy extends EventEmitter {
     this._time = 0;
     this._colorPhase = 0;
     this._panel = null;
+    this._transitioning = false;
+    this._enableTimer = null;
 
     // Merge options with defaults
     this._params = { ...DEFAULTS, ...options };
@@ -253,6 +255,7 @@ export class AsciiIfy extends EventEmitter {
   /** Destroy the instance — remove overlay, detach observers, stop loop */
   destroy() {
     this.stop();
+    clearTimeout(this._enableTimer);
     if (this._panel) {
       this._panel.destroy();
       this._panel = null;
@@ -269,12 +272,37 @@ export class AsciiIfy extends EventEmitter {
   // ─── Internal ──────────────────────────────────────────
 
   _updateEnabled() {
+    clearTimeout(this._enableTimer);
+    const ms = 700;
+
     if (this._params.enabled) {
+      // Fade in: un-hide at opacity 0, then transition to 1
       this._canvas.style.display = '';
+      this._canvas.style.opacity = '0';
+      this._canvas.offsetHeight; // force reflow before adding transition
+      this._canvas.style.transition = `opacity ${ms}ms ease`;
+      this._canvas.style.opacity = '1';
+      this._source.style.transition = `opacity ${ms}ms ease`;
       this._source.style.opacity = String(this._params.sourceOpacity);
+      this._transitioning = true;
+      this._enableTimer = setTimeout(() => {
+        this._canvas.style.transition = '';
+        this._source.style.transition = '';
+        this._transitioning = false;
+      }, ms);
     } else {
-      this._canvas.style.display = 'none';
+      // Fade out: transition to 0, then hide
+      this._canvas.style.transition = `opacity ${ms}ms ease`;
+      this._canvas.style.opacity = '0';
+      this._source.style.transition = `opacity ${ms}ms ease`;
       this._source.style.opacity = '1';
+      this._transitioning = true;
+      this._enableTimer = setTimeout(() => {
+        this._canvas.style.display = 'none';
+        this._canvas.style.transition = '';
+        this._source.style.transition = '';
+        this._transitioning = false;
+      }, ms);
     }
   }
 
@@ -304,7 +332,7 @@ export class AsciiIfy extends EventEmitter {
   }
 
   _renderFrame() {
-    if (!this._params.enabled) return;
+    if (!this._params.enabled && !this._transitioning) return;
 
     const ctx = this._ctx;
     const w = this._width;
