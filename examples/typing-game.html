@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Typing Game</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ──────────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ─── Constants ──────────────────────────────────────────
+      const MAX_LIVES = 5;
+      const BASE_SPEED = 38;
+      const SPEED_PER_LEVEL = 7;
+      const MAX_SPEED = 120;
+      const BASE_SPAWN_INTERVAL = 2.2;
+      const MIN_SPAWN_INTERVAL = 0.55;
+      const WORDS_PER_LEVEL = 5;
+      const MAX_PARTICLES = 200;
+
+      // ─── Word Lists ─────────────────────────────────────────
+      const WORDS_SHORT = [
+        'the','and','for','are','but','not','you','all','can','had',
+        'was','one','our','out','day','get','has','him','how','its',
+        'may','new','now','old','see','way','who','did','let','say',
+        'she','too','use','run','put','set','try','ask','own','end',
+      ];
+      const WORDS_MEDIUM = [
+        'code','data','file','hack','link','loop','node','port','push',
+        'root','sync','type','user','void','wiki','array','bytes','cache',
+        'debug','error','flash','input','merge','parse','pixel','query',
+        'stack','token','patch','yield',
+      ];
+      const WORDS_LONG = [
+        'buffer','cipher','decode','filter','global','kernel','matrix',
+        'object','render','schema','script','server','socket','string',
+        'syntax','thread','vector','binary','compile','process','runtime',
+        'deploy','lambda','module','cursor','branch','import','export',
+      ];
+
+      // ─── Game State ─────────────────────────────────────────
+      let state = 'waiting';
+      let score = 0;
+      let combo = 0;
+      let bestCombo = 0;
+      let lives = MAX_LIVES;
+      let difficulty = 0;
+      let destroyedCount = 0;
+
+      let words = [];
+      let spawnTimer = 0;
+      let spawnInterval = BASE_SPAWN_INTERVAL;
+
+      let activeWord = null;
+      let typedChars = 0;
+
+      let particles = [];
+      let shakeTimer = 0;
+      let missFlash = 0;
+      let comboPopScale = 0;
+      let lastTime = 0;
+
+      // ─── Input ──────────────────────────────────────────────
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { ascii.togglePanel(); return; }
+        if (e.key === '`') { ascii.set('enabled', !ascii.get('enabled')); return; }
+
+        if (state === 'waiting' || state === 'gameover') {
+          if (e.key === ' ') { startGame(); e.preventDefault(); }
+          return;
+        }
+        if (state !== 'playing') return;
+
+        if (e.key === 'Backspace') {
+          if (activeWord) {
+            activeWord.active = false;
+            activeWord = null;
+            typedChars = 0;
+          }
+          e.preventDefault();
+          return;
+        }
+
+        if (e.key === ' ') { e.preventDefault(); return; }
+        if (e.key.length !== 1) return;
+        const typed = e.key.toLowerCase();
+
+        if (!activeWord) {
+          let best = null;
+          for (const w of words) {
+            if (w.text[0] === typed) {
+              if (!best || w.y > best.y) best = w;
+            }
+          }
+          if (best) {
+            activeWord = best;
+            best.active = true;
+            typedChars = 1;
+            best.flash = 1;
+          }
+          return;
+        }
+
+        const expected = activeWord.text[typedChars];
+        if (typed === expected) {
+          typedChars++;
+          activeWord.flash = 1;
+          if (typedChars >= activeWord.text.length) {
+            destroyWord(activeWord);
+          }
+        } else {
+          activeWord.active = false;
+          activeWord = null;
+          typedChars = 0;
+          combo = 0;
+          updateColorCycle();
+        }
+      });
+
+      // ─── Word Management ────────────────────────────────────
+      function pickWord() {
+        const r = Math.random();
+        if (difficulty < 3) {
+          return WORDS_SHORT[Math.floor(Math.random() * WORDS_SHORT.length)];
+        } else if (difficulty < 6) {
+          const pool = r < 0.4 ? WORDS_SHORT : WORDS_MEDIUM;
+          return pool[Math.floor(Math.random() * pool.length)];
+        } else {
+          const pool = r < 0.2 ? WORDS_SHORT : r < 0.55 ? WORDS_MEDIUM : WORDS_LONG;
+          return pool[Math.floor(Math.random() * pool.length)];
+        }
+      }
+
+      function findSpawnX(text) {
+        const w = source.width;
+        const fontSize = Math.min(w * 0.04, 36);
+        ctx.font = `bold ${fontSize}px monospace`;
+        const textWidth = ctx.measureText(text).width;
+        const margin = 20;
+        const minX = textWidth / 2 + margin;
+        const maxX = w - textWidth / 2 - margin;
+        if (maxX <= minX) return w / 2;
+
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const x = minX + Math.random() * (maxX - minX);
+          let overlaps = false;
+          for (const existing of words) {
+            if (existing.y < 60 && Math.abs(existing.x - x) < textWidth + 40) {
+              overlaps = true;
+              break;
+            }
+          }
+          if (!overlaps) return x;
+        }
+        return minX + Math.random() * (maxX - minX);
+      }
+
+      function spawnWord() {
+        const text = pickWord();
+        const speed = Math.min(BASE_SPEED + difficulty * SPEED_PER_LEVEL, MAX_SPEED);
+        words.push({
+          text,
+          x: findSpawnX(text),
+          y: -20,
+          speed: speed * (0.85 + Math.random() * 0.3),
+          flash: 0,
+          active: false,
+        });
+      }
+
+      function destroyWord(word) {
+        const basePoints = word.text.length * 10;
+        const comboBonus = combo * 5;
+        score += basePoints + comboBonus;
+
+        combo++;
+        if (combo > bestCombo) bestCombo = combo;
+        comboPopScale = 1;
+
+        spawnWordExplosion(word.x, word.y, word.text);
+
+        const idx = words.indexOf(word);
+        if (idx >= 0) words.splice(idx, 1);
+
+        activeWord = null;
+        typedChars = 0;
+
+        updateColorCycle();
+
+        destroyedCount++;
+        if (destroyedCount % WORDS_PER_LEVEL === 0) {
+          difficulty++;
+        }
+      }
+
+      function missWord(word) {
+        if (word === activeWord) {
+          activeWord = null;
+          typedChars = 0;
+        }
+        const idx = words.indexOf(word);
+        if (idx >= 0) words.splice(idx, 1);
+
+        lives--;
+        combo = 0;
+        updateColorCycle();
+        shakeTimer = 0.15;
+        missFlash = 1;
+
+        if (lives <= 0) {
+          state = 'gameover';
+          ascii.set('colorCycle', false);
+        }
+      }
+
+      // ─── Particles ──────────────────────────────────────────
+      function spawnWordExplosion(x, y, text) {
+        const charSpacing = 16;
+        const startX = x - (text.length * charSpacing) / 2;
+
+        for (let i = 0; i < text.length; i++) {
+          if (particles.length >= MAX_PARTICLES) break;
+          const cx = startX + i * charSpacing;
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 80 + Math.random() * 120;
+          particles.push({
+            char: text[i],
+            x: cx, y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed - 60,
+            life: 0.8 + Math.random() * 0.4,
+            maxLife: 1.2,
+            rotation: (Math.random() - 0.5) * 10,
+            size: 20 + Math.random() * 10,
+          });
+        }
+
+        for (let i = 0; i < 10; i++) {
+          if (particles.length >= MAX_PARTICLES) break;
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 40 + Math.random() * 80;
+          particles.push({
+            char: null,
+            x, y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 0.4 + Math.random() * 0.3,
+            maxLife: 0.7,
+            size: 3 + Math.random() * 4,
+          });
+        }
+      }
+
+      function updateParticles(dt) {
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.vy += 200 * dt;
+          p.vx *= 0.97;
+          p.life -= dt;
+          if (p.life <= 0) particles.splice(i, 1);
+        }
+      }
+
+      function drawParticles() {
+        for (const p of particles) {
+          const alpha = Math.max(0, p.life / p.maxLife);
+          if (p.char) {
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.rotation * (1 - alpha));
+            ctx.font = `bold ${p.size}px monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `rgba(100, 255, 200, ${alpha * 0.8})`;
+            ctx.fillText(p.char, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 255, 200, ${alpha * 0.6})`;
+            ctx.fill();
+          }
+        }
+      }
+
+      // ─── Game Logic ─────────────────────────────────────────
+      function startGame() {
+        state = 'playing';
+        score = 0;
+        combo = 0;
+        bestCombo = 0;
+        lives = MAX_LIVES;
+        difficulty = 0;
+        destroyedCount = 0;
+        words = [];
+        particles = [];
+        activeWord = null;
+        typedChars = 0;
+        spawnTimer = 0.5;
+        shakeTimer = 0;
+        missFlash = 0;
+        comboPopScale = 0;
+        ascii.set('colorCycle', false);
+        ascii.set('colorCycleRate', 0.3);
+      }
+
+      function update(dt) {
+        // Spawn words
+        spawnTimer -= dt;
+        if (spawnTimer <= 0) {
+          spawnWord();
+          spawnInterval = Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - difficulty * 0.15);
+          spawnTimer = spawnInterval * (0.8 + Math.random() * 0.4);
+        }
+
+        // Move words
+        for (let i = words.length - 1; i >= 0; i--) {
+          const w = words[i];
+          w.y += w.speed * dt;
+          w.flash = Math.max(0, w.flash - 3 * dt);
+          if (w.y > source.height + 10) {
+            missWord(w);
+          }
+        }
+
+        updateParticles(dt);
+      }
+
+      // ─── Draw ───────────────────────────────────────────────
+      function drawBackground(t, w, h) {
+        const bgBright = 6 + (combo > 5 ? Math.sin(t * 3) * 3 : 0);
+        ctx.fillStyle = `rgb(${bgBright}, ${bgBright}, ${bgBright + 4})`;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawWords() {
+        const w = source.width;
+        const h = source.height;
+        const fontSize = Math.min(w * 0.04, 36);
+
+        for (const word of words) {
+          ctx.font = `bold ${fontSize}px monospace`;
+
+          if (word.active && word === activeWord) {
+            const typedStr = word.text.substring(0, typedChars);
+            const remainStr = word.text.substring(typedChars);
+
+            const fullWidth = ctx.measureText(word.text).width;
+            const typedWidth = ctx.measureText(typedStr).width;
+            const startX = word.x - fullWidth / 2;
+
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+
+            // Typed portion — bright green
+            ctx.fillStyle = `rgba(100, 255, 180, ${0.8 + word.flash * 0.2})`;
+            ctx.fillText(typedStr, startX, word.y);
+
+            // Remaining — white
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.fillText(remainStr, startX + typedWidth, word.y);
+
+            // Underline
+            ctx.strokeStyle = 'rgba(100, 255, 180, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(startX, word.y + fontSize * 0.55);
+            ctx.lineTo(startX + fullWidth, word.y + fontSize * 0.55);
+            ctx.stroke();
+          } else {
+            // Urgency coloring: white → red as word nears bottom
+            const urgency = Math.max(0, word.y / h);
+            const r = Math.floor(200 + urgency * 55);
+            const g = Math.floor(200 - urgency * 100);
+            const b = Math.floor(200 - urgency * 100);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
+            ctx.fillText(word.text, word.x, word.y);
+          }
+        }
+      }
+
+      function drawHUD() {
+        const w = source.width;
+        const h = source.height;
+        const cx = w / 2;
+
+        // Score
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.font = `bold ${Math.min(w * 0.08, 72)}px monospace`;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.fillText(`${score}`, cx, 20);
+
+        // Lives
+        ctx.textAlign = 'left';
+        ctx.font = `${Math.min(w * 0.035, 30)}px monospace`;
+        ctx.fillStyle = 'rgba(255, 100, 80, 0.6)';
+        const livesStr = '\u2665'.repeat(lives) + '\u2661'.repeat(MAX_LIVES - lives);
+        ctx.fillText(livesStr, 16, 16);
+
+        // Combo
+        if (combo > 1) {
+          const popScale = 1 + comboPopScale * 0.4;
+          const comboSize = Math.min(w * 0.055, 48) * popScale;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.font = `bold ${comboSize}px monospace`;
+          const hue = (combo * 20) % 360;
+          ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${0.5 + comboPopScale * 0.4})`;
+          ctx.fillText(`${combo}x`, cx, 85);
+        }
+
+        // Level
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.font = '16px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.fillText(`lvl ${difficulty + 1}`, w - 16, 16);
+      }
+
+      function drawMissFlash(w, h) {
+        if (missFlash > 0) {
+          const grad = ctx.createLinearGradient(0, h - 80, 0, h);
+          grad.addColorStop(0, 'rgba(255, 0, 0, 0)');
+          grad.addColorStop(1, `rgba(255, 30, 30, ${missFlash * 0.4})`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, h - 80, w, 80);
+          missFlash = Math.max(0, missFlash - 0.03);
+        }
+      }
+
+      function drawWaiting(t, w, h) {
+        const cx = w / 2;
+        const cy = h / 2;
+        const pulse = 0.5 + Math.sin(t * 2) * 0.2;
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${Math.min(w * 0.14, 120)}px monospace`;
+        ctx.fillStyle = `rgba(180, 240, 255, ${pulse})`;
+        ctx.fillText('TYPE', cx, cy - 40);
+
+        ctx.font = `${Math.min(w * 0.04, 36)}px monospace`;
+        ctx.fillStyle = `rgba(255, 255, 255, ${pulse * 0.5})`;
+        ctx.fillText('press space to start', cx, cy + 40);
+
+        ctx.font = '18px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+        ctx.fillText('type falling words \u00b7 combos shift colors', cx, h - 60);
+        ctx.fillText('ESC panel \u00b7 ` toggle filter', cx, h - 35);
+      }
+
+      function drawGameOver(t, w, h) {
+        const cx = w / 2;
+        const cy = h / 2;
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${Math.min(w * 0.12, 100)}px monospace`;
+        ctx.fillStyle = 'rgba(255, 80, 60, 0.8)';
+        ctx.fillText('GAME OVER', cx, cy - 60);
+
+        ctx.font = `${Math.min(w * 0.06, 50)}px monospace`;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.fillText(`score: ${score}`, cx, cy + 20);
+
+        if (bestCombo > 1) {
+          ctx.font = `${Math.min(w * 0.04, 36)}px monospace`;
+          ctx.fillStyle = 'rgba(255, 200, 50, 0.5)';
+          ctx.fillText(`best combo: ${bestCombo}x`, cx, cy + 80);
+        }
+
+        const restartPulse = 0.3 + Math.sin(t * 3) * 0.15;
+        ctx.font = `${Math.min(w * 0.04, 36)}px monospace`;
+        ctx.fillStyle = `rgba(255, 255, 255, ${restartPulse})`;
+        ctx.fillText('press space to restart', cx, cy + 150);
+      }
+
+      // ─── Combo / Color Cycle ────────────────────────────────
+      function updateColorCycle() {
+        if (combo < 3) {
+          ascii.set('colorCycle', false);
+        } else if (combo < 5) {
+          ascii.set('colorCycle', true);
+          ascii.set('colorCycleRate', 0.3);
+        } else if (combo < 10) {
+          ascii.set('colorCycleRate', 0.8);
+        } else if (combo < 20) {
+          ascii.set('colorCycleRate', 1.5);
+        } else {
+          ascii.set('colorCycleRate', 3.0);
+        }
+      }
+
+      // ─── ASCII-ify with Layers ──────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#06060a',
+        sourceOpacity: 0,
+        speed: 1,
+        colorCycle: false,
+        colorCycleRate: 0.3,
+      });
+
+      // Layer 1: Tunnel background — binary digits flowing through a vortex
+      ascii.addLayer({
+        source: source,
+        fontSize: 6,
+        charset: 'binary',
+        colorScheme: 'vapor',
+        pattern: 'tunnel',
+        patternMix: 0.6,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Game action — falling words, HUD, particles
+      ascii.addLayer({
+        source: source,
+        fontSize: 12,
+        charset: 'density',
+        colorScheme: 'neon',
+        blendMode: 'add',
+        opacity: 0.9,
+      });
+
+      // ─── Main Loop ─────────────────────────────────────────
+      function loop(time) {
+        const w = source.width;
+        const h = source.height;
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        const t = time * 0.001;
+
+        if (state === 'playing') update(dt);
+
+        // Screen shake
+        let shakeX = 0, shakeY = 0;
+        if (shakeTimer > 0) {
+          shakeX = (Math.random() - 0.5) * 8;
+          shakeY = (Math.random() - 0.5) * 8;
+          shakeTimer -= dt;
+        }
+        comboPopScale = Math.max(0, comboPopScale - dt * 5);
+
+        ctx.save();
+        ctx.translate(shakeX, shakeY);
+
+        drawBackground(t, w, h);
+
+        if (state === 'playing') {
+          drawWords();
+          drawParticles();
+          drawHUD();
+          drawMissFlash(w, h);
+        } else if (state === 'waiting') {
+          drawWaiting(t, w, h);
+        } else if (state === 'gameover') {
+          drawWords();
+          drawParticles();
+          drawGameOver(t, w, h);
+        }
+
+        ctx.restore();
+
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
