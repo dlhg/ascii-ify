@@ -97,9 +97,15 @@ export class ControlPanel {
     // Header
     const header = h('div', 'drawer-header');
     header.appendChild(h('span', 'drawer-title', 'Controls'));
+    const headerBtns = h('div', 'header-btn-group');
+    const copyBtn = h('button', 'ctrl-btn copy-btn', 'Copy');
+    copyBtn.title = 'Copy all values as JSON';
+    copyBtn.addEventListener('click', () => this._copySnapshot());
+    headerBtns.appendChild(copyBtn);
     const closeBtn = h('div', 'close-btn', '\u00D7');
     closeBtn.addEventListener('click', () => this.hide());
-    header.appendChild(closeBtn);
+    headerBtns.appendChild(closeBtn);
+    header.appendChild(headerBtns);
     drawer.appendChild(header);
 
     // Scrollable content area
@@ -464,6 +470,57 @@ export class ControlPanel {
     this._controls.push(ctrl);
     parent.appendChild(ctrl.el);
     return ctrl;
+  }
+
+  // ─── Snapshot ──────────────────────────────────────
+
+  _copySnapshot() {
+    const ascii = this._ascii;
+    const GLOBAL_KEYS = [
+      'enabled', 'fontSize', 'density', 'charset', 'colorScheme',
+      'background', 'fade', 'speed', 'pattern', 'patternMix',
+      'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
+      'blendMode', 'offsetX', 'offsetY', 'zIndex',
+    ];
+    const LAYER_KEYS = [
+      'visible', 'fontSize', 'density', 'charset', 'colorScheme',
+      'pattern', 'patternMix', 'fade', 'opacity', 'blendMode',
+      'offsetX', 'offsetY', 'zIndex',
+    ];
+
+    const snapshot = {};
+    for (const k of GLOBAL_KEYS) {
+      snapshot[k] = ascii.get(k);
+    }
+
+    if (ascii._layers.length > 0 && !ascii._implicitMode) {
+      snapshot.layers = ascii._layers.map(layer => {
+        const obj = {};
+        for (const k of LAYER_KEYS) {
+          obj[k] = layer.get(k);
+        }
+        return obj;
+      });
+    }
+
+    const json = JSON.stringify(snapshot, null, 2);
+    navigator.clipboard.writeText(json).then(() => {
+      this._flashCopyBtn('Copied!');
+    }, () => {
+      this._flashCopyBtn('Failed');
+    });
+  }
+
+  _flashCopyBtn(text) {
+    const btn = this._shadow.querySelector('.copy-btn');
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = text;
+    btn.classList.add('flash');
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.classList.remove('flash');
+    }, 1200);
   }
 
   // ─── Sync Loop ───────────────────────────────────────

@@ -144,6 +144,36 @@ export const PANEL_CSS = `
   color: var(--text-3);
 }
 
+.header-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.copy-btn {
+  font: 600 8px/1 var(--ui-font);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+  background: var(--bg-raised);
+  color: var(--text-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.copy-btn:hover {
+  color: var(--text-1);
+  border-color: var(--border-3);
+  background: var(--bg-track);
+}
+
+.copy-btn.flash {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
 .close-btn {
   width: 22px;
   height: 22px;
