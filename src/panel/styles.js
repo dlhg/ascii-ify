@@ -375,6 +375,18 @@ export const PANEL_CSS = `
   color: var(--text-2);
 }
 
+.layer-btn-group {
+  display: flex;
+  gap: 4px;
+}
+
+.ctrl-btn.solo.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
 /* ═══════════════════════════════════════════════════════
    UTILITY
    ═══════════════════════════════════════════════════════ */

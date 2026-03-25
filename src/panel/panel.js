@@ -235,13 +235,23 @@ export class ControlPanel {
     const section = h('div', '');
     const r = PARAM_RANGES;
 
-    // Header with title and remove button
+    // Header with title, solo, and remove buttons
     const header = h('div', 'layer-header');
     header.appendChild(h('span', 'layer-title', `Layer ${layer.id}`));
+    const btnGroup = h('div', 'layer-btn-group');
+    const soloBtn = h('button', 'ctrl-btn solo', 'Solo');
+    soloBtn.addEventListener('click', () => {
+      this._ascii.soloLayer(layer);
+      this._updateSoloBtns();
+    });
+    btnGroup.appendChild(soloBtn);
     const removeBtn = h('button', 'ctrl-btn danger', 'Remove');
     removeBtn.addEventListener('click', () => this._ascii.removeLayer(layer));
-    header.appendChild(removeBtn);
+    btnGroup.appendChild(removeBtn);
+    header.appendChild(btnGroup);
     section.appendChild(header);
+    section._soloBtn = soloBtn;
+    section._layer = layer;
 
     // Visible toggle
     this._register(new Toggle({
@@ -328,6 +338,15 @@ export class ControlPanel {
 
     this._layersContent.appendChild(section);
     this._layerSections.set(layer, section);
+  }
+
+  _updateSoloBtns() {
+    const soloed = this._ascii._soloLayer;
+    for (const [layer, section] of this._layerSections) {
+      if (section._soloBtn) {
+        section._soloBtn.classList.toggle('active', soloed === layer);
+      }
+    }
   }
 
   _removeLayerSection(layer) {

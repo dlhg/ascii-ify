@@ -30,6 +30,7 @@ export class AsciiIfy extends EventEmitter {
     // Layers (empty = implicit single-layer mode)
     this._layers = [];
     this._implicitMode = true;
+    this._soloLayer = null;
 
     // Offscreen sampling context (reused)
     this._sampleCtx = null;
@@ -168,10 +169,21 @@ export class AsciiIfy extends EventEmitter {
   removeLayer(layer) {
     const idx = this._layers.indexOf(layer);
     if (idx >= 0) {
+      if (this._soloLayer === layer) this._soloLayer = null;
       this._layers.splice(idx, 1);
       layer.destroy();
       this.emit('layerremove', layer);
     }
+  }
+
+  /**
+   * Solo a layer — only this layer will render.
+   * Call again with the same layer (or null) to unsolo.
+   * @param {Layer|null} layer
+   */
+  soloLayer(layer) {
+    this._soloLayer = (this._soloLayer === layer) ? null : layer;
+    this.emit('paramchange', { key: 'soloLayer', value: this._soloLayer });
   }
 
   /** Render a single frame */
@@ -355,7 +367,7 @@ export class AsciiIfy extends EventEmitter {
 
   _renderLayers(ctx, w, h, t) {
     for (const layer of this._layers) {
-      if (!layer.visible) continue;
+      if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
 
       const grid = calculateGrid(w, h, layer.get('fontSize'), layer.get('density'));
       if (grid.cols <= 0 || grid.rows <= 0) continue;
