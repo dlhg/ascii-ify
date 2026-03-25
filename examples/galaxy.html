@@ -368,6 +368,7 @@
       // ─── Keyboard Controls ────────────────────────────────
       document.addEventListener('keydown', (e) => {
         if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
       });
 
       // ─── Main Loop ────────────────────────────────────────
