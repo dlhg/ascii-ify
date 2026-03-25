@@ -1,5 +1,7 @@
 # ascii-ify
 
+> **Early development** — API may change.
+
 ASCII-ify any canvas. Drop-in library that overlays real-time ASCII art rendering on top of your canvas-based web application. Supports layered compositing, procedural pattern overlays, and an optional visual control panel.
 
 ## Install
