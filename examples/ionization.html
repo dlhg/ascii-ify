@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Ionization</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Element Definitions ──────────────────────────────
+      // Each "element" has a proton count (nuclear charge), color, and
+      // initial electron count per shell. Higher proton count = stronger hold.
+      const ELEMENTS = [
+        { name: 'H',  protons: 1, shells: [1],       hue: 200, radius: 30 },
+        { name: 'He', protons: 2, shells: [2],       hue: 280, radius: 35 },
+        { name: 'Li', protons: 3, shells: [2, 1],    hue: 30,  radius: 45 },
+        { name: 'Be', protons: 4, shells: [2, 2],    hue: 60,  radius: 50 },
+        { name: 'C',  protons: 6, shells: [2, 4],    hue: 120, radius: 55 },
+        { name: 'O',  protons: 8, shells: [2, 6],    hue: 0,   radius: 60 },
+        { name: 'Na', protons: 11, shells: [2, 8, 1], hue: 45,  radius: 70 },
+        { name: 'Cl', protons: 17, shells: [2, 8, 7], hue: 160, radius: 75 },
+      ];
+
+      const SHELL_RADII = [75, 138, 213]; // orbital distances per shell
+
+      // ─── State ────────────────────────────────────────────
+      const atoms = [];
+      const freeElectrons = [];
+      const transferArcs = []; // visual trails for electron transfers
+      const photonBursts = []; // energy events
+      const NUM_ATOMS = 7;
+
+      // ─── Initialization ───────────────────────────────────
+      function initAtoms() {
+        atoms.length = 0;
+        freeElectrons.length = 0;
+        transferArcs.length = 0;
+
+        const w = source.width;
+        const h = source.height;
+        const padding = 120;
+
+        for (let i = 0; i < NUM_ATOMS; i++) {
+          const elem = ELEMENTS[Math.floor(Math.random() * ELEMENTS.length)];
+          const atom = {
+            x: padding + Math.random() * (w - padding * 2),
+            y: padding + Math.random() * (h - padding * 2),
+            vx: (Math.random() - 0.5) * 0.8,
+            vy: (Math.random() - 0.5) * 0.8,
+            element: elem,
+            protons: elem.protons,
+            hue: elem.hue,
+            radius: elem.radius,
+            electrons: [],
+            // Gentle wobble for organic motion
+            wobblePhase: Math.random() * Math.PI * 2,
+            wobbleSpeed: 0.3 + Math.random() * 0.4,
+          };
+
+          // Populate electrons into shells
+          for (let s = 0; s < elem.shells.length; s++) {
+            const count = elem.shells[s];
+            for (let e = 0; e < count; e++) {
+              atom.electrons.push({
+                shell: s,
+                angle: (e / count) * Math.PI * 2 + Math.random() * 0.3,
+                speed: (0.8 + Math.random() * 0.4) * (s === 0 ? 1.5 : s === 1 ? 1.0 : 0.7),
+                // Slight orbital eccentricity
+                eccentricity: 0.9 + Math.random() * 0.2,
+              });
+            }
+          }
+
+          atoms.push(atom);
+        }
+      }
+
+      // ─── Physics ──────────────────────────────────────────
+      function getNetCharge(atom) {
+        return atom.protons - atom.electrons.length;
+      }
+
+      function getOuterShell(atom) {
+        if (atom.electrons.length === 0) return -1;
+        return Math.max(...atom.electrons.map(e => e.shell));
+      }
+
+      function getElectronsInShell(atom, shell) {
+        return atom.electrons.filter(e => e.shell === shell);
+      }
+
+      // Effective nuclear charge felt by outermost electrons
+      // (protons minus inner-shell shielding)
+      function effectiveCharge(atom) {
+        const outer = getOuterShell(atom);
+        if (outer < 0) return atom.protons;
+        let shielding = 0;
+        for (const e of atom.electrons) {
+          if (e.shell < outer) shielding += 0.85;
+          else shielding += 0.35; // same-shell partial shielding
+        }
+        return Math.max(atom.protons - shielding, 0.5);
+      }
+
+      function updateAtoms() {
+        const w = source.width;
+        const h = source.height;
+
+        for (const atom of atoms) {
+          // Gentle drift with wobble
+          atom.wobblePhase += atom.wobbleSpeed * 0.016;
+          const wx = Math.sin(atom.wobblePhase) * 0.03;
+          const wy = Math.cos(atom.wobblePhase * 0.7) * 0.03;
+
+          atom.x += atom.vx + wx;
+          atom.y += atom.vy + wy;
+
+          // Soft bounce off edges
+          const margin = 60;
+          if (atom.x < margin)     { atom.vx += 0.02; }
+          if (atom.x > w - margin) { atom.vx -= 0.02; }
+          if (atom.y < margin)     { atom.vy += 0.02; }
+          if (atom.y > h - margin) { atom.vy -= 0.02; }
+
+          // Speed limit
+          const speed = Math.sqrt(atom.vx * atom.vx + atom.vy * atom.vy);
+          if (speed > 1.2) {
+            atom.vx *= 1.2 / speed;
+            atom.vy *= 1.2 / speed;
+          }
+
+          // Very slight drag
+          atom.vx *= 0.999;
+          atom.vy *= 0.999;
+
+          // Update electron orbits
+          for (const elec of atom.electrons) {
+            elec.angle += elec.speed * 0.02;
+          }
+        }
+
+        // Atom-atom interactions: ionization
+        for (let i = 0; i < atoms.length; i++) {
+          for (let j = i + 1; j < atoms.length; j++) {
+            const a = atoms[i];
+            const b = atoms[j];
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            // Repulsion when too close (nuclei repel)
+            if (dist < 250) {
+              const repel = (250 - dist) * 0.002;
+              const nx = dx / dist;
+              const ny = dy / dist;
+              a.vx -= nx * repel;
+              a.vy -= ny * repel;
+              b.vx += nx * repel;
+              b.vy += ny * repel;
+            }
+
+            // Ionization range: check if outer electrons can be pulled
+            const ionizationRange = 450;
+            if (dist < ionizationRange && dist > 100) {
+              tryIonize(a, b, dist);
+            }
+          }
+        }
+
+        // Update free electrons
+        for (let i = freeElectrons.length - 1; i >= 0; i--) {
+          const fe = freeElectrons[i];
+          fe.x += fe.vx;
+          fe.y += fe.vy;
+          fe.life--;
+
+          // Free electrons are attracted to nearby positive ions
+          for (const atom of atoms) {
+            const charge = getNetCharge(atom);
+            if (charge > 0) {
+              const dx = atom.x - fe.x;
+              const dy = atom.y - fe.y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist < 375 && dist > 25) {
+                const force = charge * 0.15 / (dist * 0.5);
+                fe.vx += (dx / dist) * force;
+                fe.vy += (dy / dist) * force;
+
+                // Capture! Electron joins the atom
+                if (dist < 75) {
+                  const shell = Math.min(getOuterShell(atom) + 1, 2);
+                  const targetShell = atom.electrons.length === 0 ? 0 : shell;
+                  atom.electrons.push({
+                    shell: Math.min(targetShell, 2),
+                    angle: Math.random() * Math.PI * 2,
+                    speed: (0.8 + Math.random() * 0.4) * (targetShell === 0 ? 1.5 : targetShell === 1 ? 1.0 : 0.7),
+                    eccentricity: 0.9 + Math.random() * 0.2,
+                  });
+                  spawnTransferArc(fe.x, fe.y, atom.x, atom.y, 160);
+                  freeElectrons.splice(i, 1);
+                  break;
+                }
+              }
+            }
+          }
+
+          // Drift and drag
+          fe.vx *= 0.995;
+          fe.vy *= 0.995;
+
+          // Remove if expired or off-screen
+          if (fe.life <= 0 || fe.x < -50 || fe.x > w + 50 || fe.y < -50 || fe.y > h + 50) {
+            freeElectrons.splice(i, 1);
+          }
+        }
+
+        // Update transfer arcs
+        for (let i = transferArcs.length - 1; i >= 0; i--) {
+          transferArcs[i].life--;
+          if (transferArcs[i].life <= 0) {
+            transferArcs.splice(i, 1);
+          }
+        }
+
+        // Update photon bursts
+        for (let i = photonBursts.length - 1; i >= 0; i--) {
+          const p = photonBursts[i];
+          p.radius += p.speed;
+          p.life--;
+          if (p.life <= 0) photonBursts.splice(i, 1);
+        }
+      }
+
+      function tryIonize(a, b, dist) {
+        // Compare effective charges — the atom with higher effective charge
+        // can steal from the one with lower
+        const chargeA = effectiveCharge(a);
+        const chargeB = effectiveCharge(b);
+
+        const donor = chargeA < chargeB ? a : b;
+        const receiver = chargeA < chargeB ? b : a;
+        const chargeDiff = Math.abs(chargeA - chargeB);
+
+        // Probability based on charge difference and proximity
+        const proximity = 1 - (dist / 180);
+        const probability = chargeDiff * proximity * 0.0006;
+
+        if (Math.random() < probability && donor.electrons.length > 0) {
+          // Find the outermost electron to steal
+          const outerShell = getOuterShell(donor);
+          const outerElectrons = getElectronsInShell(donor, outerShell);
+
+          if (outerElectrons.length > 0) {
+            const stolen = outerElectrons[Math.floor(Math.random() * outerElectrons.length)];
+            const idx = donor.electrons.indexOf(stolen);
+            donor.electrons.splice(idx, 1);
+
+            // Calculate the electron's world position for the arc
+            const shellRadius = SHELL_RADII[stolen.shell] || 30;
+            const ex = donor.x + Math.cos(stolen.angle) * shellRadius * stolen.eccentricity;
+            const ey = donor.y + Math.sin(stolen.angle) * shellRadius * stolen.eccentricity;
+
+            // Decide: transfer to receiver or become free electron
+            if (dist < 300 && Math.random() < 0.7) {
+              // Direct transfer
+              const targetShell = Math.min(getOuterShell(receiver) + 1, 2);
+              const newShell = receiver.electrons.length === 0 ? 0 :
+                              targetShell < 0 ? 0 : targetShell;
+              receiver.electrons.push({
+                shell: Math.min(newShell, 2),
+                angle: Math.random() * Math.PI * 2,
+                speed: (0.8 + Math.random() * 0.4) * (newShell === 0 ? 1.5 : newShell === 1 ? 1.0 : 0.7),
+                eccentricity: 0.9 + Math.random() * 0.2,
+              });
+              spawnTransferArc(ex, ey, receiver.x, receiver.y, 200);
+            } else {
+              // Electron goes free
+              const angle = Math.atan2(ey - donor.y, ex - donor.x);
+              freeElectrons.push({
+                x: ex, y: ey,
+                vx: Math.cos(angle) * 1.5 + (Math.random() - 0.5),
+                vy: Math.sin(angle) * 1.5 + (Math.random() - 0.5),
+                life: 300 + Math.random() * 300,
+              });
+              spawnTransferArc(ex, ey, ex + Math.cos(angle) * 40, ey + Math.sin(angle) * 40, 120);
+            }
+
+            // Small push apart from the energy exchange
+            const nx = (b.x - a.x) / dist;
+            const ny = (b.y - a.y) / dist;
+            a.vx -= nx * 0.15;
+            a.vy -= ny * 0.15;
+            b.vx += nx * 0.15;
+            b.vy += ny * 0.15;
+          }
+        }
+      }
+
+      function spawnTransferArc(x1, y1, x2, y2, hue) {
+        transferArcs.push({
+          x1, y1, x2, y2, hue,
+          life: 40,
+          maxLife: 40,
+        });
+      }
+
+      // ─── Photon Events (periodic energy injection) ──────
+      let photonTimer = 0;
+      function maybeSpawnPhoton(time) {
+        photonTimer++;
+        // Every ~6 seconds, a photon event
+        if (photonTimer > 360) {
+          photonTimer = 0;
+          // Pick a random atom
+          const target = atoms[Math.floor(Math.random() * atoms.length)];
+          if (target.electrons.length > 0) {
+            photonBursts.push({
+              x: target.x,
+              y: target.y,
+              radius: 0,
+              speed: 3,
+              life: 30,
+              maxLife: 30,
+              hue: 50,
+            });
+
+            // Knock off an outer electron
+            const outerShell = getOuterShell(target);
+            const outerElectrons = getElectronsInShell(target, outerShell);
+            if (outerElectrons.length > 0) {
+              const ejected = outerElectrons[0];
+              const idx = target.electrons.indexOf(ejected);
+              target.electrons.splice(idx, 1);
+
+              const shellRadius = SHELL_RADII[ejected.shell] || 30;
+              const ex = target.x + Math.cos(ejected.angle) * shellRadius;
+              const ey = target.y + Math.sin(ejected.angle) * shellRadius;
+              const angle = Math.random() * Math.PI * 2;
+
+              freeElectrons.push({
+                x: ex, y: ey,
+                vx: Math.cos(angle) * 2.5,
+                vy: Math.sin(angle) * 2.5,
+                life: 400 + Math.random() * 200,
+              });
+            }
+          }
+        }
+      }
+
+      // ─── Drawing ──────────────────────────────────────────
+      function drawScene(time) {
+        const w = source.width;
+        const h = source.height;
+        const t = time * 0.001;
+
+        updateAtoms();
+        maybeSpawnPhoton(time);
+
+        // Clear
+        ctx.fillStyle = '#050510';
+        ctx.fillRect(0, 0, w, h);
+
+        // Background: faint electromagnetic field lines
+        ctx.globalAlpha = 0.08;
+        for (const atom of atoms) {
+          const charge = getNetCharge(atom);
+          const fieldHue = charge > 0 ? 0 : charge < 0 ? 220 : atom.hue;
+          const fieldRadius = 120 + Math.abs(charge) * 30;
+          const grad = ctx.createRadialGradient(
+            atom.x, atom.y, 0,
+            atom.x, atom.y, fieldRadius
+          );
+          grad.addColorStop(0, `hsla(${fieldHue}, 60%, 40%, 0.4)`);
+          grad.addColorStop(0.5, `hsla(${fieldHue}, 40%, 30%, 0.15)`);
+          grad.addColorStop(1, 'transparent');
+          ctx.fillStyle = grad;
+          ctx.fillRect(atom.x - fieldRadius, atom.y - fieldRadius, fieldRadius * 2, fieldRadius * 2);
+        }
+        ctx.globalAlpha = 1;
+
+        // Draw transfer arcs (energy trails)
+        for (const arc of transferArcs) {
+          const alpha = arc.life / arc.maxLife;
+          const midX = (arc.x1 + arc.x2) / 2 + Math.sin(t * 10) * 15 * alpha;
+          const midY = (arc.y1 + arc.y2) / 2 + Math.cos(t * 10) * 15 * alpha;
+
+          ctx.strokeStyle = `hsla(${arc.hue}, 90%, 70%, ${alpha * 0.8})`;
+          ctx.lineWidth = 2 * alpha;
+          ctx.shadowColor = `hsla(${arc.hue}, 90%, 60%, ${alpha * 0.5})`;
+          ctx.shadowBlur = 15 * alpha;
+          ctx.beginPath();
+          ctx.moveTo(arc.x1, arc.y1);
+          ctx.quadraticCurveTo(midX, midY, arc.x2, arc.y2);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+
+          // Sparkle particles along the arc
+          const numSparkles = 3;
+          for (let i = 0; i < numSparkles; i++) {
+            const p = (i + 0.5) / numSparkles;
+            const inv = 1 - p;
+            const sx = arc.x1 * inv * inv + midX * 2 * inv * p + arc.x2 * p * p;
+            const sy = arc.y1 * inv * inv + midY * 2 * inv * p + arc.y2 * p * p;
+            ctx.fillStyle = `hsla(${arc.hue}, 100%, 85%, ${alpha * 0.6})`;
+            ctx.beginPath();
+            ctx.arc(sx + (Math.random() - 0.5) * 6, sy + (Math.random() - 0.5) * 6, 1.5 * alpha, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Draw photon bursts
+        for (const p of photonBursts) {
+          const alpha = p.life / p.maxLife;
+          ctx.strokeStyle = `hsla(${p.hue}, 100%, 80%, ${alpha * 0.6})`;
+          ctx.lineWidth = 2 * alpha;
+          ctx.shadowColor = `hsla(${p.hue}, 100%, 70%, ${alpha * 0.4})`;
+          ctx.shadowBlur = 20 * alpha;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+
+        // Draw atoms
+        for (const atom of atoms) {
+          const charge = getNetCharge(atom);
+          const absCharge = Math.abs(charge);
+
+          // Nucleus glow — color shifts with ionization state
+          let nucHue = atom.hue;
+          let nucSat = 50;
+          let nucLight = 50;
+          if (charge > 0) {
+            // Positive ion: shift toward red/orange
+            nucHue = (atom.hue + charge * 20) % 360;
+            nucSat = 70;
+            nucLight = 55 + charge * 5;
+          } else if (charge < 0) {
+            // Negative ion: shift toward blue/cyan
+            nucHue = (atom.hue + charge * 15 + 360) % 360;
+            nucSat = 70;
+            nucLight = 55 + absCharge * 5;
+          }
+
+          // Outer glow (ion aura)
+          if (absCharge > 0) {
+            const auraRadius = atom.radius * (2 + absCharge * 0.5);
+            const pulse = 0.7 + 0.3 * Math.sin(t * 3 + atom.wobblePhase);
+            const auraGrad = ctx.createRadialGradient(
+              atom.x, atom.y, atom.radius * 0.5,
+              atom.x, atom.y, auraRadius
+            );
+            const auraHue = charge > 0 ? 20 : 210;
+            auraGrad.addColorStop(0, `hsla(${auraHue}, 80%, 60%, ${0.15 * pulse})`);
+            auraGrad.addColorStop(1, 'transparent');
+            ctx.fillStyle = auraGrad;
+            ctx.beginPath();
+            ctx.arc(atom.x, atom.y, auraRadius, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Nucleus core glow
+          const coreGrad = ctx.createRadialGradient(
+            atom.x, atom.y, 0,
+            atom.x, atom.y, atom.radius
+          );
+          coreGrad.addColorStop(0, `hsla(${nucHue}, ${nucSat}%, ${nucLight + 20}%, 0.9)`);
+          coreGrad.addColorStop(0.5, `hsla(${nucHue}, ${nucSat}%, ${nucLight}%, 0.5)`);
+          coreGrad.addColorStop(1, `hsla(${nucHue}, ${nucSat - 10}%, ${nucLight - 10}%, 0.1)`);
+          ctx.fillStyle = coreGrad;
+          ctx.beginPath();
+          ctx.arc(atom.x, atom.y, atom.radius, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Nucleus bright center
+          ctx.fillStyle = `hsla(${nucHue}, 30%, 90%, 0.7)`;
+          ctx.beginPath();
+          ctx.arc(atom.x, atom.y, atom.radius * 0.3, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Element label
+          ctx.font = `bold ${Math.max(10, atom.radius * 0.7)}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = `rgba(255, 255, 255, 0.5)`;
+          ctx.fillText(atom.element.name, atom.x, atom.y);
+
+          // Charge label if ionized
+          if (charge !== 0) {
+            const chargeStr = charge > 0 ? (charge > 1 ? `${charge}+` : '+') : (charge < -1 ? `${Math.abs(charge)}−` : '−');
+            ctx.font = `bold ${Math.max(8, atom.radius * 0.45)}px monospace`;
+            ctx.fillStyle = charge > 0 ? 'rgba(255, 150, 100, 0.7)' : 'rgba(100, 180, 255, 0.7)';
+            ctx.fillText(chargeStr, atom.x + atom.radius * 0.8, atom.y - atom.radius * 0.7);
+          }
+
+          // Draw shell outlines (faint orbital rings)
+          const maxShell = atom.electrons.length > 0 ? getOuterShell(atom) : -1;
+          for (let s = 0; s <= Math.min(maxShell, 2); s++) {
+            const shellR = SHELL_RADII[s];
+            ctx.strokeStyle = `hsla(${nucHue}, 30%, 50%, 0.08)`;
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.arc(atom.x, atom.y, shellR, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          // Draw electrons
+          for (const elec of atom.electrons) {
+            const shellR = SHELL_RADII[elec.shell] || 30;
+            const r = shellR * elec.eccentricity;
+            const ex = atom.x + Math.cos(elec.angle) * r;
+            const ey = atom.y + Math.sin(elec.angle) * r;
+
+            // Electron glow
+            ctx.shadowColor = `hsla(200, 90%, 70%, 0.5)`;
+            ctx.shadowBlur = 8;
+            ctx.fillStyle = `hsla(200, 80%, 75%, 0.9)`;
+            ctx.beginPath();
+            ctx.arc(ex, ey, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Tiny trail
+            const trailAngle = elec.angle - elec.speed * 0.06;
+            const tx = atom.x + Math.cos(trailAngle) * r;
+            const ty = atom.y + Math.sin(trailAngle) * r;
+            ctx.strokeStyle = `hsla(200, 70%, 60%, 0.3)`;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(tx, ty);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+          }
+        }
+
+        // Draw free electrons
+        for (const fe of freeElectrons) {
+          const alpha = Math.min(1, fe.life / 60);
+          const pulse = 0.7 + 0.3 * Math.sin(t * 8 + fe.x * 0.1);
+
+          ctx.shadowColor = `hsla(180, 100%, 70%, ${alpha * 0.6})`;
+          ctx.shadowBlur = 10;
+          ctx.fillStyle = `hsla(180, 90%, 75%, ${alpha * 0.9 * pulse})`;
+          ctx.beginPath();
+          ctx.arc(fe.x, fe.y, 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+
+          // Wandering trail
+          ctx.strokeStyle = `hsla(180, 70%, 60%, ${alpha * 0.3})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(fe.x - fe.vx * 5, fe.y - fe.vy * 5);
+          ctx.lineTo(fe.x, fe.y);
+          ctx.stroke();
+        }
+
+        // Subtle label
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.fillText('P panel · E toggle', w / 2, h - 12);
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#050510',
+        sourceOpacity: 0,
+        speed: 0.8,
+      });
+
+      // Layer 1: Electromagnetic field — braille for soft field texture
+      ascii.addLayer({
+        source: source,
+        fontSize: 14,
+        charset: 'braille',
+        colorScheme: 'ocean',
+        pattern: 'plasma',
+        patternMix: 0.15,
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Atoms and electrons — dense detail
+      ascii.addLayer({
+        source: source,
+        fontSize: 6,
+        charset: 'density',
+        colorScheme: 'neon',
+        blendMode: 'add',
+        opacity: 0.85,
+      });
+
+      // Layer 3: Ionization energy / glow — large blocks for warmth
+      ascii.addLayer({
+        source: source,
+        fontSize: 20,
+        charset: 'blocks',
+        colorScheme: 'fire',
+        pattern: 'breathing',
+        patternMix: 0.3,
+        blendMode: 'add',
+        opacity: 0.2,
+      });
+
+      // ─── Keyboard Controls ────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      // ─── Init & Loop ─────────────────────────────────────
+      initAtoms();
+
+      function loop(time) {
+        drawScene(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
