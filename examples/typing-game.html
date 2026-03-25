@@ -41,22 +41,26 @@
 
       // ─── Word Lists ─────────────────────────────────────────
       const WORDS_SHORT = [
-        'the','and','for','are','but','not','you','all','can','had',
-        'was','one','our','out','day','get','has','him','how','its',
-        'may','new','now','old','see','way','who','did','let','say',
-        'she','too','use','run','put','set','try','ask','own','end',
+        'and','for','but','not','you','all','can','had','was','our',
+        'out','day','has','him','how','its','may','now','old','way',
+        'who','did','say','too','run','try','ask','own','got','bit',
+        'bug','cut','dig','dot','duo','fit','fog','fun','git','gun',
+        'hit','hot','hub','jam','joy','key','kid','kit','lag','log',
       ];
       const WORDS_MEDIUM = [
-        'code','data','file','hack','link','loop','node','port','push',
-        'root','sync','type','user','void','wiki','array','bytes','cache',
-        'debug','error','flash','input','merge','parse','pixel','query',
-        'stack','token','patch','yield',
+        'data','hack','link','loud','null','root','sync','void','wiki',
+        'bash','bold','bind','bomb','boot','buzz','cast','char','bits',
+        'club','coil','copy','corn','curl','dart','dial','disk','dock',
+        'down','drag','draw','drum','dual','dust','fair','farm','fast',
+        'flag','flow','foam','fold','font','fork','form','frog','fury',
       ];
       const WORDS_LONG = [
-        'buffer','cipher','decode','filter','global','kernel','matrix',
-        'object','render','schema','script','server','socket','string',
-        'syntax','thread','vector','binary','compile','process','runtime',
-        'deploy','lambda','module','cursor','branch','import','export',
+        'global','matrix','string','syntax','binary','cursor','branch',
+        'bitmap','botany','builds','citrus','colour','column','commit',
+        'crisis','crypto','daring','dialog','domain','dragon','dynamo',
+        'fabric','factor','finish','fossil','galaxy','gaming','ground',
+        'hallow','hybrid','junior','lastly','layout','liquid','malloc',
+        'macro','margin','signal','school','shadow','static','submit',
       ];
 
       // ─── Game State ─────────────────────────────────────────
@@ -103,6 +107,8 @@
           return;
         }
 
+        if (e.key === 'e' || e.key === 'E') { ascii.set('enabled', !ascii.get('enabled')); return; }
+        if (e.key === 'p' || e.key === 'P') { ascii.togglePanel(); return; }
         if (e.key === ' ') { e.preventDefault(); return; }
         if (e.key.length !== 1) return;
         const typed = e.key.toLowerCase();
@@ -155,7 +161,7 @@
 
       function findSpawnX(text) {
         const w = source.width;
-        const fontSize = Math.min(w * 0.04, 36);
+        const fontSize = Math.min(w * 0.08, 72);
         ctx.font = `bold ${fontSize}px monospace`;
         const textWidth = ctx.measureText(text).width;
         const margin = 20;
@@ -360,7 +366,7 @@
       function drawWords() {
         const w = source.width;
         const h = source.height;
-        const fontSize = Math.min(w * 0.04, 36);
+        const fontSize = Math.min(w * 0.08, 72);
 
         for (const word of words) {
           ctx.font = `bold ${fontSize}px monospace`;
