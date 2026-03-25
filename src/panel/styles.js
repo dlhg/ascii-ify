@@ -151,10 +151,12 @@ export const PANEL_CSS = `
 }
 
 .copy-btn {
-  font: 600 8px/1 var(--ui-font);
+  font: 600 9px/1 var(--ui-font);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  padding: 4px 8px;
+  padding: 8px 12px;
+  margin-top: 10px;
+  width: 100%;
   background: var(--bg-raised);
   color: var(--text-3);
   border: 1px solid var(--border-2);

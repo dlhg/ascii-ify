@@ -98,10 +98,6 @@ export class ControlPanel {
     const header = h('div', 'drawer-header');
     header.appendChild(h('span', 'drawer-title', 'Controls'));
     const headerBtns = h('div', 'header-btn-group');
-    const copyBtn = h('button', 'ctrl-btn copy-btn', 'Copy');
-    copyBtn.title = 'Copy all values as JSON';
-    copyBtn.addEventListener('click', () => this._copySnapshot());
-    headerBtns.appendChild(copyBtn);
     const closeBtn = h('div', 'close-btn', '\u00D7');
     closeBtn.addEventListener('click', () => this.hide());
     headerBtns.appendChild(closeBtn);
@@ -256,6 +252,12 @@ export class ControlPanel {
       set: (v) => ascii.set('colorCycleRate', v),
       format: (v) => v.toFixed(1) + '/s',
     }), body);
+
+    // Copy button
+    const copyBtn = h('button', 'ctrl-btn copy-btn', 'Copy All Values');
+    copyBtn.title = 'Copy all values as JSON';
+    copyBtn.addEventListener('click', () => this._copySnapshot());
+    body.appendChild(copyBtn);
 
     section.appendChild(body);
     this._asciiSection = section;
