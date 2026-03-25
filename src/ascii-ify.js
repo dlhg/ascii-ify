@@ -1,0 +1,431 @@
+import { EventEmitter } from './events.js';
+import { DEFAULTS, PARAM_RANGES } from './data/defaults.js';
+import { CHARSETS } from './data/charsets.js';
+import { COLOR_SCHEMES } from './color/schemes.js';
+import { PATTERNS } from './patterns.js';
+import { calculateGrid } from './grid.js';
+import { sampleCanvas } from './sampler.js';
+import { buildColorLUT } from './color/engine.js';
+import { renderLayer } from './renderer.js';
+import { clamp, lerp } from './utils.js';
+
+export class AsciiIfy extends EventEmitter {
+  /**
+   * @param {HTMLCanvasElement} sourceCanvas - the canvas to ASCII-ify
+   * @param {object} [options] - configuration options
+   */
+  constructor(sourceCanvas, options = {}) {
+    super();
+    this._source = sourceCanvas;
+    this._running = false;
+    this._rafId = null;
+    this._prevTime = 0;
+    this._time = 0;
+    this._colorPhase = 0;
+    this._panel = null;
+
+    // Merge options with defaults
+    this._params = { ...DEFAULTS, ...options };
+
+    // Layers (empty = implicit single-layer mode)
+    this._layers = [];
+    this._implicitMode = true;
+
+    // Offscreen sampling context (reused)
+    this._sampleCtx = null;
+
+    // Create overlay canvas
+    this._canvas = document.createElement('canvas');
+    this._canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+    this._ctx = this._canvas.getContext('2d');
+
+    // Ensure parent is positioned
+    const parent = sourceCanvas.parentElement;
+    if (parent) {
+      const style = getComputedStyle(parent);
+      if (style.position === 'static') {
+        parent.style.position = 'relative';
+      }
+      parent.insertBefore(this._canvas, sourceCanvas.nextSibling);
+    }
+
+    // Set source opacity
+    this._updateSourceOpacity();
+
+    // Observe source canvas for resize
+    this._resizeObserver = new ResizeObserver(() => this._handleResize());
+    this._resizeObserver.observe(sourceCanvas);
+
+    // Initial grid calculation
+    this._grid = null;
+    this._handleResize();
+  }
+
+  /** The overlay canvas element */
+  get canvas() { return this._canvas; }
+
+  /** Readonly array of layers (bottom-to-top) */
+  get layers() { return [...this._layers]; }
+
+  /**
+   * Get a parameter value.
+   * @param {string} key
+   * @returns {*}
+   */
+  get(key) {
+    return this._params[key];
+  }
+
+  /**
+   * Set parameter(s).
+   * @param {string|object} key - parameter name or { key: value } batch
+   * @param {*} [value]
+   */
+  set(key, value) {
+    if (typeof key === 'object') {
+      for (const [k, v] of Object.entries(key)) this._setOne(k, v);
+    } else {
+      this._setOne(key, value);
+    }
+  }
+
+  _setOne(key, value) {
+    const range = PARAM_RANGES[key];
+    if (range) {
+      value = clamp(value, range.min, range.max);
+    }
+
+    const old = this._params[key];
+    this._params[key] = value;
+
+    if (key === 'sourceOpacity') {
+      this._updateSourceOpacity();
+    }
+
+    if (key === 'fontSize' || key === 'density') {
+      this._handleResize();
+    }
+
+    // Propagate to implicit-mode layers
+    if (this._implicitMode && this._layers.length > 0) {
+      const layerKeys = ['fontSize', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode'];
+      if (layerKeys.includes(key)) {
+        this._layers[0].set(key, value);
+      }
+    }
+
+    if (old !== value) {
+      this.emit('paramchange', { key, value });
+    }
+  }
+
+  /**
+   * Add a compositing layer.
+   * @param {object} [options]
+   * @returns {Layer}
+   */
+  addLayer(options = {}) {
+    const Layer = _getLayerClass();
+
+    if (this._implicitMode && this._layers.length > 0) {
+      // Convert implicit layer to explicit
+      this._implicitMode = false;
+    } else if (this._implicitMode && this._layers.length === 0) {
+      // Create the default layer first, then add the new one on top
+      const defaultLayer = new Layer(this, {
+        source: this._source,
+        fontSize: this._params.fontSize,
+        density: this._params.density,
+        charset: this._params.charset,
+        colorScheme: this._params.colorScheme,
+        pattern: this._params.pattern,
+        patternMix: this._params.patternMix,
+        fade: this._params.fade,
+        opacity: this._params.opacity,
+        blendMode: 'replace',
+      });
+      this._layers.push(defaultLayer);
+      this._implicitMode = false;
+    }
+
+    const layer = new Layer(this, {
+      source: options.source || this._source,
+      ...options,
+    });
+    this._layers.push(layer);
+    this.emit('layeradd', layer);
+    return layer;
+  }
+
+  /**
+   * Remove a compositing layer.
+   * @param {Layer} layer
+   */
+  removeLayer(layer) {
+    const idx = this._layers.indexOf(layer);
+    if (idx >= 0) {
+      this._layers.splice(idx, 1);
+      layer.destroy();
+      this.emit('layerremove', layer);
+    }
+  }
+
+  /** Render a single frame */
+  render() {
+    const now = performance.now();
+    const dt = this._prevTime ? Math.min((now - this._prevTime) / 1000, 0.05) : 0;
+    this._prevTime = now;
+    this._time += dt * this._params.speed;
+
+    // Update color cycling
+    if (this._params.colorCycle) {
+      this._colorPhase += dt * this._params.colorCycleRate;
+    }
+
+    this._renderFrame();
+    this.emit('render', { time: this._time, dt });
+  }
+
+  /** Start the rAF loop */
+  start() {
+    if (this._running) return;
+    this._running = true;
+    this._prevTime = performance.now();
+    const loop = () => {
+      if (!this._running) return;
+      this.render();
+      this._rafId = requestAnimationFrame(loop);
+    };
+    this._rafId = requestAnimationFrame(loop);
+  }
+
+  /** Stop the rAF loop */
+  stop() {
+    this._running = false;
+    if (this._rafId) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+  }
+
+  /** Show the built-in control panel */
+  showPanel(options = {}) {
+    if (this._panel) {
+      this._panel.show();
+      return;
+    }
+    import('./panel/panel.js').then(({ ControlPanel }) => {
+      this._panel = new ControlPanel(this, options);
+      this._panel.show();
+    });
+  }
+
+  /** Hide the control panel */
+  hidePanel() {
+    if (this._panel) this._panel.hide();
+  }
+
+  /** Toggle the control panel */
+  togglePanel() {
+    if (this._panel && this._panel.visible) {
+      this.hidePanel();
+    } else {
+      this.showPanel();
+    }
+  }
+
+  /** Destroy the instance — remove overlay, detach observers, stop loop */
+  destroy() {
+    this.stop();
+    if (this._panel) {
+      this._panel.destroy();
+      this._panel = null;
+    }
+    this._resizeObserver.disconnect();
+    if (this._canvas.parentElement) {
+      this._canvas.parentElement.removeChild(this._canvas);
+    }
+    this._source.style.opacity = '';
+    for (const layer of this._layers) layer.destroy();
+    this._layers = [];
+  }
+
+  // ─── Internal ──────────────────────────────────────────
+
+  _updateSourceOpacity() {
+    this._source.style.opacity = String(this._params.sourceOpacity);
+  }
+
+  _handleResize() {
+    const w = this._source.offsetWidth || this._source.width;
+    const h = this._source.offsetHeight || this._source.height;
+
+    // Update overlay canvas size
+    const dpr = devicePixelRatio || 1;
+    this._canvas.width = w * dpr;
+    this._canvas.height = h * dpr;
+    this._canvas.style.width = w + 'px';
+    this._canvas.style.height = h + 'px';
+    this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // Calculate grid for implicit mode
+    this._grid = calculateGrid(w, h, this._params.fontSize, this._params.density);
+    this._width = w;
+    this._height = h;
+
+    this.emit('resize', { cols: this._grid.cols, rows: this._grid.rows });
+  }
+
+  _renderFrame() {
+    const ctx = this._ctx;
+    const w = this._width;
+    const h = this._height;
+    const t = this._time;
+
+    // Clear with background
+    ctx.fillStyle = this._params.background;
+    ctx.fillRect(0, 0, w, h);
+
+    if (this._layers.length === 0) {
+      // Implicit single-layer mode — render directly
+      this._renderImplicit(ctx, w, h, t);
+    } else {
+      // Explicit layer compositing
+      this._renderLayers(ctx, w, h, t);
+    }
+  }
+
+  _renderImplicit(ctx, w, h, t) {
+    const grid = this._grid;
+    if (grid.cols <= 0 || grid.rows <= 0) return;
+
+    // Resolve charset
+    const chars = this._resolveChars(this._params.charset);
+    const schemeIndex = this._resolveSchemeIndex(this._params.colorScheme);
+
+    // Sample source
+    const { brightness, ctx: sCtx } = sampleCanvas(this._source, grid.cols, grid.rows, this._sampleCtx);
+    this._sampleCtx = sCtx;
+
+    // Blend with pattern if set
+    const patternName = this._params.pattern;
+    if (patternName) {
+      const patternFn = this._resolvePattern(patternName);
+      if (patternFn) {
+        const mix = this._params.patternMix;
+        for (let r = 0; r < grid.rows; r++) {
+          for (let c = 0; c < grid.cols; c++) {
+            const i = r * grid.cols + c;
+            const pv = patternFn(c, r, t, grid.cols, grid.rows, grid.ar);
+            brightness[i] = lerp(brightness[i], pv, mix);
+          }
+        }
+      }
+    }
+
+    // Build color LUT
+    const colorLUT = buildColorLUT(schemeIndex, chars.length, t, {
+      cycling: this._params.colorCycle,
+      phase: this._colorPhase,
+    });
+
+    // Set font
+    ctx.font = `${this._params.fontSize}px monospace`;
+
+    // Render
+    renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
+  }
+
+  _renderLayers(ctx, w, h, t) {
+    for (const layer of this._layers) {
+      if (!layer.visible) continue;
+
+      const grid = calculateGrid(w, h, layer.get('fontSize'), layer.get('density'));
+      if (grid.cols <= 0 || grid.rows <= 0) continue;
+
+      // Sample this layer's source
+      const source = layer.source || this._source;
+      const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx);
+      layer._sampleCtx = sCtx;
+
+      // Blend with pattern
+      const patternName = layer.get('pattern');
+      if (patternName) {
+        const patternFn = this._resolvePattern(patternName);
+        if (patternFn) {
+          const mix = layer.get('patternMix');
+          for (let r = 0; r < grid.rows; r++) {
+            for (let c = 0; c < grid.cols; c++) {
+              const i = r * grid.cols + c;
+              const pv = patternFn(c, r, t, grid.cols, grid.rows, grid.ar);
+              brightness[i] = lerp(brightness[i], pv, mix);
+            }
+          }
+        }
+      }
+
+      // Resolve layer params (inherit from instance if null)
+      const charsetVal = layer.get('charset') || this._params.charset;
+      const schemeVal = layer.get('colorScheme') || this._params.colorScheme;
+      const chars = this._resolveChars(charsetVal);
+      const schemeIndex = this._resolveSchemeIndex(schemeVal);
+      const fade = layer.get('fade') ?? this._params.fade;
+
+      // Build color LUT
+      const colorLUT = buildColorLUT(schemeIndex, chars.length, t, {
+        cycling: this._params.colorCycle,
+        phase: this._colorPhase,
+      });
+
+      // Render layer to its offscreen canvas
+      const offCanvas = layer._ensureOffscreen(w, h);
+      const offCtx = layer._offCtx;
+      offCtx.clearRect(0, 0, w, h);
+      offCtx.font = `${layer.get('fontSize')}px monospace`;
+      renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+
+      // Composite onto output (draw DPR-scaled canvas at logical size)
+      const blendMode = layer.get('blendMode') || 'replace';
+      ctx.globalAlpha = layer.get('opacity') ?? 1;
+      ctx.globalCompositeOperation = blendMode === 'add' ? 'lighter' : 'source-over';
+      ctx.drawImage(offCanvas, 0, 0, w, h);
+    }
+
+    // Reset composite state
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  _resolveChars(charset) {
+    if (typeof charset === 'string') {
+      const preset = CHARSETS.find(c => c.name === charset);
+      if (preset) return preset.chars;
+      // Raw character string
+      return charset;
+    }
+    return CHARSETS[0].chars;
+  }
+
+  _resolveSchemeIndex(scheme) {
+    if (typeof scheme === 'number') return scheme;
+    const idx = COLOR_SCHEMES.findIndex(s => s.name === scheme);
+    return idx >= 0 ? idx : 0;
+  }
+
+  _resolvePattern(name) {
+    const p = PATTERNS.find(p => p.name === name);
+    return p ? p.fn : null;
+  }
+}
+
+// Layer import — resolved when layer.js exists
+let _Layer = null;
+function _getLayerClass() {
+  if (!_Layer) {
+    // Dynamic import is resolved synchronously after first addLayer call
+    throw new Error('Layer system not initialized. Import layer.js first.');
+  }
+  return _Layer;
+}
+/** @internal Called by layer.js to register itself */
+export function _registerLayerClass(cls) { _Layer = cls; }

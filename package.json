@@ -1,0 +1,25 @@
+{
+  "name": "ascii-ify",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ASCII-ify any canvas. Layered compositing, procedural patterns, optional control panel.",
+  "main": "dist/ascii-ify.cjs",
+  "module": "dist/ascii-ify.js",
+  "exports": {
+    ".": {
+      "import": "./dist/ascii-ify.js",
+      "require": "./dist/ascii-ify.cjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": ["ascii", "canvas", "visualization", "ascii-art", "creative-coding"],
+  "license": "MIT",
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

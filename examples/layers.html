@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Layers Example</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      function drawSource(time) {
+        const w = source.width, h = source.height;
+        const t = time * 0.001;
+
+        // Gradient background
+        const grad = sCtx.createLinearGradient(0, 0, w, h);
+        grad.addColorStop(0, `hsl(${(t * 20) % 360} 70% 30%)`);
+        grad.addColorStop(1, `hsl(${(t * 20 + 180) % 360} 70% 20%)`);
+        sCtx.fillStyle = grad;
+        sCtx.fillRect(0, 0, w, h);
+
+        // Animated shapes
+        for (let i = 0; i < 8; i++) {
+          const x = w * (0.1 + 0.1 * i) + Math.sin(t + i * 0.8) * 80;
+          const y = h * 0.5 + Math.cos(t * 0.7 + i * 0.6) * h * 0.3;
+          const r = 30 + Math.sin(t * 1.5 + i) * 20;
+          sCtx.beginPath();
+          sCtx.arc(x, y, r, 0, Math.PI * 2);
+          sCtx.fillStyle = `hsla(${(t * 40 + i * 45) % 360} 80% 55% / 0.7)`;
+          sCtx.fill();
+        }
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+      });
+
+      // Layer 1: Large characters, source-based, blocks charset
+      const baseLayer = ascii.addLayer({
+        source: source,
+        fontSize: 24,
+        charset: 'blocks',
+        colorScheme: 'ocean',
+        blendMode: 'replace',
+        opacity: 1,
+      });
+
+      // Layer 2: Small characters with a pattern overlay
+      const patternLayer = ascii.addLayer({
+        source: source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'fire',
+        pattern: 'plasma',
+        patternMix: 0.6,
+        blendMode: 'add',
+        opacity: 0.5,
+      });
+
+      function loop(time) {
+        drawSource(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
