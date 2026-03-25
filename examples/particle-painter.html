@@ -387,18 +387,34 @@
           sCtx.translate(w / 2, h / 2);
           sCtx.scale(scale, scale);
 
-          // Glow layers
+          // Draw each character with wave offset
           const glowHue = (time * 0.04) % 360;
-          sCtx.font = 'bold 120px monospace';
-          sCtx.shadowColor = `hsla(${glowHue}, 80%, 60%, ${alpha * 0.6})`;
-          sCtx.shadowBlur = 40;
-          sCtx.fillStyle = `hsla(${glowHue}, 70%, 75%, ${alpha * 0.8})`;
-          sCtx.fillText('Click', 0, 0);
+          sCtx.font = 'bold 300px monospace';
+          const word = 'Click';
+          const charWidths = word.split('').map(c => sCtx.measureText(c).width);
+          const totalWidth = charWidths.reduce((a, b) => a + b, 0);
+          let xOff = -totalWidth / 2;
 
-          // Sharper inner text
-          sCtx.shadowBlur = 0;
-          sCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.9})`;
-          sCtx.fillText('Click', 0, 0);
+          for (let i = 0; i < word.length; i++) {
+            const waveY = Math.sin(time * 0.003 + i * 0.7) * 20;
+            sCtx.save();
+            sCtx.translate(xOff + charWidths[i] / 2, waveY);
+            sCtx.textAlign = 'center';
+
+            // Glow layer
+            sCtx.shadowColor = `hsla(${glowHue}, 80%, 60%, ${alpha * 0.6})`;
+            sCtx.shadowBlur = 40;
+            sCtx.fillStyle = `hsla(${glowHue}, 70%, 75%, ${alpha * 0.8})`;
+            sCtx.fillText(word[i], 0, 0);
+
+            // Sharper inner text
+            sCtx.shadowBlur = 0;
+            sCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.9})`;
+            sCtx.fillText(word[i], 0, 0);
+
+            sCtx.restore();
+            xOff += charWidths[i];
+          }
 
           sCtx.restore();
         }
@@ -415,8 +431,9 @@
         sCtx.font = '11px monospace';
         sCtx.fillStyle = 'rgba(255, 255, 255, 0.35)';
         sCtx.textAlign = 'center';
+        const filterLabel = ascii.get('enabled') ? 'E disable filter' : 'E enable filter';
         sCtx.fillText(
-          'click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 E toggle',
+          `click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 ${filterLabel}`,
           w / 2,
           h - 14,
         );
