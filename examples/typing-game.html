@@ -61,6 +61,12 @@
         'fabric','factor','finish','fossil','galaxy','gaming','ground',
         'hallow','hybrid','junior','lastly','layout','liquid','malloc',
         'macro','margin','signal','school','shadow','static','submit',
+        'algorithm','conductor','constrain','cocktail','blackbird',
+        'cinnamon','dinosaur','dominion','fishtail','gladiator',
+        'goldfinch','hangman','ignition','landlord','midnight',
+        'milkyway','mountain','navigator','obituary','outgrowing',
+        'radiation','sailboat','squadron','sunlight','thumbtack',
+        'transmit','unicorn','volcanic','windmill','xylophon',
       ];
 
       // ─── Game State ─────────────────────────────────────────
@@ -161,7 +167,7 @@
 
       function findSpawnX(text) {
         const w = source.width;
-        const fontSize = Math.min(w * 0.08, 72);
+        const fontSize = Math.min(w * 0.2, 180);
         ctx.font = `bold ${fontSize}px monospace`;
         const textWidth = ctx.measureText(text).width;
         const margin = 20;
@@ -366,7 +372,7 @@
       function drawWords() {
         const w = source.width;
         const h = source.height;
-        const fontSize = Math.min(w * 0.08, 72);
+        const fontSize = Math.min(w * 0.2, 180);
 
         for (const word of words) {
           ctx.font = `bold ${fontSize}px monospace`;
