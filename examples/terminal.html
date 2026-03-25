@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Terminal</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas ────────────────────────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Offscreen Terminal Buffer ────────────────────────
+      const termBuffer = document.createElement('canvas');
+      const tCtx = termBuffer.getContext('2d');
+
+      function resizeTermBuffer() {
+        termBuffer.width = source.width;
+        termBuffer.height = source.height;
+      }
+      resizeTermBuffer();
+      window.addEventListener('resize', resizeTermBuffer);
+
+      // ─── Terminal State ───────────────────────────────────
+      const FONT_SIZE = 15;
+      const LINE_HEIGHT = FONT_SIZE * 1.4;
+      const CHAR_WIDTH = FONT_SIZE * 0.6;
+      const MARGIN_X = 20;
+      const MARGIN_Y = 20;
+      const GREEN = '#33ff33';
+      const DIM_GREEN = '#1a9a1a';
+      const CURSOR_CHAR = '\u2588'; // full block
+
+      // Boot sequence: array of { text, speed, pause }
+      // speed = ms per character, pause = ms after line completes
+      const BOOT_SEQUENCE = [
+        { text: '', speed: 0, pause: 200 },
+        { text: '\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557', speed: 2, pause: 50 },
+        { text: '\u2551  RETRO-BIOS v1.03          (c) 1983   \u2551', speed: 2, pause: 50 },
+        { text: '\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D', speed: 2, pause: 400 },
+        { text: '', speed: 0, pause: 200 },
+        { text: 'Testing memory...  640K OK', speed: 15, pause: 600 },
+        { text: 'Checking peripherals:', speed: 20, pause: 300 },
+        { text: '  Keyboard ............ OK', speed: 12, pause: 200 },
+        { text: '  Display ............. CRT P31 Phosphor', speed: 12, pause: 200 },
+        { text: '  Drive A: 5.25" Floppy', speed: 12, pause: 200 },
+        { text: '  Drive C: 20MB Fixed Disk', speed: 12, pause: 400 },
+        { text: '', speed: 0, pause: 300 },
+        { text: 'POST complete. Starting system...', speed: 20, pause: 1200 },
+        { text: '', speed: 0, pause: 200 },
+        { text: 'Loading COMMAND.COM...', speed: 25, pause: 800 },
+        { text: '', speed: 0, pause: 300 },
+        { text: '\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550', speed: 2, pause: 100 },
+        { text: '  MS-DOS Version 3.31', speed: 20, pause: 100 },
+        { text: '  (C) Copyright Microsoft Corp 1981-1987', speed: 20, pause: 100 },
+        { text: '\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550', speed: 2, pause: 600 },
+        { text: '', speed: 0, pause: 400 },
+        // dir command
+        { text: 'C:\\> dir', speed: 60, pause: 400 },
+        { text: '', speed: 0, pause: 100 },
+        { text: ' Volume in drive C is SYSTEM', speed: 5, pause: 50 },
+        { text: ' Directory of C:\\', speed: 5, pause: 200 },
+        { text: '', speed: 0, pause: 100 },
+        { text: 'COMMAND  COM     25,307  03-25-83  12:00p', speed: 5, pause: 50 },
+        { text: 'CONFIG   SYS        128  03-25-83  12:00p', speed: 5, pause: 50 },
+        { text: 'AUTOEXEC BAT         47  03-25-83  12:00p', speed: 5, pause: 50 },
+        { text: 'README   TXT      1,024  03-25-83  12:00p', speed: 5, pause: 50 },
+        { text: '        4 File(s)     614,400 bytes free', speed: 5, pause: 600 },
+        { text: '', speed: 0, pause: 300 },
+        // type command
+        { text: 'C:\\> type readme.txt', speed: 60, pause: 400 },
+        { text: '', speed: 0, pause: 200 },
+        { text: '  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557', speed: 3, pause: 50 },
+        { text: '  \u2551    WELCOME TO THE SYSTEM      \u2551', speed: 3, pause: 50 },
+        { text: '  \u2551   All your base are belong    \u2551', speed: 3, pause: 50 },
+        { text: '  \u2551          to us.               \u2551', speed: 3, pause: 50 },
+        { text: '  \u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D', speed: 3, pause: 600 },
+        { text: '', speed: 0, pause: 300 },
+        // echo command
+        { text: 'C:\\> echo The future is already here.', speed: 60, pause: 400 },
+        { text: 'The future is already here.', speed: 5, pause: 800 },
+        { text: '', speed: 0, pause: 300 },
+        // final prompt
+        { text: 'C:\\> _', speed: 60, pause: 5000 },
+      ];
+
+      // Terminal typing state
+      let seqIndex = 0;       // current line in BOOT_SEQUENCE
+      let charIndex = 0;      // current character within line
+      let charTimer = 0;      // ms accumulated for next character
+      let pauseTimer = 0;     // ms remaining in post-line pause
+      let isPausing = false;
+      let lines = [];         // completed lines on screen
+      let currentLine = '';   // line being typed
+      let cursorVisible = true;
+      let cursorTimer = 0;
+      let sequenceComplete = false;
+      let restartTimer = 0;
+
+      function maxVisibleLines() {
+        return Math.floor((termBuffer.height - MARGIN_Y * 2) / LINE_HEIGHT) - 1;
+      }
+
+      function resetSequence() {
+        seqIndex = 0;
+        charIndex = 0;
+        charTimer = 0;
+        pauseTimer = 0;
+        isPausing = false;
+        lines = [];
+        currentLine = '';
+        sequenceComplete = false;
+        restartTimer = 0;
+      }
+
+      function updateTerminal(dt) {
+        const dtMs = dt * 1000;
+        // Cursor blink
+        cursorTimer += dtMs;
+        if (cursorTimer > 500) {
+          cursorVisible = !cursorVisible;
+          cursorTimer = 0;
+        }
+
+        if (sequenceComplete) {
+          restartTimer += dtMs;
+          if (restartTimer > 5000) {
+            resetSequence();
+          }
+          return;
+        }
+
+        if (seqIndex >= BOOT_SEQUENCE.length) {
+          sequenceComplete = true;
+          return;
+        }
+
+        const entry = BOOT_SEQUENCE[seqIndex];
+
+        if (isPausing) {
+          pauseTimer -= dtMs;
+          if (pauseTimer <= 0) {
+            isPausing = false;
+            // Commit line and advance
+            lines.push(currentLine);
+            currentLine = '';
+            charIndex = 0;
+            seqIndex++;
+            // Scroll if needed
+            const maxLines = maxVisibleLines();
+            if (lines.length > maxLines) {
+              lines = lines.slice(lines.length - maxLines);
+            }
+          }
+          return;
+        }
+
+        if (entry.speed === 0) {
+          // Instant line
+          currentLine = entry.text;
+          isPausing = true;
+          pauseTimer = entry.pause;
+          return;
+        }
+
+        // Type characters
+        charTimer += dtMs;
+        while (charTimer >= entry.speed && charIndex < entry.text.length) {
+          currentLine += entry.text[charIndex];
+          charIndex++;
+          charTimer -= entry.speed;
+        }
+
+        // Line complete?
+        if (charIndex >= entry.text.length) {
+          isPausing = true;
+          pauseTimer = entry.pause;
+        }
+      }
+
+      // ─── Render Terminal Text to Buffer ───────────────────
+      function renderTermBuffer() {
+        const w = termBuffer.width;
+        const h = termBuffer.height;
+
+        tCtx.fillStyle = '#000';
+        tCtx.fillRect(0, 0, w, h);
+
+        tCtx.font = `${FONT_SIZE}px monospace`;
+        tCtx.textBaseline = 'top';
+
+        // Draw completed lines
+        let y = MARGIN_Y;
+        for (let i = 0; i < lines.length; i++) {
+          tCtx.fillStyle = GREEN;
+          tCtx.fillText(lines[i], MARGIN_X, y);
+          y += LINE_HEIGHT;
+        }
+
+        // Draw current line with cursor
+        tCtx.fillStyle = GREEN;
+        tCtx.fillText(currentLine, MARGIN_X, y);
+
+        // Blinking cursor
+        if (cursorVisible) {
+          const cursorX = MARGIN_X + currentLine.length * CHAR_WIDTH;
+          tCtx.fillStyle = GREEN;
+          tCtx.fillText(CURSOR_CHAR, cursorX, y);
+        }
+      }
+
+      // ─── CRT Effects ─────────────────────────────────────
+
+      // Barrel distortion: copy termBuffer to source with curvature
+      function drawBarrelDistorted() {
+        const w = source.width;
+        const h = source.height;
+        const k = 0.08; // distortion strength
+        const gridX = 20;
+        const gridY = 15;
+        const cellW = w / gridX;
+        const cellH = h / gridY;
+
+        for (let gy = 0; gy < gridY; gy++) {
+          for (let gx = 0; gx < gridX; gx++) {
+            // Center of this cell in normalized coords (-1 to 1)
+            const nx = ((gx + 0.5) / gridX) * 2 - 1;
+            const ny = ((gy + 0.5) / gridY) * 2 - 1;
+            const r2 = nx * nx + ny * ny;
+            const distort = 1 + k * r2;
+
+            // Source rect (undistorted)
+            const srcX = gx * cellW;
+            const srcY = gy * cellH;
+
+            // Destination rect (barrel-distorted)
+            const dnx = nx * distort;
+            const dny = ny * distort;
+            const dstCenterX = (dnx + 1) / 2 * w;
+            const dstCenterY = (dny + 1) / 2 * h;
+            const dstW = cellW * distort;
+            const dstH = cellH * distort;
+            const dstX = dstCenterX - dstW / 2;
+            const dstY = dstCenterY - dstH / 2;
+
+            sCtx.drawImage(
+              termBuffer,
+              srcX, srcY, cellW, cellH,
+              dstX, dstY, dstW, dstH
+            );
+          }
+        }
+      }
+
+      // Phosphor glow: blurred green bloom behind text
+      function drawPhosphorGlow() {
+        sCtx.save();
+        sCtx.filter = 'blur(6px)';
+        sCtx.globalAlpha = 0.3;
+        sCtx.globalCompositeOperation = 'lighter';
+        // Draw the barrel-distorted version again with blur
+        drawBarrelDistorted();
+        sCtx.restore();
+      }
+
+      // Scanlines: horizontal dark lines
+      function drawScanlines() {
+        const w = source.width;
+        const h = source.height;
+        sCtx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+        for (let y = 0; y < h; y += 3) {
+          sCtx.fillRect(0, y, w, 1);
+        }
+      }
+
+      // Vignette: dark edges
+      function drawVignette() {
+        const w = source.width;
+        const h = source.height;
+        const cx = w / 2;
+        const cy = h / 2;
+        const r = Math.max(w, h) * 0.55;
+
+        const grad = sCtx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r);
+        grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        grad.addColorStop(0.7, 'rgba(0, 0, 0, 0.3)');
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0.85)');
+        sCtx.fillStyle = grad;
+        sCtx.fillRect(0, 0, w, h);
+      }
+
+      // ─── Main Draw ───────────────────────────────────────
+      function drawTerminal(dt) {
+        const w = source.width;
+        const h = source.height;
+
+        updateTerminal(dt);
+        renderTermBuffer();
+
+        // Clear source
+        sCtx.fillStyle = '#000';
+        sCtx.fillRect(0, 0, w, h);
+
+        // Subtle flicker
+        sCtx.globalAlpha = 0.96 + Math.random() * 0.04;
+
+        // Phosphor glow (blurred, behind)
+        drawPhosphorGlow();
+
+        // Sharp text with barrel distortion
+        sCtx.globalAlpha = 0.96 + Math.random() * 0.04;
+        drawBarrelDistorted();
+
+        sCtx.globalAlpha = 1;
+
+        // Scanlines
+        drawScanlines();
+
+        // Vignette
+        drawVignette();
+      }
+
+      // ─── ASCII-ify with Layers ────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#050a05',
+        sourceOpacity: 0,
+      });
+
+      // Layer 1: CRT scanline interference
+      ascii.addLayer({
+        source,
+        fontSize: 14,
+        charset: 'minimal',
+        colorScheme: 'mono',
+        pattern: 'moiré',
+        patternMix: 0.7,
+        blendMode: 'replace',
+        opacity: 0.3,
+      });
+
+      // Layer 2: Phosphor text glow
+      ascii.addLayer({
+        source,
+        fontSize: 8,
+        charset: 'density',
+        colorScheme: 'acid',
+        blendMode: 'add',
+        opacity: 0.9,
+      });
+
+      // ─── Controls ─────────────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      // ─── Main Loop ───────────────────────────────────────
+      let lastTime = 0;
+
+      function loop(time) {
+        const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
+        lastTime = time;
+
+        drawTerminal(dt);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
