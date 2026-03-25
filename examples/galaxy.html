@@ -132,7 +132,7 @@
       const ZOOM_MIN = 0.5;
       const ZOOM_MAX = 2.0;
 
-      window.addEventListener('wheel', (e) => {
+      source.addEventListener('wheel', (e) => {
         e.preventDefault();
         zoom -= e.deltaY * 0.001;
         zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));

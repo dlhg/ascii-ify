@@ -92,7 +92,7 @@
         mouseY = e.clientY / window.innerHeight;
       });
 
-      window.addEventListener('wheel', (e) => {
+      source.addEventListener('wheel', (e) => {
         e.preventDefault();
         speed += e.deltaY * -0.002;
         speed = Math.max(0.2, Math.min(5.0, speed));

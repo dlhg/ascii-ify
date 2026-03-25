@@ -319,7 +319,7 @@
       });
 
       // Scroll wheel: brush size
-      window.addEventListener('wheel', (e) => {
+      source.addEventListener('wheel', (e) => {
         e.preventDefault();
         brushSize -= e.deltaY * 0.05;
         brushSize = Math.max(5, Math.min(50, brushSize));

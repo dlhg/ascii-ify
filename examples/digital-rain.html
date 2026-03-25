@@ -197,7 +197,7 @@
       }, { passive: true });
 
       // Scroll — speed control
-      window.addEventListener('wheel', (e) => {
+      source.addEventListener('wheel', (e) => {
         e.preventDefault();
         speed += e.deltaY * -0.003;
         speed = Math.max(0.2, Math.min(5.0, speed));

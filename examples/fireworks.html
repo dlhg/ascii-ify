@@ -568,7 +568,7 @@
         launchRocket(pos.x, pos.y);
       });
 
-      window.addEventListener('wheel', (e) => {
+      source.addEventListener('wheel', (e) => {
         e.preventDefault();
         autoInterval += e.deltaY * 0.003;
         autoInterval = Math.max(0.15, Math.min(5, autoInterval));

@@ -59,7 +59,7 @@
       }
 
       // Scroll wheel: adjust rotation speed
-      window.addEventListener('wheel', (e) => {
+      source.addEventListener('wheel', (e) => {
         e.preventDefault();
         rotationSpeed += e.deltaY * -0.0005;
         rotationSpeed = Math.max(-1.5, Math.min(1.5, rotationSpeed));
