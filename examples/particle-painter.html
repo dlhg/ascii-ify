@@ -48,6 +48,8 @@
       let brushSize = 20;      // 5..50
       let hue = 0;
       let sizeIndicatorTimer = 0;
+      let clickPromptAlpha = 1;    // 1 = fully visible, fades to 0 on first click
+      let hasClicked = false;
 
       const BRUSH_NAMES = ['', 'Spray', 'Fountain', 'Firework', 'Orbit'];
 
@@ -295,6 +297,7 @@
           mouseDown = true;
           mouseX = e.clientX;
           mouseY = e.clientY;
+          if (!hasClicked) hasClicked = true;
           // Firework: burst on click only
           if (brushMode === 3) {
             emitFirework();
@@ -350,6 +353,7 @@
         mouseDown = true;
         mouseX = e.touches[0].clientX;
         mouseY = e.touches[0].clientY;
+        if (!hasClicked) hasClicked = true;
         if (brushMode === 3) emitFirework();
       }, { passive: false });
 
@@ -364,9 +368,40 @@
       });
 
       // ─── HUD Overlay ────────────────────────────────────
-      function drawHUD() {
+      function drawHUD(time) {
         const w = source.width;
         const h = source.height;
+
+        // Animated "Click" prompt — fades out after first interaction
+        if (clickPromptAlpha > 0.001) {
+          if (hasClicked) {
+            clickPromptAlpha *= 0.93; // smooth fade out
+          }
+          const pulse = 0.7 + 0.3 * Math.sin(time * 0.003);
+          const scale = 1 + 0.05 * Math.sin(time * 0.002);
+          const alpha = clickPromptAlpha * pulse;
+
+          sCtx.save();
+          sCtx.textAlign = 'center';
+          sCtx.textBaseline = 'middle';
+          sCtx.translate(w / 2, h / 2);
+          sCtx.scale(scale, scale);
+
+          // Glow layers
+          const glowHue = (time * 0.04) % 360;
+          sCtx.font = 'bold 120px monospace';
+          sCtx.shadowColor = `hsla(${glowHue}, 80%, 60%, ${alpha * 0.6})`;
+          sCtx.shadowBlur = 40;
+          sCtx.fillStyle = `hsla(${glowHue}, 70%, 75%, ${alpha * 0.8})`;
+          sCtx.fillText('Click', 0, 0);
+
+          // Sharper inner text
+          sCtx.shadowBlur = 0;
+          sCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.9})`;
+          sCtx.fillText('Click', 0, 0);
+
+          sCtx.restore();
+        }
 
         // Brush mode name (top-left)
         sCtx.save();
@@ -432,7 +467,7 @@
       // ─── Animation Loop ─────────────────────────────────
       function loop(time) {
         drawSource(time);
-        drawHUD();
+        drawHUD(time);
         ascii.render();
         requestAnimationFrame(loop);
       }
