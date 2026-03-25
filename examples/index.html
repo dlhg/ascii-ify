@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Examples</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; font-family: monospace; color: #ccc; }
+
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        background: rgba(10, 10, 15, 0.85);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      nav .title {
+        font-size: 14px;
+        color: #666;
+        margin-right: 8px;
+      }
+
+      nav button {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #999;
+        padding: 6px 14px;
+        font-family: monospace;
+        font-size: 13px;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: all 0.15s;
+      }
+
+      nav button:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #ddd;
+      }
+
+      nav button.active {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.25);
+        color: #fff;
+      }
+
+      nav .keys {
+        margin-left: auto;
+        font-size: 11px;
+        color: #444;
+      }
+
+      kbd {
+        display: inline-block;
+        padding: 1px 5px;
+        border: 1px solid #333;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 11px;
+        color: #555;
+      }
+
+      iframe {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        border: none;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <span class="title">ascii-ify</span>
+      <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> to cycle</span>
+    </nav>
+    <iframe id="frame"></iframe>
+
+    <script>
+      const examples = [
+        { name: 'Basic', src: '../index.html' },
+        { name: 'Layers', src: 'layers.html' },
+        { name: 'Panel', src: 'panel.html' },
+      ];
+
+      const nav = document.querySelector('nav');
+      const frame = document.getElementById('frame');
+      let current = 0;
+
+      // Build buttons
+      const buttons = examples.map((ex, i) => {
+        const btn = document.createElement('button');
+        btn.textContent = ex.name;
+        btn.addEventListener('click', () => load(i));
+        nav.insertBefore(btn, nav.querySelector('.keys'));
+        return btn;
+      });
+
+      function load(index) {
+        current = index;
+        frame.src = examples[index].src;
+        buttons.forEach((b, i) => b.classList.toggle('active', i === index));
+      }
+
+      // Keyboard navigation
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight') load((current + 1) % examples.length);
+        if (e.key === 'ArrowLeft') load((current - 1 + examples.length) % examples.length);
+      });
+
+      // Load first example
+      load(0);
+    </script>
+  </body>
+</html>
