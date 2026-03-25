@@ -431,9 +431,8 @@
         sCtx.font = '11px monospace';
         sCtx.fillStyle = 'rgba(255, 255, 255, 0.35)';
         sCtx.textAlign = 'center';
-        const filterLabel = ascii.get('enabled') ? 'E disable filter' : 'E enable filter';
         sCtx.fillText(
-          `click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 ${filterLabel}`,
+          'click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 E toggle',
           w / 2,
           h - 14,
         );

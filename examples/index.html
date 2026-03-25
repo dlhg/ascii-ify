@@ -92,7 +92,7 @@
     <nav>
       <div class="top-row">
         <span class="title">ascii-ify</span>
-        <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> cycle &nbsp; <kbd>P</kbd> panel &nbsp; <kbd>E</kbd> toggle filter</span>
+        <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> cycle &nbsp; <kbd>P</kbd> panel &nbsp; <kbd>E</kbd> <span id="filter-label">disable filter</span></span>
       </div>
       <div class="btn-grid" id="btn-grid"></div>
     </nav>
@@ -129,16 +129,41 @@
         return btn;
       });
 
+      // Filter state label
+      let filterEnabled = true;
+      const filterLabel = document.getElementById('filter-label');
+
+      function updateFilterLabel() {
+        filterLabel.textContent = filterEnabled ? 'disable filter' : 'enable filter';
+      }
+
+      function handleKey(e) {
+        if (e.key === 'e' || e.key === 'E') {
+          filterEnabled = !filterEnabled;
+          updateFilterLabel();
+        }
+      }
+
       function load(index) {
         current = index;
         frame.src = examples[index].src;
         buttons.forEach((b, i) => b.classList.toggle('active', i === index));
+        // Reset filter state when switching examples (they always start enabled)
+        filterEnabled = true;
+        updateFilterLabel();
+        // Listen for keypresses inside the iframe once it loads
+        frame.addEventListener('load', () => {
+          try {
+            frame.contentWindow.addEventListener('keydown', handleKey);
+          } catch (_) { /* cross-origin guard */ }
+        }, { once: true });
       }
 
-      // Keyboard navigation
+      // Keyboard navigation (for when parent document has focus)
       document.addEventListener('keydown', (e) => {
         if (e.key === 'ArrowRight') load((current + 1) % examples.length);
         if (e.key === 'ArrowLeft') load((current - 1 + examples.length) % examples.length);
+        handleKey(e);
       });
 
       // Load first example
