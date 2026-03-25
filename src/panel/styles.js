@@ -27,70 +27,169 @@ export const PANEL_CSS = `
   --ui-font: ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, monospace;
   --radius: 5px;
   --radius-sm: 3px;
+
+  --drawer-w: 260px;
 }
 
 /* ═══════════════════════════════════════════════════════
-   CONTROL SURFACE CONTAINER
+   CONTROL SURFACE (positioning wrapper)
    ═══════════════════════════════════════════════════════ */
 .control-surface {
-  position: relative;
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-2);
-  display: flex;
-  justify-content: space-between;
-  gap: 5px;
-  padding: 5px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--drawer-w);
   font-family: var(--ui-font);
   user-select: none;
-  transform: translateY(0);
+  transform: translateX(0);
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.control-surface::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 10%;
-  right: 10%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
-  pointer-events: none;
-}
-
 .control-surface.hidden {
-  transform: translateY(100%);
+  transform: translateX(100%);
 }
 
 /* ═══════════════════════════════════════════════════════
-   PANELS
+   EDGE TAB (toggle handle, visible when drawer is hidden)
    ═══════════════════════════════════════════════════════ */
-.panel {
-  flex: 1;
-  min-width: 0;
-  background: linear-gradient(180deg, var(--bg-panel) 0%, #10101c 100%);
+.edge-tab {
+  position: absolute;
+  left: -28px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 56px;
+  background: rgba(12, 12, 22, 0.82);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  padding: 10px 11px;
-  position: relative;
-  box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.02);
-  overflow: hidden;
-  max-height: 300px;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.panel::before {
+.edge-tab:hover {
+  background: rgba(18, 18, 30, 0.92);
+  border-color: var(--border-3);
+}
+
+.edge-tab-icon {
+  font-size: 14px;
+  color: var(--text-4);
+  transition: color 0.15s, transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  line-height: 1;
+}
+
+.edge-tab:hover .edge-tab-icon {
+  color: var(--text-2);
+}
+
+.control-surface.hidden .edge-tab-icon {
+  transform: rotate(180deg);
+}
+
+/* ═══════════════════════════════════════════════════════
+   DRAWER (glassmorphism container)
+   ═══════════════════════════════════════════════════════ */
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--drawer-w);
+  background: rgba(12, 12, 22, 0.78);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border-left: 1px solid var(--border-2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+}
+
+.drawer::before {
   content: '';
   position: absolute;
   top: 0;
-  left: 10%;
-  right: 10%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--accent-glow), transparent);
   pointer-events: none;
 }
 
-.panel-title {
+/* ═══════════════════════════════════════════════════════
+   DRAWER HEADER
+   ═══════════════════════════════════════════════════════ */
+.drawer-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.drawer-title {
+  font: 700 9px/1 var(--ui-font);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--text-3);
+}
+
+.close-btn {
+  width: 22px;
+  height: 22px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-4);
+  font: 400 14px/1 var(--ui-font);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.close-btn:hover {
+  color: var(--text-1);
+  border-color: var(--border-3);
+  background: var(--bg-track);
+}
+
+/* ═══════════════════════════════════════════════════════
+   DRAWER SCROLLABLE CONTENT
+   ═══════════════════════════════════════════════════════ */
+.drawer-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.drawer-scroll::-webkit-scrollbar { width: 4px; }
+.drawer-scroll::-webkit-scrollbar-track { background: transparent; }
+.drawer-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════
+   SECTIONS
+   ═══════════════════════════════════════════════════════ */
+.section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.section-title {
   font: 700 8.5px/1 var(--ui-font);
   text-transform: uppercase;
   letter-spacing: 0.2em;
@@ -105,39 +204,83 @@ export const PANEL_CSS = `
   transition: color 0.15s;
 }
 
-.panel-title:hover {
+.section-title:hover {
   color: var(--text-3);
 }
 
-.panel-chevron {
+.section-chevron {
   font-size: 10px;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   color: var(--text-4);
 }
 
-.panel.collapsed .panel-chevron {
+.section.collapsed .section-chevron {
   transform: rotate(-90deg);
 }
 
-.panel-body {
-  overflow-y: auto;
-  max-height: 260px;
-}
-
-.panel.collapsed {
-  flex: 0 0 auto;
-  overflow: hidden;
-  max-height: none;
-}
-
-.panel.collapsed .panel-body {
+.section.collapsed .section-body {
   display: none;
 }
 
-.panel.collapsed .panel-title {
+.section.collapsed .section-title {
   margin-bottom: 0;
   padding-bottom: 0;
   border-bottom: none;
+}
+
+/* ═══════════════════════════════════════════════════════
+   LAYER TABS
+   ═══════════════════════════════════════════════════════ */
+.layer-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-1);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.layer-tab {
+  font: 600 9px/1 var(--ui-font);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-1);
+  color: var(--text-4);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.layer-tab:hover {
+  color: var(--text-2);
+  border-color: var(--border-3);
+}
+
+.layer-tab.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.layer-tab-content {
+  display: none;
+  padding: 12px 14px;
+}
+
+.layer-tab-content.active {
+  display: block;
+}
+
+.no-layers-msg {
+  padding: 16px 14px;
+  font: 500 9px/1.5 var(--ui-font);
+  color: var(--text-4);
+  text-align: center;
+  letter-spacing: 0.05em;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -398,17 +541,5 @@ export const PANEL_CSS = `
   height: 1px;
   background: var(--border-1);
   margin: 6px 0;
-}
-
-/* Scrollbar styling */
-.panel-body::-webkit-scrollbar {
-  width: 4px;
-}
-.panel-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-.panel-body::-webkit-scrollbar-thumb {
-  background: var(--border-2);
-  border-radius: 2px;
 }
 `;

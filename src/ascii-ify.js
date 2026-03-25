@@ -241,10 +241,10 @@ export class AsciiIfy extends EventEmitter {
     if (this._panel) this._panel.hide();
   }
 
-  /** Toggle the control panel sections (expand/collapse all) */
+  /** Toggle the control panel visibility */
   togglePanel() {
-    if (this._panel && this._panel.visible) {
-      this._panel.toggleSections();
+    if (this._panel) {
+      this._panel.toggle();
     } else {
       this.showPanel();
     }

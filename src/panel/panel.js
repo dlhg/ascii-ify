@@ -14,13 +14,14 @@ export class ControlPanel {
   constructor(ascii, options = {}) {
     this._ascii = ascii;
     this._controls = [];
-    this._layerSections = new Map();
+    this._layerTabs = new Map();   // layer → { tab, content }
+    this._activeLayer = null;
     this._visible = false;
     this._rafId = null;
 
-    // Create host element
+    // Create host element — full-height overlay, pointer-events pass through
     this._host = document.createElement('div');
-    this._host.style.cssText = 'position:absolute;bottom:0;left:0;right:0;z-index:10000;pointer-events:none;';
+    this._host.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:10000;pointer-events:none;';
 
     // Attach shadow DOM
     this._shadow = this._host.attachShadow({ mode: 'closed' });
@@ -30,16 +31,15 @@ export class ControlPanel {
     style.textContent = PANEL_CSS;
     this._shadow.appendChild(style);
 
-    // Build surface
+    // Build the drawer
     this._surface = h('div', 'control-surface hidden');
-    this._surface.style.pointerEvents = 'auto';
     this._shadow.appendChild(this._surface);
 
-    this._buildPanels();
+    this._buildDrawer();
 
     // Listen for layer changes
-    this._onLayerAdd = (layer) => this._addLayerSection(layer);
-    this._onLayerRemove = (layer) => this._removeLayerSection(layer);
+    this._onLayerAdd = (layer) => this._addLayerTab(layer);
+    this._onLayerRemove = (layer) => this._removeLayerTab(layer);
     ascii.on('layeradd', this._onLayerAdd);
     ascii.on('layerremove', this._onLayerRemove);
 
@@ -55,8 +55,6 @@ export class ControlPanel {
   show() {
     this._visible = true;
     this._surface.classList.remove('hidden');
-    // Expand all sections when showing
-    this._setPanelsCollapsed(false);
     this._startSync();
   }
 
@@ -66,15 +64,9 @@ export class ControlPanel {
     this._stopSync();
   }
 
-  toggleSections() {
-    const panels = this._surface.querySelectorAll('.panel');
-    const anyExpanded = [...panels].some(p => !p.classList.contains('collapsed'));
-    this._setPanelsCollapsed(anyExpanded);
-  }
-
-  _setPanelsCollapsed(collapsed) {
-    const panels = this._surface.querySelectorAll('.panel');
-    panels.forEach(p => p.classList.toggle('collapsed', collapsed));
+  toggle() {
+    if (this._visible) this.hide();
+    else this.show();
   }
 
   destroy() {
@@ -85,50 +77,73 @@ export class ControlPanel {
       this._host.parentElement.removeChild(this._host);
     }
     this._controls = [];
-    this._layerSections.clear();
+    this._layerTabs.clear();
   }
 
   // ─── Build ───────────────────────────────────────────
 
-  _buildPanels() {
+  _buildDrawer() {
     this._surface.innerHTML = '';
 
-    // Instance panel
-    this._instancePanel = this._buildInstancePanel();
-    this._surface.appendChild(this._instancePanel);
+    // Edge tab (toggle handle)
+    const edgeTab = h('div', 'edge-tab');
+    edgeTab.appendChild(h('span', 'edge-tab-icon', '\u203A'));
+    edgeTab.addEventListener('click', () => this.toggle());
+    this._surface.appendChild(edgeTab);
 
-    // Layer panels container
-    this._layersContainer = h('div', 'panel');
+    // Drawer container (glassmorphism)
+    const drawer = h('div', 'drawer');
 
-    const layersTitle = h('div', 'panel-title');
-    layersTitle.appendChild(h('span', '', 'Layers'));
-    layersTitle.appendChild(h('span', 'panel-chevron', '\u25BC'));
-    layersTitle.addEventListener('click', () => this._layersContainer.classList.toggle('collapsed'));
-    this._layersContainer.appendChild(layersTitle);
+    // Header
+    const header = h('div', 'drawer-header');
+    header.appendChild(h('span', 'drawer-title', 'Controls'));
+    const closeBtn = h('div', 'close-btn', '\u00D7');
+    closeBtn.addEventListener('click', () => this.hide());
+    header.appendChild(closeBtn);
+    drawer.appendChild(header);
 
-    this._layersContent = h('div', 'panel-body');
-    this._layersContainer.appendChild(this._layersContent);
+    // Scrollable content area
+    this._scroll = h('div', 'drawer-scroll');
+
+    // ASCII settings section
+    this._buildAsciiSection();
+
+    // Layer tabs bar
+    this._tabBar = h('div', 'layer-tabs');
+    this._tabBar.style.display = 'none'; // hidden until layers exist
+
+    // Layer tab content container
+    this._layerContent = h('div', '');
+
+    // No-layers placeholder
+    this._noLayersMsg = h('div', 'no-layers-msg', 'No layers added');
+
+    this._scroll.appendChild(this._asciiSection);
+    this._scroll.appendChild(this._tabBar);
+    this._scroll.appendChild(this._layerContent);
+    this._scroll.appendChild(this._noLayersMsg);
+    drawer.appendChild(this._scroll);
+
+    this._surface.appendChild(drawer);
 
     // Add existing layers
     for (const layer of this._ascii._layers) {
-      this._addLayerSection(layer);
+      this._addLayerTab(layer);
     }
-
-    this._surface.appendChild(this._layersContainer);
   }
 
-  _buildInstancePanel() {
-    const panel = h('div', 'panel');
-
-    const title = h('div', 'panel-title');
-    title.appendChild(h('span', '', 'ASCII'));
-    title.appendChild(h('span', 'panel-chevron', '\u25BC'));
-    title.addEventListener('click', () => panel.classList.toggle('collapsed'));
-    panel.appendChild(title);
-
-    const body = h('div', 'panel-body');
+  _buildAsciiSection() {
+    const section = h('div', 'section');
     const ascii = this._ascii;
     const r = PARAM_RANGES;
+
+    const title = h('div', 'section-title');
+    title.appendChild(h('span', '', 'ASCII'));
+    title.appendChild(h('span', 'section-chevron', '\u25BC'));
+    title.addEventListener('click', () => section.classList.toggle('collapsed'));
+    section.appendChild(title);
+
+    const body = h('div', 'section-body');
 
     // Enabled
     this._register(new Toggle({
@@ -227,15 +242,69 @@ export class ControlPanel {
       format: (v) => v.toFixed(1) + '/s',
     }), body);
 
-    panel.appendChild(body);
-    return panel;
+    section.appendChild(body);
+    this._asciiSection = section;
   }
 
-  _addLayerSection(layer) {
-    const section = h('div', '');
+  // ─── Layer Tabs ─────────────────────────────────────
+
+  _addLayerTab(layer) {
+    // Create tab button
+    const tab = h('button', 'layer-tab', `Layer ${layer.id}`);
+    tab.addEventListener('click', () => this._activateLayer(layer));
+    this._tabBar.appendChild(tab);
+
+    // Create tab content
+    const content = h('div', 'layer-tab-content');
+    this._buildLayerContent(layer, content);
+    this._layerContent.appendChild(content);
+
+    this._layerTabs.set(layer, { tab, content });
+
+    // Show tab bar, hide placeholder
+    this._tabBar.style.display = '';
+    this._noLayersMsg.style.display = 'none';
+
+    // Activate this layer
+    this._activateLayer(layer);
+  }
+
+  _removeLayerTab(layer) {
+    const entry = this._layerTabs.get(layer);
+    if (!entry) return;
+
+    entry.tab.remove();
+    entry.content.remove();
+    this._layerTabs.delete(layer);
+
+    // If we removed the active layer, activate the first remaining
+    if (this._activeLayer === layer) {
+      this._activeLayer = null;
+      const first = this._layerTabs.keys().next().value;
+      if (first) this._activateLayer(first);
+    }
+
+    // Hide tab bar if no layers remain
+    if (this._layerTabs.size === 0) {
+      this._tabBar.style.display = 'none';
+      this._noLayersMsg.style.display = '';
+    }
+  }
+
+  _activateLayer(layer) {
+    this._activeLayer = layer;
+
+    for (const [l, entry] of this._layerTabs) {
+      const isActive = l === layer;
+      entry.tab.classList.toggle('active', isActive);
+      entry.content.classList.toggle('active', isActive);
+    }
+  }
+
+  _buildLayerContent(layer, container) {
     const r = PARAM_RANGES;
 
-    // Header with title, solo, and remove buttons
+    // Header with solo and remove buttons
     const header = h('div', 'layer-header');
     header.appendChild(h('span', 'layer-title', `Layer ${layer.id}`));
     const btnGroup = h('div', 'layer-btn-group');
@@ -249,16 +318,16 @@ export class ControlPanel {
     removeBtn.addEventListener('click', () => this._ascii.removeLayer(layer));
     btnGroup.appendChild(removeBtn);
     header.appendChild(btnGroup);
-    section.appendChild(header);
-    section._soloBtn = soloBtn;
-    section._layer = layer;
+    container.appendChild(header);
+    container._soloBtn = soloBtn;
+    container._layer = layer;
 
     // Visible toggle
     this._register(new Toggle({
       label: 'Visible',
       get: () => layer.get('visible'),
       set: (v) => layer.set('visible', v),
-    }), section);
+    }), container);
 
     // Font Size
     this._register(new BarControl({
@@ -266,7 +335,7 @@ export class ControlPanel {
       get: () => layer.get('fontSize'),
       set: (v) => layer.set('fontSize', v),
       format: (v) => v.toFixed(1) + 'px',
-    }), section);
+    }), container);
 
     // Density
     this._register(new BarControl({
@@ -274,7 +343,7 @@ export class ControlPanel {
       get: () => layer.get('density'),
       set: (v) => layer.set('density', v),
       format: (v) => v.toFixed(2),
-    }), section);
+    }), container);
 
     // Charset
     this._register(new Selector({
@@ -285,7 +354,7 @@ export class ControlPanel {
         return c ? CHARSET_NAMES.indexOf(c) + 1 : 0;
       },
       set: (i) => layer.set('charset', i === 0 ? null : CHARSET_NAMES[i - 1]),
-    }), section);
+    }), container);
 
     // Color Scheme
     this._register(new Selector({
@@ -296,7 +365,7 @@ export class ControlPanel {
         return s ? SCHEME_NAMES.indexOf(s) + 1 : 0;
       },
       set: (i) => layer.set('colorScheme', i === 0 ? null : SCHEME_NAMES[i - 1]),
-    }), section);
+    }), container);
 
     // Pattern
     this._register(new Selector({
@@ -307,7 +376,7 @@ export class ControlPanel {
         return p ? PATTERN_NAMES.indexOf(p) : 0;
       },
       set: (i) => layer.set('pattern', i === 0 ? null : PATTERN_NAMES[i]),
-    }), section);
+    }), container);
 
     // Pattern Mix
     this._register(new BarControl({
@@ -315,7 +384,7 @@ export class ControlPanel {
       get: () => layer.get('patternMix'),
       set: (v) => layer.set('patternMix', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), section);
+    }), container);
 
     // Opacity
     this._register(new BarControl({
@@ -323,7 +392,15 @@ export class ControlPanel {
       get: () => layer.get('opacity'),
       set: (v) => layer.set('opacity', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), section);
+    }), container);
+
+    // Fade
+    this._register(new BarControl({
+      label: 'Fade', ...r.fade,
+      get: () => layer.get('fade'),
+      set: (v) => layer.set('fade', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), container);
 
     // Blend Mode
     this._register(new Selector({
@@ -331,30 +408,16 @@ export class ControlPanel {
       options: BLEND_MODES,
       get: () => BLEND_MODES.indexOf(layer.get('blendMode')),
       set: (i) => layer.set('blendMode', BLEND_MODES[i]),
-    }), section);
-
-    // Divider
-    section.appendChild(h('div', 'ctrl-divider'));
-
-    this._layersContent.appendChild(section);
-    this._layerSections.set(layer, section);
+    }), container);
   }
 
   _updateSoloBtns() {
     const soloed = this._ascii._soloLayer;
-    for (const [layer, section] of this._layerSections) {
-      if (section._soloBtn) {
-        section._soloBtn.classList.toggle('active', soloed === layer);
+    for (const [layer, entry] of this._layerTabs) {
+      if (entry.content._soloBtn) {
+        entry.content._soloBtn.classList.toggle('active', soloed === layer);
       }
     }
-  }
-
-  _removeLayerSection(layer) {
-    const section = this._layerSections.get(layer);
-    if (section && section.parentElement) {
-      section.parentElement.removeChild(section);
-    }
-    this._layerSections.delete(layer);
   }
 
   _register(ctrl, parent) {
