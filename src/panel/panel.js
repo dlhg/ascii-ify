@@ -108,9 +108,18 @@ export class ControlPanel {
     // ASCII settings section
     this._buildAsciiSection();
 
-    // Layer tabs bar
+    // Layer tabs bar (always visible for the Add button)
     this._tabBar = h('div', 'layer-tabs');
-    this._tabBar.style.display = 'none'; // hidden until layers exist
+    const addBtn = h('button', 'layer-tab add-layer-btn', '+');
+    addBtn.title = 'Add layer';
+    addBtn.addEventListener('click', () => {
+      this._ascii.addLayer({
+        source: this._ascii._source,
+        blendMode: 'add',
+        opacity: 0.5,
+      });
+    });
+    this._tabBar.appendChild(addBtn);
 
     // Layer tab content container
     this._layerContent = h('div', '');
@@ -270,8 +279,7 @@ export class ControlPanel {
 
     this._layerTabs.set(layer, { tab, content, eyeBtn });
 
-    // Show tab bar, hide placeholder
-    this._tabBar.style.display = '';
+    // Hide placeholder
     this._noLayersMsg.style.display = 'none';
 
     // Activate this layer
@@ -293,9 +301,8 @@ export class ControlPanel {
       if (first) this._activateLayer(first);
     }
 
-    // Hide tab bar if no layers remain
+    // Show placeholder if no layers remain
     if (this._layerTabs.size === 0) {
-      this._tabBar.style.display = 'none';
       this._noLayersMsg.style.display = '';
     }
   }
@@ -417,6 +424,30 @@ export class ControlPanel {
       options: BLEND_MODES,
       get: () => BLEND_MODES.indexOf(layer.get('blendMode')),
       set: (i) => layer.set('blendMode', BLEND_MODES[i]),
+    }), container);
+
+    // Offset X
+    this._register(new BarControl({
+      label: 'Offset X', ...r.offsetX,
+      get: () => layer.get('offsetX'),
+      set: (v) => layer.set('offsetX', v),
+      format: (v) => Math.round(v) + 'px',
+    }), container);
+
+    // Offset Y
+    this._register(new BarControl({
+      label: 'Offset Y', ...r.offsetY,
+      get: () => layer.get('offsetY'),
+      set: (v) => layer.set('offsetY', v),
+      format: (v) => Math.round(v) + 'px',
+    }), container);
+
+    // Z-Index
+    this._register(new BarControl({
+      label: 'Z-Index', ...r.zIndex,
+      get: () => layer.get('zIndex'),
+      set: (v) => layer.set('zIndex', v),
+      format: (v) => String(Math.round(v)),
     }), container);
   }
 

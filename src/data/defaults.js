@@ -14,6 +14,9 @@ export const DEFAULTS = {
   sourceOpacity: 0,
   opacity: 1,
   blendMode: 'replace',
+  offsetX: 0,
+  offsetY: 0,
+  zIndex: 0,
 };
 
 export const PARAM_RANGES = {
@@ -25,4 +28,7 @@ export const PARAM_RANGES = {
   colorCycleRate: { min: 0.1, max: 4, step: 0.1 },
   sourceOpacity: { min: 0, max: 1, step: 0.01 },
   opacity: { min: 0, max: 1, step: 0.01 },
+  offsetX: { min: -2000, max: 2000, step: 1 },
+  offsetY: { min: -2000, max: 2000, step: 1 },
+  zIndex: { min: -100, max: 100, step: 1 },
 };

@@ -277,6 +277,16 @@ export const PANEL_CSS = `
   pointer-events: none;
 }
 
+.add-layer-btn {
+  font-size: 14px;
+  line-height: 1;
+  padding: 3px 10px;
+}
+
+.add-layer-btn:hover {
+  color: var(--accent);
+}
+
 .layer-tab-eye {
   font-size: 7px;
   line-height: 1;

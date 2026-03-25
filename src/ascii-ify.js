@@ -113,7 +113,7 @@ export class AsciiIfy extends EventEmitter {
 
     // Propagate to implicit-mode layers
     if (this._implicitMode && this._layers.length > 0) {
-      const layerKeys = ['fontSize', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode'];
+      const layerKeys = ['fontSize', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode', 'offsetX', 'offsetY', 'zIndex'];
       if (layerKeys.includes(key)) {
         this._layers[0].set(key, value);
       }
@@ -366,7 +366,8 @@ export class AsciiIfy extends EventEmitter {
   }
 
   _renderLayers(ctx, w, h, t) {
-    for (const layer of this._layers) {
+    const sorted = [...this._layers].sort((a, b) => (a.get('zIndex') || 0) - (b.get('zIndex') || 0));
+    for (const layer of sorted) {
       if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
 
       const grid = calculateGrid(w, h, layer.get('fontSize'), layer.get('density'));
@@ -417,7 +418,9 @@ export class AsciiIfy extends EventEmitter {
       const blendMode = layer.get('blendMode') || 'replace';
       ctx.globalAlpha = layer.get('opacity') ?? 1;
       ctx.globalCompositeOperation = blendMode === 'add' ? 'lighter' : 'source-over';
-      ctx.drawImage(offCanvas, 0, 0, w, h);
+      const ox = layer.get('offsetX') || 0;
+      const oy = layer.get('offsetY') || 0;
+      ctx.drawImage(offCanvas, ox, oy, w, h);
     }
 
     // Reset composite state

@@ -26,6 +26,9 @@ export class Layer {
       fade: options.fade ?? null,
       opacity: options.opacity ?? DEFAULTS.opacity,
       blendMode: options.blendMode ?? DEFAULTS.blendMode,
+      offsetX: options.offsetX ?? DEFAULTS.offsetX,
+      offsetY: options.offsetY ?? DEFAULTS.offsetY,
+      zIndex: options.zIndex ?? DEFAULTS.zIndex,
     };
 
     // Reusable offscreen canvases
