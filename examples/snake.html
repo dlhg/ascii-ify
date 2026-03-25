@@ -283,7 +283,7 @@
           ctx.fillText('SNAKE', w / 2, h / 2 - 20);
           ctx.font = '14px monospace';
           ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-          ctx.fillText('arrow keys to move — P to toggle panel', w / 2, h / 2 + 20);
+          ctx.fillText('arrow keys to move — P panel — E toggle filter', w / 2, h / 2 + 20);
           ctx.fillText('press any arrow or space to start', w / 2, h / 2 + 45);
         }
 
@@ -313,6 +313,7 @@
 
       document.addEventListener('keydown', e => {
         if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
       });
 
       function loop(time) {

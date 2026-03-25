@@ -229,7 +229,7 @@
         if (score1 + score2 === 0 && serving) {
           ctx.font = '14px monospace';
           ctx.fillStyle = 'rgba(255,255,255,0.25)';
-          ctx.fillText('W/S — left paddle    ↑/↓ — right paddle    P — toggle panel', w / 2, h - 30);
+          ctx.fillText('W/S — left paddle    ↑/↓ — right paddle    P — panel    E — toggle filter', w / 2, h - 30);
         }
       }
 
@@ -245,6 +245,7 @@
 
       document.addEventListener('keydown', e => {
         if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
       });
 
       function loop(time) {

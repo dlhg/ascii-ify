@@ -98,6 +98,10 @@ export class AsciiIfy extends EventEmitter {
     const old = this._params[key];
     this._params[key] = value;
 
+    if (key === 'enabled') {
+      this._updateEnabled();
+    }
+
     if (key === 'sourceOpacity') {
       this._updateSourceOpacity();
     }
@@ -225,10 +229,10 @@ export class AsciiIfy extends EventEmitter {
     if (this._panel) this._panel.hide();
   }
 
-  /** Toggle the control panel */
+  /** Toggle the control panel sections (expand/collapse all) */
   togglePanel() {
     if (this._panel && this._panel.visible) {
-      this.hidePanel();
+      this._panel.toggleSections();
     } else {
       this.showPanel();
     }
@@ -252,7 +256,18 @@ export class AsciiIfy extends EventEmitter {
 
   // ─── Internal ──────────────────────────────────────────
 
+  _updateEnabled() {
+    if (this._params.enabled) {
+      this._canvas.style.display = '';
+      this._source.style.opacity = String(this._params.sourceOpacity);
+    } else {
+      this._canvas.style.display = 'none';
+      this._source.style.opacity = '1';
+    }
+  }
+
   _updateSourceOpacity() {
+    if (!this._params.enabled) return;
     this._source.style.opacity = String(this._params.sourceOpacity);
   }
 
@@ -277,6 +292,8 @@ export class AsciiIfy extends EventEmitter {
   }
 
   _renderFrame() {
+    if (!this._params.enabled) return;
+
     const ctx = this._ctx;
     const w = this._width;
     const h = this._height;

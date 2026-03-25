@@ -80,6 +80,13 @@
         opacity: 0.5,
       });
 
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+        if (e.key === '1') baseLayer.set('visible', !baseLayer.get('visible'));
+        if (e.key === '2') patternLayer.set('visible', !patternLayer.get('visible'));
+      });
+
       function loop(time) {
         drawSource(time);
         ascii.render();

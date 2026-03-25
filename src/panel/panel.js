@@ -55,6 +55,8 @@ export class ControlPanel {
   show() {
     this._visible = true;
     this._surface.classList.remove('hidden');
+    // Expand all sections when showing
+    this._setPanelsCollapsed(false);
     this._startSync();
   }
 
@@ -62,6 +64,17 @@ export class ControlPanel {
     this._visible = false;
     this._surface.classList.add('hidden');
     this._stopSync();
+  }
+
+  toggleSections() {
+    const panels = this._surface.querySelectorAll('.panel');
+    const anyExpanded = [...panels].some(p => !p.classList.contains('collapsed'));
+    this._setPanelsCollapsed(anyExpanded);
+  }
+
+  _setPanelsCollapsed(collapsed) {
+    const panels = this._surface.querySelectorAll('.panel');
+    panels.forEach(p => p.classList.toggle('collapsed', collapsed));
   }
 
   destroy() {
@@ -86,8 +99,14 @@ export class ControlPanel {
 
     // Layer panels container
     this._layersContainer = h('div', 'panel');
-    this._layersContainer.appendChild(h('div', 'panel-title', 'Layers'));
-    this._layersContent = h('div', '');
+
+    const layersTitle = h('div', 'panel-title');
+    layersTitle.appendChild(h('span', '', 'Layers'));
+    layersTitle.appendChild(h('span', 'panel-chevron', '\u25BC'));
+    layersTitle.addEventListener('click', () => this._layersContainer.classList.toggle('collapsed'));
+    this._layersContainer.appendChild(layersTitle);
+
+    this._layersContent = h('div', 'panel-body');
     this._layersContainer.appendChild(this._layersContent);
 
     // Add existing layers
@@ -100,10 +119,23 @@ export class ControlPanel {
 
   _buildInstancePanel() {
     const panel = h('div', 'panel');
-    panel.appendChild(h('div', 'panel-title', 'ASCII'));
 
+    const title = h('div', 'panel-title');
+    title.appendChild(h('span', '', 'ASCII'));
+    title.appendChild(h('span', 'panel-chevron', '\u25BC'));
+    title.addEventListener('click', () => panel.classList.toggle('collapsed'));
+    panel.appendChild(title);
+
+    const body = h('div', 'panel-body');
     const ascii = this._ascii;
     const r = PARAM_RANGES;
+
+    // Enabled
+    this._register(new Toggle({
+      label: 'Enabled',
+      get: () => ascii.get('enabled'),
+      set: (v) => ascii.set('enabled', v),
+    }), body);
 
     // Font Size
     this._register(new BarControl({
@@ -111,7 +143,7 @@ export class ControlPanel {
       get: () => ascii.get('fontSize'),
       set: (v) => ascii.set('fontSize', v),
       format: (v) => v.toFixed(1) + 'px',
-    }), panel);
+    }), body);
 
     // Density
     this._register(new BarControl({
@@ -119,7 +151,7 @@ export class ControlPanel {
       get: () => ascii.get('density'),
       set: (v) => ascii.set('density', v),
       format: (v) => v.toFixed(2),
-    }), panel);
+    }), body);
 
     // Charset
     this._register(new Selector({
@@ -127,7 +159,7 @@ export class ControlPanel {
       options: CHARSET_NAMES,
       get: () => CHARSET_NAMES.indexOf(ascii.get('charset')),
       set: (i) => ascii.set('charset', CHARSET_NAMES[i]),
-    }), panel);
+    }), body);
 
     // Color Scheme
     this._register(new Selector({
@@ -135,7 +167,7 @@ export class ControlPanel {
       options: SCHEME_NAMES,
       get: () => SCHEME_NAMES.indexOf(ascii.get('colorScheme')),
       set: (i) => ascii.set('colorScheme', SCHEME_NAMES[i]),
-    }), panel);
+    }), body);
 
     // Pattern
     this._register(new Selector({
@@ -146,7 +178,7 @@ export class ControlPanel {
         return p ? PATTERN_NAMES.indexOf(p) : 0;
       },
       set: (i) => ascii.set('pattern', i === 0 ? null : PATTERN_NAMES[i]),
-    }), panel);
+    }), body);
 
     // Pattern Mix
     this._register(new BarControl({
@@ -154,7 +186,7 @@ export class ControlPanel {
       get: () => ascii.get('patternMix'),
       set: (v) => ascii.set('patternMix', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), panel);
+    }), body);
 
     // Fade
     this._register(new BarControl({
@@ -162,7 +194,7 @@ export class ControlPanel {
       get: () => ascii.get('fade'),
       set: (v) => ascii.set('fade', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), panel);
+    }), body);
 
     // Speed
     this._register(new BarControl({
@@ -170,7 +202,7 @@ export class ControlPanel {
       get: () => ascii.get('speed'),
       set: (v) => ascii.set('speed', v),
       format: (v) => v.toFixed(1) + 'x',
-    }), panel);
+    }), body);
 
     // Source Opacity
     this._register(new BarControl({
@@ -178,14 +210,14 @@ export class ControlPanel {
       get: () => ascii.get('sourceOpacity'),
       set: (v) => ascii.set('sourceOpacity', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), panel);
+    }), body);
 
     // Color Cycle
     this._register(new Toggle({
       label: 'Color Cycle',
       get: () => ascii.get('colorCycle'),
       set: (v) => ascii.set('colorCycle', v),
-    }), panel);
+    }), body);
 
     // Color Cycle Rate
     this._register(new BarControl({
@@ -193,8 +225,9 @@ export class ControlPanel {
       get: () => ascii.get('colorCycleRate'),
       set: (v) => ascii.set('colorCycleRate', v),
       format: (v) => v.toFixed(1) + '/s',
-    }), panel);
+    }), body);
 
+    panel.appendChild(body);
     return panel;
   }
 

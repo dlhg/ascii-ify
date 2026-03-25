@@ -37,6 +37,7 @@ export const PANEL_CSS = `
   background: var(--bg-surface);
   border-top: 1px solid var(--border-2);
   display: flex;
+  justify-content: space-between;
   gap: 5px;
   padding: 5px;
   font-family: var(--ui-font);
@@ -74,7 +75,7 @@ export const PANEL_CSS = `
   box-shadow:
     0 2px 8px rgba(0, 0, 0, 0.25),
     inset 0 1px 0 rgba(255, 255, 255, 0.02);
-  overflow-y: auto;
+  overflow: hidden;
   max-height: 300px;
 }
 
@@ -97,6 +98,46 @@ export const PANEL_CSS = `
   margin-bottom: 10px;
   padding-bottom: 7px;
   border-bottom: 1px solid var(--border-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.panel-title:hover {
+  color: var(--text-3);
+}
+
+.panel-chevron {
+  font-size: 10px;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--text-4);
+}
+
+.panel.collapsed .panel-chevron {
+  transform: rotate(-90deg);
+}
+
+.panel-body {
+  overflow-y: auto;
+  max-height: 260px;
+}
+
+.panel.collapsed {
+  flex: 0 0 auto;
+  overflow: hidden;
+  max-height: none;
+}
+
+.panel.collapsed .panel-body {
+  display: none;
+}
+
+.panel.collapsed .panel-title {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -348,13 +389,13 @@ export const PANEL_CSS = `
 }
 
 /* Scrollbar styling */
-.panel::-webkit-scrollbar {
+.panel-body::-webkit-scrollbar {
   width: 4px;
 }
-.panel::-webkit-scrollbar-track {
+.panel-body::-webkit-scrollbar-track {
   background: transparent;
 }
-.panel::-webkit-scrollbar-thumb {
+.panel-body::-webkit-scrollbar-thumb {
   background: var(--border-2);
   border-radius: 2px;
 }

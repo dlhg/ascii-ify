@@ -1,4 +1,5 @@
 export const DEFAULTS = {
+  enabled: true,
   fontSize: 16,
   density: 1,
   charset: 'density',

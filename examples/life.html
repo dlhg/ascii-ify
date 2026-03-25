@@ -254,7 +254,7 @@
 
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-        ctx.fillText('space: play/pause  click: draw  r: reset  c: clear  n: step  P: panel', w - 10, 20);
+        ctx.fillText('space: play/pause  click: draw  r: reset  c: clear  n: step  P: panel  E: filter', w - 10, 20);
       }
 
       // ─── ASCII-ify ────────────────────────────────────────
@@ -269,6 +269,7 @@
 
       document.addEventListener('keydown', e => {
         if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
       });
 
       function loop(time) {
