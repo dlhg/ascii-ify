@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Webcam</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+      video { display: none; }
+
+      #prompt {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #08080c;
+        z-index: 100;
+        cursor: pointer;
+        font-family: monospace;
+        color: #888;
+        gap: 16px;
+      }
+      #prompt .big { font-size: 28px; color: #ccc; }
+      #prompt .sub { font-size: 13px; color: #555; }
+      #prompt.hidden { display: none; }
+
+      #error-msg {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: #08080c;
+        z-index: 100;
+        font-family: monospace;
+        color: #a44;
+        font-size: 16px;
+        text-align: center;
+        padding: 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+      <video id="video" autoplay playsinline muted></video>
+      <div id="prompt">
+        <div class="big">Click to Start Webcam</div>
+        <div class="sub">camera permission required</div>
+      </div>
+      <div id="error-msg"></div>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Elements ───────────────────────────────────────
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+      const video = document.getElementById('video');
+      const prompt = document.getElementById('prompt');
+      const errorMsg = document.getElementById('error-msg');
+
+      // ─── State ──────────────────────────────────────────
+      let mirrored = true;
+      let frozen = false;
+      let currentPreset = 0;
+      let running = false;
+      let fontSizeOffset = 0;
+
+      // ─── Canvas Sizing ──────────────────────────────────
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      // ─── Effect Presets ─────────────────────────────────
+      const presets = [
+        {
+          name: 'Classic',
+          apply(ascii) {
+            ascii.set({ colorCycle: false, speed: 1 });
+            ascii.addLayer({
+              fontSize: 10 + fontSizeOffset,
+              charset: 'density',
+              colorScheme: 'mono',
+              blendMode: 'replace',
+              opacity: 1,
+            });
+          },
+        },
+        {
+          name: 'Neon Portrait',
+          apply(ascii) {
+            ascii.set({ colorCycle: false, speed: 1 });
+            ascii.addLayer({
+              fontSize: 16 + fontSizeOffset,
+              charset: 'blocks',
+              colorScheme: 'neon',
+              blendMode: 'replace',
+              opacity: 1,
+            });
+            ascii.addLayer({
+              fontSize: 6 + fontSizeOffset,
+              charset: 'braille',
+              colorScheme: 'rainbow',
+              blendMode: 'add',
+              opacity: 0.7,
+            });
+          },
+        },
+        {
+          name: 'Matrix',
+          apply(ascii) {
+            ascii.set({ colorCycle: false, speed: 1.5 });
+            ascii.addLayer({
+              fontSize: 12 + fontSizeOffset,
+              charset: 'binary',
+              colorScheme: 'acid',
+              blendMode: 'replace',
+              opacity: 1,
+            });
+            ascii.addLayer({
+              fontSize: 8 + fontSizeOffset,
+              charset: 'density',
+              colorScheme: 'acid',
+              pattern: 'tunnel',
+              patternMix: 0.35,
+              blendMode: 'add',
+              opacity: 0.5,
+            });
+          },
+        },
+        {
+          name: 'Thermal',
+          apply(ascii) {
+            ascii.set({ colorCycle: false, speed: 0.8 });
+            ascii.addLayer({
+              fontSize: 14 + fontSizeOffset,
+              charset: 'blocks',
+              colorScheme: 'fire',
+              blendMode: 'replace',
+              opacity: 1,
+            });
+            ascii.addLayer({
+              fontSize: 7 + fontSizeOffset,
+              charset: 'density',
+              colorScheme: 'fire',
+              pattern: 'breathing',
+              patternMix: 0.2,
+              blendMode: 'add',
+              opacity: 0.6,
+            });
+          },
+        },
+        {
+          name: 'Vaporwave',
+          apply(ascii) {
+            ascii.set({ colorCycle: false, speed: 0.7 });
+            ascii.addLayer({
+              fontSize: 18 + fontSizeOffset,
+              charset: 'blocks',
+              colorScheme: 'vapor',
+              blendMode: 'replace',
+              opacity: 1,
+            });
+            ascii.addLayer({
+              fontSize: 7 + fontSizeOffset,
+              charset: 'braille',
+              colorScheme: 'ocean',
+              blendMode: 'add',
+              opacity: 0.5,
+            });
+            ascii.addLayer({
+              fontSize: 10 + fontSizeOffset,
+              charset: 'density',
+              colorScheme: 'vapor',
+              pattern: 'plasma',
+              patternMix: 0.6,
+              blendMode: 'add',
+              opacity: 0.25,
+            });
+          },
+        },
+        {
+          name: 'Glitch',
+          apply(ascii) {
+            ascii.set({ colorCycle: true, colorCycleRate: 2, speed: 2 });
+            ascii.addLayer({
+              fontSize: 10 + fontSizeOffset,
+              charset: 'density',
+              colorScheme: 'rainbow',
+              blendMode: 'replace',
+              opacity: 1,
+            });
+            ascii.addLayer({
+              fontSize: 6 + fontSizeOffset,
+              charset: 'braille',
+              colorScheme: 'neon',
+              pattern: 'moiré',
+              patternMix: 0.5,
+              blendMode: 'add',
+              opacity: 0.5,
+            });
+            ascii.addLayer({
+              fontSize: 20 + fontSizeOffset,
+              charset: 'blocks',
+              colorScheme: 'acid',
+              pattern: 'diamond',
+              patternMix: 0.4,
+              blendMode: 'add',
+              opacity: 0.3,
+            });
+          },
+        },
+        {
+          name: 'Phantom',
+          apply(ascii) {
+            ascii.set({ colorCycle: false, speed: 0.5 });
+            ascii.addLayer({
+              fontSize: 6 + fontSizeOffset,
+              charset: 'braille',
+              colorScheme: 'ocean',
+              blendMode: 'replace',
+              opacity: 1,
+              fade: 0.6,
+            });
+            ascii.addLayer({
+              fontSize: 22 + fontSizeOffset,
+              charset: 'blocks',
+              colorScheme: 'mono',
+              pattern: 'spiral',
+              patternMix: 0.4,
+              blendMode: 'add',
+              opacity: 0.35,
+              fade: 0.8,
+            });
+          },
+        },
+      ];
+
+      // ─── ASCII-ify Setup ────────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        background: '#08080c',
+        sourceOpacity: 0,
+      });
+
+      function applyPreset(index) {
+        currentPreset = index;
+        // Remove all existing layers
+        while (ascii.layers.length > 0) {
+          ascii.removeLayer(ascii.layers[0]);
+        }
+        // Reset color cycling (presets opt in)
+        ascii.set({ colorCycle: false, colorCycleRate: 0.5 });
+        // Apply new preset
+        presets[index].apply(ascii);
+      }
+
+      // ─── Draw Loop ──────────────────────────────────────
+      function drawFrame() {
+        if (!frozen && video.readyState >= video.HAVE_CURRENT_DATA) {
+          const w = source.width;
+          const h = source.height;
+
+          // Scale video to cover the canvas while preserving aspect ratio
+          const vw = video.videoWidth;
+          const vh = video.videoHeight;
+          const scale = Math.max(w / vw, h / vh);
+          const dw = vw * scale;
+          const dh = vh * scale;
+          const dx = (w - dw) / 2;
+          const dy = (h - dh) / 2;
+
+          ctx.save();
+          if (mirrored) {
+            ctx.translate(w, 0);
+            ctx.scale(-1, 1);
+          }
+          ctx.drawImage(video, dx, dy, dw, dh);
+          ctx.restore();
+        }
+
+        // HUD overlay — drawn on source canvas so it becomes ASCII too
+        const w = source.width;
+        const h = source.height;
+        ctx.save();
+        ctx.font = '13px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.textAlign = 'left';
+        ctx.fillText(`[${currentPreset + 1}] ${presets[currentPreset].name}`, 14, h - 38);
+        ctx.font = '11px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.fillText(
+          '1-7 presets \u00B7 M mirror \u00B7 F freeze \u00B7 [ ] size \u00B7 P panel \u00B7 E toggle',
+          14, h - 18,
+        );
+        if (frozen) {
+          ctx.font = '15px monospace';
+          ctx.fillStyle = 'rgba(255, 100, 100, 0.4)';
+          ctx.textAlign = 'center';
+          ctx.fillText('FROZEN', w / 2, 28);
+        }
+        ctx.restore();
+
+        ascii.render();
+        requestAnimationFrame(drawFrame);
+      }
+
+      // ─── Start Webcam ───────────────────────────────────
+      async function startCamera() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false,
+          });
+          video.srcObject = stream;
+          await video.play();
+
+          prompt.classList.add('hidden');
+          applyPreset(0);
+          running = true;
+          requestAnimationFrame(drawFrame);
+        } catch (err) {
+          prompt.classList.add('hidden');
+          errorMsg.style.display = 'flex';
+          errorMsg.textContent = `Camera error: ${err.message}\n\nPlease allow camera access and reload.`;
+        }
+      }
+
+      prompt.addEventListener('click', startCamera);
+
+      // ─── Keyboard Controls ──────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        // Preset switching: 1-7
+        const num = parseInt(e.key, 10);
+        if (num >= 1 && num <= presets.length && running) {
+          applyPreset(num - 1);
+          return;
+        }
+
+        switch (e.key) {
+          case 'p':
+          case 'P':
+            ascii.togglePanel();
+            break;
+          case 'e':
+          case 'E':
+            ascii.set('enabled', !ascii.get('enabled'));
+            break;
+          case 'm':
+          case 'M':
+            mirrored = !mirrored;
+            break;
+          case 'f':
+          case 'F':
+            frozen = !frozen;
+            break;
+          case '[':
+            fontSizeOffset = Math.max(fontSizeOffset - 2, -6);
+            if (running) applyPreset(currentPreset);
+            break;
+          case ']':
+            fontSizeOffset = Math.min(fontSizeOffset + 2, 20);
+            if (running) applyPreset(currentPreset);
+            break;
+        }
+      });
+    </script>
+  </body>
+</html>
