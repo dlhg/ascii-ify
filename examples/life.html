@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Game of Life</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', () => { resize(); rebuildGrid(); });
+
+      // ─── Grid ────────────────────────────────────────────
+      const CELL = 8;
+      let cols, rows, grid, nextGrid, age;
+
+      function rebuildGrid() {
+        cols = Math.floor(source.width / CELL);
+        rows = Math.floor(source.height / CELL);
+        const old = grid;
+        const oldAge = age;
+        const oldCols = old ? old[0]?.length : 0;
+        const oldRows = old ? old.length : 0;
+        grid = Array.from({ length: rows }, (_, y) =>
+          Array.from({ length: cols }, (_, x) =>
+            (old && y < oldRows && x < oldCols) ? old[y][x] : 0
+          )
+        );
+        age = Array.from({ length: rows }, (_, y) =>
+          Array.from({ length: cols }, (_, x) =>
+            (oldAge && y < oldRows && x < oldCols) ? oldAge[y][x] : 0
+          )
+        );
+        nextGrid = Array.from({ length: rows }, () => new Array(cols).fill(0));
+      }
+      rebuildGrid();
+
+      // Seed with some random life
+      function seedRandom(density = 0.3) {
+        for (let y = 0; y < rows; y++)
+          for (let x = 0; x < cols; x++) {
+            grid[y][x] = Math.random() < density ? 1 : 0;
+            age[y][x] = 0;
+          }
+      }
+
+      // Seed with a few glider guns and random clusters
+      function seedInteresting() {
+        clearGrid();
+        // Random clusters
+        for (let i = 0; i < 8; i++) {
+          const cx = Math.floor(Math.random() * cols);
+          const cy = Math.floor(Math.random() * rows);
+          const size = 5 + Math.floor(Math.random() * 10);
+          for (let dy = -size; dy <= size; dy++) {
+            for (let dx = -size; dx <= size; dx++) {
+              const nx = cx + dx, ny = cy + dy;
+              if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && Math.random() < 0.4) {
+                grid[ny][nx] = 1;
+              }
+            }
+          }
+        }
+        // A few gliders
+        const patterns = [
+          [[0,1],[1,2],[2,0],[2,1],[2,2]], // glider
+          [[0,0],[0,1],[0,2],[1,0],[2,1]], // r-pentomino
+        ];
+        for (let i = 0; i < 5; i++) {
+          const pat = patterns[Math.floor(Math.random() * patterns.length)];
+          const ox = Math.floor(Math.random() * (cols - 10));
+          const oy = Math.floor(Math.random() * (rows - 10));
+          for (const [dy, dx] of pat) {
+            if (oy + dy < rows && ox + dx < cols) grid[oy + dy][ox + dx] = 1;
+          }
+        }
+      }
+
+      function clearGrid() {
+        for (let y = 0; y < rows; y++)
+          for (let x = 0; x < cols; x++) {
+            grid[y][x] = 0;
+            age[y][x] = 0;
+          }
+      }
+
+      seedInteresting();
+
+      // ─── Simulation ──────────────────────────────────────
+      let running = true;
+      let simTimer = 0;
+      const SIM_INTERVAL = 0.06;
+      let generation = 0;
+      let population = 0;
+
+      function step() {
+        population = 0;
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0; x < cols; x++) {
+            let neighbors = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = (x + dx + cols) % cols;
+                const ny = (y + dy + rows) % rows;
+                neighbors += grid[ny][nx];
+              }
+            }
+            if (grid[y][x]) {
+              nextGrid[y][x] = (neighbors === 2 || neighbors === 3) ? 1 : 0;
+            } else {
+              nextGrid[y][x] = neighbors === 3 ? 1 : 0;
+            }
+            if (nextGrid[y][x]) {
+              population++;
+              age[y][x] = grid[y][x] ? age[y][x] + 1 : 0;
+            } else {
+              // Decay: negative age for fade-out
+              age[y][x] = grid[y][x] ? -1 : Math.max(age[y][x] - 1, -8);
+            }
+          }
+        }
+        [grid, nextGrid] = [nextGrid, grid];
+        generation++;
+      }
+
+      // ─── Mouse Drawing ────────────────────────────────────
+      let drawing = false;
+      let drawValue = 1;
+
+      function cellAt(e) {
+        const rect = source.getBoundingClientRect();
+        const x = Math.floor((e.clientX - rect.left) / CELL);
+        const y = Math.floor((e.clientY - rect.top) / CELL);
+        return { x: Math.max(0, Math.min(cols - 1, x)), y: Math.max(0, Math.min(rows - 1, y)) };
+      }
+
+      function paint(e) {
+        const { x, y } = cellAt(e);
+        // Paint a small brush
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows) {
+              grid[ny][nx] = drawValue;
+              age[ny][nx] = drawValue ? 1 : -1;
+            }
+          }
+        }
+      }
+
+      source.addEventListener('mousedown', e => {
+        drawing = true;
+        const { x, y } = cellAt(e);
+        drawValue = grid[y][x] ? 0 : 1;
+        paint(e);
+      });
+      source.addEventListener('mousemove', e => { if (drawing) paint(e); });
+      window.addEventListener('mouseup', () => { drawing = false; });
+
+      // ─── Keyboard ─────────────────────────────────────────
+      document.addEventListener('keydown', e => {
+        switch (e.key) {
+          case ' ':
+            e.preventDefault();
+            running = !running;
+            break;
+          case 'c':
+          case 'C':
+            clearGrid();
+            generation = 0;
+            break;
+          case 'r':
+          case 'R':
+            seedInteresting();
+            generation = 0;
+            break;
+          case 'n':
+          case 'N':
+            if (!running) step();
+            break;
+        }
+      });
+
+      // ─── Draw ────────────────────────────────────────────
+      let lastTime = 0;
+
+      function draw(time) {
+        const w = source.width, h = source.height;
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        const t = time * 0.001;
+
+        if (running) {
+          simTimer += dt;
+          while (simTimer >= SIM_INTERVAL) {
+            step();
+            simTimer -= SIM_INTERVAL;
+          }
+        }
+
+        // Background with subtle gradient
+        const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
+        bg.addColorStop(0, '#0a0810');
+        bg.addColorStop(1, '#040408');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // Draw cells
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0; x < cols; x++) {
+            const a = age[y][x];
+            if (grid[y][x]) {
+              // Alive — color by age
+              const hue = (a * 3 + t * 20) % 360;
+              const sat = 70 + Math.min(a, 20) * 1;
+              const lum = 35 + Math.min(a, 30) * 1;
+              ctx.fillStyle = `hsl(${hue} ${sat}% ${lum}%)`;
+              ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+            } else if (a < 0) {
+              // Recently dead — fade out
+              const fade = Math.max(0, 1 + a / 8);
+              if (fade > 0) {
+                ctx.fillStyle = `rgba(60, 20, 80, ${fade * 0.4})`;
+                ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+              }
+            }
+          }
+        }
+
+        // HUD
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.fillText(`gen: ${generation}  pop: ${population}  ${running ? '▶' : '⏸'}`, 10, 20);
+
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+        ctx.fillText('space: play/pause  click: draw  r: reset  c: clear  n: step  P: panel', w - 10, 20);
+      }
+
+      // ─── ASCII-ify ────────────────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        fontSize: 8,
+        charset: 'braille',
+        colorScheme: 'fire',
+        sourceOpacity: 0,
+        colorCycle: true,
+        colorCycleRate: 0.15,
+      });
+
+      document.addEventListener('keydown', e => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+      });
+
+      function loop(time) {
+        draw(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

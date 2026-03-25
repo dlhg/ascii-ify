@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Snake</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      const source = document.getElementById('source');
+      const ctx = source.getContext('2d');
+
+      function resize() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // ─── Grid Config ─────────────────────────────────────
+      const CELL = 20;
+      let cols, rows;
+      function recalcGrid() {
+        cols = Math.floor(source.width / CELL);
+        rows = Math.floor(source.height / CELL);
+      }
+      recalcGrid();
+      window.addEventListener('resize', () => { resize(); recalcGrid(); resetGame(); });
+
+      // ─── Game State ──────────────────────────────────────
+      let snake, dir, nextDir, food, score, dead, moveTimer, moveInterval;
+      let highScore = 0;
+      let particles = [];
+      let pulseTimer = 0;
+      let gameStarted = false;
+
+      function resetGame() {
+        const cx = Math.floor(cols / 2);
+        const cy = Math.floor(rows / 2);
+        snake = [
+          { x: cx, y: cy },
+          { x: cx - 1, y: cy },
+          { x: cx - 2, y: cy },
+        ];
+        dir = { x: 1, y: 0 };
+        nextDir = { x: 1, y: 0 };
+        score = 0;
+        dead = false;
+        moveTimer = 0;
+        moveInterval = 0.12;
+        particles = [];
+        spawnFood();
+      }
+
+      function spawnFood() {
+        const occupied = new Set(snake.map(s => `${s.x},${s.y}`));
+        let fx, fy;
+        do {
+          fx = Math.floor(Math.random() * cols);
+          fy = Math.floor(Math.random() * rows);
+        } while (occupied.has(`${fx},${fy}`));
+        food = { x: fx, y: fy };
+        pulseTimer = 0;
+      }
+
+      function spawnParticles(x, y) {
+        for (let i = 0; i < 12; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 80 + Math.random() * 120;
+          particles.push({
+            x: x * CELL + CELL / 2,
+            y: y * CELL + CELL / 2,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 0.5 + Math.random() * 0.3,
+            maxLife: 0.5 + Math.random() * 0.3,
+            size: 3 + Math.random() * 4,
+          });
+        }
+      }
+
+      resetGame();
+
+      // ─── Input ────────────────────────────────────────────
+      document.addEventListener('keydown', e => {
+        if (dead && (e.key === ' ' || e.key === 'Enter')) {
+          resetGame();
+          gameStarted = true;
+          return;
+        }
+        if (!gameStarted && (e.key === ' ' || e.key === 'Enter' ||
+            ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key))) {
+          gameStarted = true;
+        }
+        switch (e.key) {
+          case 'ArrowUp':    if (dir.y === 0) nextDir = { x: 0, y: -1 }; break;
+          case 'ArrowDown':  if (dir.y === 0) nextDir = { x: 0, y: 1 };  break;
+          case 'ArrowLeft':  if (dir.x === 0) nextDir = { x: -1, y: 0 }; break;
+          case 'ArrowRight': if (dir.x === 0) nextDir = { x: 1, y: 0 };  break;
+        }
+      });
+
+      // ─── Update ──────────────────────────────────────────
+      let lastTime = 0;
+
+      function update(dt) {
+        if (!gameStarted || dead) return;
+
+        moveTimer += dt;
+        if (moveTimer < moveInterval) return;
+        moveTimer -= moveInterval;
+
+        dir = nextDir;
+        const head = snake[0];
+        const nx = head.x + dir.x;
+        const ny = head.y + dir.y;
+
+        // Wall collision
+        if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
+          dead = true;
+          highScore = Math.max(highScore, score);
+          return;
+        }
+
+        // Self collision
+        for (const seg of snake) {
+          if (seg.x === nx && seg.y === ny) {
+            dead = true;
+            highScore = Math.max(highScore, score);
+            return;
+          }
+        }
+
+        snake.unshift({ x: nx, y: ny });
+
+        // Eat food
+        if (nx === food.x && ny === food.y) {
+          score++;
+          spawnParticles(food.x, food.y);
+          spawnFood();
+          // Speed up slightly
+          moveInterval = Math.max(0.05, moveInterval - 0.002);
+        } else {
+          snake.pop();
+        }
+      }
+
+      // ─── Draw ────────────────────────────────────────────
+      function draw(time) {
+        const w = source.width, h = source.height;
+        const dt = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        const t = time * 0.001;
+
+        update(dt);
+        pulseTimer += dt;
+
+        // Update particles
+        particles = particles.filter(p => {
+          p.life -= dt;
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.vx *= 0.95;
+          p.vy *= 0.95;
+          return p.life > 0;
+        });
+
+        // Background
+        ctx.fillStyle = '#060612';
+        ctx.fillRect(0, 0, w, h);
+
+        // Subtle grid
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= cols; x++) {
+          ctx.beginPath();
+          ctx.moveTo(x * CELL, 0);
+          ctx.lineTo(x * CELL, rows * CELL);
+          ctx.stroke();
+        }
+        for (let y = 0; y <= rows; y++) {
+          ctx.beginPath();
+          ctx.moveTo(0, y * CELL);
+          ctx.lineTo(cols * CELL, y * CELL);
+          ctx.stroke();
+        }
+
+        // Snake body
+        for (let i = snake.length - 1; i >= 0; i--) {
+          const seg = snake[i];
+          const ratio = i / snake.length;
+          const hue = (t * 60 + i * 8) % 360;
+          const brightness = dead ? 20 : (i === 0 ? 65 : 45 + ratio * 10);
+          const saturation = dead ? 10 : 80;
+
+          const px = seg.x * CELL;
+          const py = seg.y * CELL;
+          const inset = i === 0 ? 1 : 2;
+
+          // Glow on head
+          if (i === 0 && !dead) {
+            ctx.shadowColor = `hsl(${hue} 90% 60%)`;
+            ctx.shadowBlur = 15;
+          }
+
+          ctx.fillStyle = `hsl(${hue} ${saturation}% ${brightness}%)`;
+          ctx.fillRect(px + inset, py + inset, CELL - inset * 2, CELL - inset * 2);
+          ctx.shadowBlur = 0;
+
+          // Eyes on head
+          if (i === 0 && !dead) {
+            ctx.fillStyle = '#fff';
+            const ex1 = px + CELL * 0.3 + dir.x * 3;
+            const ey1 = py + CELL * 0.35 + dir.y * 3;
+            const ex2 = px + CELL * 0.7 + dir.x * 3;
+            const ey2 = py + CELL * 0.35 + dir.y * 3;
+            ctx.beginPath();
+            ctx.arc(ex1, ey1, 3, 0, Math.PI * 2);
+            ctx.arc(ex2, ey2, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Food
+        if (food) {
+          const pulse = Math.sin(pulseTimer * 6) * 0.3 + 0.7;
+          const fx = food.x * CELL + CELL / 2;
+          const fy = food.y * CELL + CELL / 2;
+          const fr = (CELL / 2 - 2) * pulse;
+
+          // Food glow
+          const grad = ctx.createRadialGradient(fx, fy, 0, fx, fy, CELL * 1.5);
+          grad.addColorStop(0, `rgba(255, 80, 120, ${0.3 * pulse})`);
+          grad.addColorStop(1, 'transparent');
+          ctx.fillStyle = grad;
+          ctx.fillRect(fx - CELL * 1.5, fy - CELL * 1.5, CELL * 3, CELL * 3);
+
+          ctx.shadowColor = 'rgba(255, 80, 120, 0.8)';
+          ctx.shadowBlur = 15;
+          ctx.beginPath();
+          ctx.arc(fx, fy, fr, 0, Math.PI * 2);
+          ctx.fillStyle = `hsl(${(t * 100) % 360} 90% 60%)`;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+
+        // Particles
+        for (const p of particles) {
+          const alpha = p.life / p.maxLife;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 200, 100, ${alpha * 0.8})`;
+          ctx.fill();
+        }
+
+        // Score
+        ctx.font = 'bold 16px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.fillText(`score: ${score}`, 12, 24);
+        if (highScore > 0) {
+          ctx.fillText(`best: ${highScore}`, 12, 44);
+        }
+
+        // Start / Game Over screen
+        if (!gameStarted) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+          ctx.fillRect(0, 0, w, h);
+          ctx.textAlign = 'center';
+          ctx.font = `bold ${Math.min(w * 0.05, 40)}px monospace`;
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.5 + Math.sin(t * 3) * 0.2})`;
+          ctx.fillText('SNAKE', w / 2, h / 2 - 20);
+          ctx.font = '14px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+          ctx.fillText('arrow keys to move — P to toggle panel', w / 2, h / 2 + 20);
+          ctx.fillText('press any arrow or space to start', w / 2, h / 2 + 45);
+        }
+
+        if (dead) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          ctx.fillRect(0, 0, w, h);
+          ctx.textAlign = 'center';
+          ctx.font = `bold ${Math.min(w * 0.05, 40)}px monospace`;
+          ctx.fillStyle = `rgba(255, 80, 80, ${0.6 + Math.sin(t * 4) * 0.2})`;
+          ctx.fillText('GAME OVER', w / 2, h / 2 - 20);
+          ctx.font = '16px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.fillText(`score: ${score}`, w / 2, h / 2 + 15);
+          ctx.font = '14px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+          ctx.fillText('press space to restart', w / 2, h / 2 + 45);
+        }
+      }
+
+      // ─── ASCII-ify ────────────────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        fontSize: 10,
+        charset: 'density',
+        colorScheme: 'acid',
+        sourceOpacity: 0,
+      });
+
+      document.addEventListener('keydown', e => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+      });
+
+      function loop(time) {
+        draw(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
