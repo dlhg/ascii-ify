@@ -84,9 +84,10 @@
       // ─── Input ──────────────────────────────────────────────
       document.addEventListener('keydown', e => {
         if (e.key === 'Escape') { ascii.togglePanel(); return; }
-        if (e.key === '`') { ascii.set('enabled', !ascii.get('enabled')); return; }
 
         if (state === 'waiting' || state === 'gameover') {
+          if (e.key === 'e' || e.key === 'E') { ascii.set('enabled', !ascii.get('enabled')); return; }
+          if (e.key === 'p' || e.key === 'P') { ascii.togglePanel(); return; }
           if (e.key === ' ') { startGame(); e.preventDefault(); }
           return;
         }
