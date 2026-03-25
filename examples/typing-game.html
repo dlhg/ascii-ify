@@ -37,7 +37,14 @@
       const BASE_SPAWN_INTERVAL = 2.2;
       const MIN_SPAWN_INTERVAL = 0.55;
       const WORDS_PER_LEVEL = 5;
-      const MAX_PARTICLES = 200;
+      const MAX_PARTICLES = 500;
+
+      // ─── Group Colors (word visual groups) ─────────────────
+      const GROUP_COLORS = [
+        { base: [0, 220, 255], glow: [100, 255, 255] },   // cyan
+        { base: [255, 80, 200], glow: [255, 150, 230] },   // magenta
+        { base: [255, 200, 50], glow: [255, 240, 130] },   // gold
+      ];
 
       // ─── Word Lists ─────────────────────────────────────────
       const WORDS_SHORT = [
@@ -85,6 +92,8 @@
       let activeWord = null;
       let typedChars = 0;
 
+      let wordGroupCounter = 0;
+
       let particles = [];
       let shakeTimer = 0;
       let missFlash = 0;
@@ -105,6 +114,7 @@
 
         if (e.key === 'Backspace') {
           if (activeWord) {
+            activeWord.letterStates.fill('pending');
             activeWord.active = false;
             activeWord = null;
             typedChars = 0;
@@ -129,20 +139,26 @@
           if (best) {
             activeWord = best;
             best.active = true;
+            destroyLetter(best, 0);
             typedChars = 1;
             best.flash = 1;
+            if (typedChars >= best.text.length) {
+              destroyWord(best);
+            }
           }
           return;
         }
 
         const expected = activeWord.text[typedChars];
         if (typed === expected) {
+          destroyLetter(activeWord, typedChars);
           typedChars++;
           activeWord.flash = 1;
           if (typedChars >= activeWord.text.length) {
             destroyWord(activeWord);
           }
         } else {
+          activeWord.letterStates.fill('pending');
           activeWord.active = false;
           activeWord = null;
           typedChars = 0;
@@ -192,6 +208,7 @@
       function spawnWord() {
         const text = pickWord();
         const speed = Math.min(BASE_SPEED + difficulty * SPEED_PER_LEVEL, MAX_SPEED);
+        const group = wordGroupCounter++ % 3;
         words.push({
           text,
           x: findSpawnX(text),
@@ -199,6 +216,9 @@
           speed: speed * (0.85 + Math.random() * 0.3),
           flash: 0,
           active: false,
+          destructionStyle: Math.floor(Math.random() * 5),
+          group,
+          letterStates: new Array(text.length).fill('pending'),
         });
       }
 
@@ -211,7 +231,7 @@
         if (combo > bestCombo) bestCombo = combo;
         comboPopScale = 1;
 
-        spawnWordExplosion(word.x, word.y, word.text);
+        spawnCompletionBurst(word.x, word.y, word.group);
 
         const idx = words.indexOf(word);
         if (idx >= 0) words.splice(idx, 1);
@@ -247,40 +267,145 @@
         }
       }
 
+      // ─── Letter Destruction ─────────────────────────────────
+      function destroyLetter(word, letterIndex) {
+        word.letterStates[letterIndex] = 'done';
+        const fontSize = Math.min(source.width * 0.2, 180);
+        ctx.font = `bold ${fontSize}px monospace`;
+        const charWidth = ctx.measureText('M').width;
+        const fullWidth = charWidth * word.text.length;
+        const startX = word.x - fullWidth / 2;
+        const letterX = startX + letterIndex * charWidth + charWidth / 2;
+        const letterY = word.y;
+        spawnLetterDestruction(word.text[letterIndex], letterX, letterY, word.destructionStyle, word.group);
+      }
+
       // ─── Particles ──────────────────────────────────────────
-      function spawnWordExplosion(x, y, text) {
-        const charSpacing = 16;
-        const startX = x - (text.length * charSpacing) / 2;
+      function spawnLetterDestruction(char, x, y, style, group) {
+        const fontSize = Math.min(source.width * 0.2, 180);
 
-        for (let i = 0; i < text.length; i++) {
-          if (particles.length >= MAX_PARTICLES) break;
-          const cx = startX + i * charSpacing;
-          const angle = Math.random() * Math.PI * 2;
-          const speed = 80 + Math.random() * 120;
-          particles.push({
-            char: text[i],
-            x: cx, y,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed - 60,
-            life: 0.8 + Math.random() * 0.4,
-            maxLife: 1.2,
-            rotation: (Math.random() - 0.5) * 10,
-            size: 20 + Math.random() * 10,
-          });
+        switch (style) {
+          case 0: { // EXPLODE
+            if (particles.length < MAX_PARTICLES) {
+              const a = Math.random() * Math.PI * 2;
+              const s = 100 + Math.random() * 150;
+              particles.push({
+                char, x, y,
+                vx: Math.cos(a) * s, vy: Math.sin(a) * s - 80,
+                life: 0.5 + Math.random() * 0.3, maxLife: 0.8,
+                rotation: 0, angularVel: (Math.random() - 0.5) * 15,
+                size: fontSize * 0.7, style: 'explode', group, scaleDecay: 1,
+              });
+            }
+            const sparkCount = 6 + (Math.random() * 5 | 0);
+            for (let i = 0; i < sparkCount; i++) {
+              if (particles.length >= MAX_PARTICLES) break;
+              const a = Math.random() * Math.PI * 2;
+              const s = 60 + Math.random() * 140;
+              particles.push({
+                char: null, x, y,
+                vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40,
+                life: 0.3 + Math.random() * 0.3, maxLife: 0.6,
+                size: 2 + Math.random() * 4, style: 'explode', group,
+                rotation: 0, angularVel: 0, scaleDecay: 1,
+              });
+            }
+            break;
+          }
+          case 1: { // FALL
+            if (particles.length < MAX_PARTICLES) {
+              particles.push({
+                char, x, y,
+                vx: (Math.random() - 0.5) * 20, vy: 30,
+                life: 1.2 + Math.random() * 0.5, maxLife: 1.7,
+                rotation: 0, angularVel: (Math.random() - 0.5) * 4,
+                size: fontSize * 0.9, style: 'fall', group, scaleDecay: 1,
+              });
+            }
+            break;
+          }
+          case 2: { // DISSOLVE
+            const dotCount = 10 + (Math.random() * 8 | 0);
+            for (let i = 0; i < dotCount; i++) {
+              if (particles.length >= MAX_PARTICLES) break;
+              const a = Math.random() * Math.PI * 2;
+              const s = 15 + Math.random() * 40;
+              particles.push({
+                char: null,
+                x: x + (Math.random() - 0.5) * 20,
+                y: y + (Math.random() - 0.5) * 20,
+                vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+                life: 0.6 + Math.random() * 0.6, maxLife: 1.2,
+                size: 1.5 + Math.random() * 3, style: 'dissolve', group,
+                rotation: 0, angularVel: 0, scaleDecay: 1,
+              });
+            }
+            break;
+          }
+          case 3: { // SHATTER
+            const shardCount = 5 + (Math.random() * 4 | 0);
+            for (let i = 0; i < shardCount; i++) {
+              if (particles.length >= MAX_PARTICLES) break;
+              const a = Math.random() * Math.PI * 2;
+              const s = 150 + Math.random() * 200;
+              particles.push({
+                char: null, x, y,
+                vx: Math.cos(a) * s, vy: Math.sin(a) * s - 50,
+                life: 0.3 + Math.random() * 0.3, maxLife: 0.6,
+                size: 6 + Math.random() * 10, style: 'shatter', group,
+                rotation: a, angularVel: (Math.random() - 0.5) * 20, scaleDecay: 1,
+              });
+            }
+            if (particles.length < MAX_PARTICLES) {
+              particles.push({
+                char, x, y,
+                vx: (Math.random() - 0.5) * 250, vy: -100 - Math.random() * 100,
+                life: 0.25 + Math.random() * 0.15, maxLife: 0.4,
+                size: fontSize * 0.5, style: 'shatter', group,
+                rotation: 0, angularVel: (Math.random() - 0.5) * 25, scaleDecay: 1,
+              });
+            }
+            break;
+          }
+          case 4: { // VAPORIZE
+            if (particles.length < MAX_PARTICLES) {
+              particles.push({
+                char, x, y,
+                vx: (Math.random() - 0.5) * 10, vy: -60 - Math.random() * 40,
+                life: 0.8 + Math.random() * 0.4, maxLife: 1.2,
+                rotation: 0, angularVel: (Math.random() - 0.5) * 2,
+                size: fontSize * 0.9, style: 'vaporize', group, scaleDecay: 0.96,
+              });
+            }
+            for (let i = 0; i < 4; i++) {
+              if (particles.length >= MAX_PARTICLES) break;
+              particles.push({
+                char: null,
+                x: x + (Math.random() - 0.5) * 15,
+                y: y + Math.random() * 10,
+                vx: (Math.random() - 0.5) * 15, vy: -30 - Math.random() * 20,
+                life: 0.5 + Math.random() * 0.4, maxLife: 0.9,
+                size: 2 + Math.random() * 3, style: 'vaporize', group,
+                rotation: 0, angularVel: 0, scaleDecay: 0.98,
+              });
+            }
+            break;
+          }
         }
+      }
 
-        for (let i = 0; i < 10; i++) {
+      function spawnCompletionBurst(x, y, group) {
+        const count = 12 + (Math.random() * 6 | 0);
+        for (let i = 0; i < count; i++) {
           if (particles.length >= MAX_PARTICLES) break;
-          const angle = Math.random() * Math.PI * 2;
-          const speed = 40 + Math.random() * 80;
+          const a = (i / count) * Math.PI * 2 + Math.random() * 0.3;
+          const s = 80 + Math.random() * 100;
           particles.push({
-            char: null,
-            x, y,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
-            life: 0.4 + Math.random() * 0.3,
-            maxLife: 0.7,
-            size: 3 + Math.random() * 4,
+            char: null, x, y,
+            vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+            life: 0.4 + Math.random() * 0.3, maxLife: 0.7,
+            size: 3 + Math.random() * 4, style: 'explode', group,
+            rotation: 0, angularVel: 0, scaleDecay: 1,
           });
         }
       }
@@ -290,33 +415,99 @@
           const p = particles[i];
           p.x += p.vx * dt;
           p.y += p.vy * dt;
-          p.vy += 200 * dt;
-          p.vx *= 0.97;
           p.life -= dt;
-          if (p.life <= 0) particles.splice(i, 1);
+
+          if (p.life <= 0) {
+            particles.splice(i, 1);
+            continue;
+          }
+
+          switch (p.style) {
+            case 'fall':
+              p.vy += 600 * dt;
+              p.vx *= 0.99;
+              break;
+            case 'vaporize':
+              p.vy -= 30 * dt;
+              p.vx *= 0.95;
+              p.vy *= 0.98;
+              p.size *= p.scaleDecay;
+              break;
+            case 'dissolve':
+              p.vx *= 0.94;
+              p.vy *= 0.94;
+              p.vx += (Math.random() - 0.5) * 20 * dt;
+              p.vy += (Math.random() - 0.5) * 20 * dt;
+              break;
+            case 'shatter':
+              p.vy += 100 * dt;
+              p.vx *= 0.99;
+              break;
+            default:
+              p.vy += 200 * dt;
+              p.vx *= 0.97;
+              break;
+          }
+
+          if (p.angularVel) p.rotation += p.angularVel * dt;
         }
       }
 
       function drawParticles() {
         for (const p of particles) {
           const alpha = Math.max(0, p.life / p.maxLife);
+          const gc = p.group != null ? GROUP_COLORS[p.group] : null;
+
           if (p.char) {
             ctx.save();
             ctx.translate(p.x, p.y);
-            ctx.rotate(p.rotation * (1 - alpha));
+            if (p.rotation) ctx.rotate(p.rotation);
+            if (p.style === 'vaporize') ctx.globalAlpha = alpha * alpha;
+
             ctx.font = `bold ${p.size}px monospace`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillStyle = `rgba(100, 255, 200, ${alpha * 0.8})`;
+
+            if (gc) {
+              const [r, g, b] = gc.glow;
+              ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.85})`;
+            } else {
+              ctx.fillStyle = `rgba(100, 255, 200, ${alpha * 0.8})`;
+            }
+
             ctx.fillText(p.char, 0, 0);
+            ctx.restore();
+          } else if (p.style === 'shatter') {
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.rotation);
+            if (gc) {
+              const [r, g, b] = gc.glow;
+              ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.9})`;
+            } else {
+              ctx.strokeStyle = `rgba(255, 255, 200, ${alpha * 0.8})`;
+            }
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(-p.size / 2, 0);
+            ctx.lineTo(p.size / 2, 0);
+            ctx.lineTo(p.size * 0.3, p.size * 0.3);
+            ctx.closePath();
+            ctx.stroke();
             ctx.restore();
           } else {
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(255, 255, 200, ${alpha * 0.6})`;
+            if (gc) {
+              const [r, g, b] = gc.glow;
+              ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.6})`;
+            } else {
+              ctx.fillStyle = `rgba(255, 255, 200, ${alpha * 0.6})`;
+            }
             ctx.fill();
           }
         }
+        ctx.globalAlpha = 1;
       }
 
       // ─── Game Logic ─────────────────────────────────────────
@@ -328,6 +519,7 @@
         lives = MAX_LIVES;
         difficulty = 0;
         destroyedCount = 0;
+        wordGroupCounter = 0;
         words = [];
         particles = [];
         activeWord = null;
@@ -373,46 +565,56 @@
         const w = source.width;
         const h = source.height;
         const fontSize = Math.min(w * 0.2, 180);
+        ctx.font = `bold ${fontSize}px monospace`;
+        const charWidth = ctx.measureText('M').width;
 
         for (const word of words) {
+          const gc = GROUP_COLORS[word.group];
+          const fullWidth = charWidth * word.text.length;
+          const startX = word.x - fullWidth / 2;
+
           ctx.font = `bold ${fontSize}px monospace`;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
 
+          for (let i = 0; i < word.text.length; i++) {
+            if (word.letterStates[i] !== 'pending') continue;
+
+            const letterX = startX + i * charWidth;
+
+            if (word.active && word === activeWord) {
+              const [r, g, b] = gc.glow;
+              ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.8 + word.flash * 0.2})`;
+            } else {
+              const urgency = Math.max(0, word.y / h);
+              const [br, bg, bb] = gc.base;
+              const r = Math.floor(br + urgency * (255 - br));
+              const g = Math.floor(bg - urgency * bg);
+              const b = Math.floor(bb - urgency * bb);
+              ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
+            }
+
+            ctx.fillText(word.text[i], letterX, word.y);
+          }
+
+          // Underline for active word under remaining letters
           if (word.active && word === activeWord) {
-            const typedStr = word.text.substring(0, typedChars);
-            const remainStr = word.text.substring(typedChars);
-
-            const fullWidth = ctx.measureText(word.text).width;
-            const typedWidth = ctx.measureText(typedStr).width;
-            const startX = word.x - fullWidth / 2;
-
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-
-            // Typed portion — bright green
-            ctx.fillStyle = `rgba(100, 255, 180, ${0.8 + word.flash * 0.2})`;
-            ctx.fillText(typedStr, startX, word.y);
-
-            // Remaining — white
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-            ctx.fillText(remainStr, startX + typedWidth, word.y);
-
-            // Underline
-            ctx.strokeStyle = 'rgba(100, 255, 180, 0.4)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(startX, word.y + fontSize * 0.55);
-            ctx.lineTo(startX + fullWidth, word.y + fontSize * 0.55);
-            ctx.stroke();
-          } else {
-            // Urgency coloring: white → red as word nears bottom
-            const urgency = Math.max(0, word.y / h);
-            const r = Math.floor(200 + urgency * 55);
-            const g = Math.floor(200 - urgency * 100);
-            const b = Math.floor(200 - urgency * 100);
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
-            ctx.fillText(word.text, word.x, word.y);
+            let firstPending = -1, lastPending = -1;
+            for (let i = 0; i < word.letterStates.length; i++) {
+              if (word.letterStates[i] === 'pending') {
+                if (firstPending === -1) firstPending = i;
+                lastPending = i;
+              }
+            }
+            if (firstPending >= 0) {
+              const [r, g, b] = gc.glow;
+              ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.4)`;
+              ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(startX + firstPending * charWidth, word.y + fontSize * 0.55);
+              ctx.lineTo(startX + (lastPending + 1) * charWidth, word.y + fontSize * 0.55);
+              ctx.stroke();
+            }
           }
         }
       }
@@ -542,26 +744,36 @@
         colorCycleRate: 0.3,
       });
 
-      // Layer 1: Tunnel background — binary digits flowing through a vortex
+      // Layer 1: Background vortex — binary tunnel atmosphere
       ascii.addLayer({
-        source: source,
-        fontSize: 6,
+        source,
+        fontSize: 5,
         charset: 'binary',
         colorScheme: 'vapor',
         pattern: 'tunnel',
-        patternMix: 0.6,
+        patternMix: 0.65,
         blendMode: 'replace',
         opacity: 1,
       });
 
-      // Layer 2: Game action — falling words, HUD, particles
+      // Layer 2: Game detail — words, HUD, crisp text
       ascii.addLayer({
-        source: source,
-        fontSize: 12,
+        source,
+        fontSize: 10,
         charset: 'density',
         colorScheme: 'neon',
         blendMode: 'add',
-        opacity: 0.9,
+        opacity: 0.85,
+      });
+
+      // Layer 3: Fine particles — destruction effects, glow
+      ascii.addLayer({
+        source,
+        fontSize: 7,
+        charset: 'braille',
+        colorScheme: 'fire',
+        blendMode: 'add',
+        opacity: 0.35,
       });
 
       // ─── Main Loop ─────────────────────────────────────────
