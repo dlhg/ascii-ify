@@ -17,6 +17,18 @@ export const DEFAULTS = {
   offsetX: 0,
   offsetY: 0,
   zIndex: 0,
+
+  // Edge detection (per-layer)
+  edgeDetect: false,
+  edgeThreshold: 0.15,
+  edgeCharset: 'box-light',
+
+  // CRT post-processing (global)
+  crtEnabled: false,
+  crtScanlines: 0.3,
+  crtGlow: 0,
+  crtDistortion: 0,
+  crtFlicker: 0,
 };
 
 export const PARAM_RANGES = {
@@ -31,4 +43,13 @@ export const PARAM_RANGES = {
   offsetX: { min: -2000, max: 2000, step: 1 },
   offsetY: { min: -2000, max: 2000, step: 1 },
   zIndex: { min: -100, max: 100, step: 1 },
+
+  // Edge detection
+  edgeThreshold: { min: 0, max: 1, step: 0.01 },
+
+  // CRT
+  crtScanlines: { min: 0, max: 1, step: 0.01 },
+  crtGlow: { min: 0, max: 1, step: 0.01 },
+  crtDistortion: { min: 0, max: 0.5, step: 0.01 },
+  crtFlicker: { min: 0, max: 0.3, step: 0.01 },
 };

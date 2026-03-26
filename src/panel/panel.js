@@ -1,11 +1,13 @@
 import { PANEL_CSS } from './styles.js';
 import { h, BarControl, Selector, Toggle } from './components.js';
 import { CHARSETS } from '../data/charsets.js';
+import { EDGE_CHARSETS } from '../data/edge-charsets.js';
 import { COLOR_SCHEMES } from '../color/schemes.js';
 import { PATTERNS } from '../patterns.js';
 import { PARAM_RANGES } from '../data/defaults.js';
 
 const CHARSET_NAMES = CHARSETS.map(c => c.name);
+const EDGE_CHARSET_NAMES = EDGE_CHARSETS.map(c => c.name);
 const SCHEME_NAMES = COLOR_SCHEMES.map(s => s.name);
 const PATTERN_NAMES = ['none', ...PATTERNS.map(p => p.name)];
 const BLEND_MODES = ['replace', 'add'];
@@ -110,6 +112,9 @@ export class ControlPanel {
     // ASCII settings section
     this._buildAsciiSection();
 
+    // CRT post-processing section
+    this._buildCRTSection();
+
     // Layer tabs bar (always visible for the Add button)
     this._tabBar = h('div', 'layer-tabs');
     const addBtn = h('button', 'add-layer-btn', '+');
@@ -130,6 +135,7 @@ export class ControlPanel {
     this._noLayersMsg = h('div', 'no-layers-msg', 'No layers added');
 
     this._scroll.appendChild(this._asciiSection);
+    this._scroll.appendChild(this._crtSection);
     this._scroll.appendChild(this._tabBar);
     this._scroll.appendChild(this._layerContent);
     this._scroll.appendChild(this._noLayersMsg);
@@ -185,6 +191,29 @@ export class ControlPanel {
       options: CHARSET_NAMES,
       get: () => CHARSET_NAMES.indexOf(ascii.get('charset')),
       set: (i) => ascii.set('charset', CHARSET_NAMES[i]),
+    }), body);
+
+    // Edge Detect
+    this._register(new Toggle({
+      label: 'Edge Detect',
+      get: () => ascii.get('edgeDetect'),
+      set: (v) => ascii.set('edgeDetect', v),
+    }), body);
+
+    // Edge Threshold
+    this._register(new BarControl({
+      label: 'Edge Threshold', ...r.edgeThreshold,
+      get: () => ascii.get('edgeThreshold'),
+      set: (v) => ascii.set('edgeThreshold', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), body);
+
+    // Edge Charset
+    this._register(new Selector({
+      label: 'Edge Charset',
+      options: EDGE_CHARSET_NAMES,
+      get: () => EDGE_CHARSET_NAMES.indexOf(ascii.get('edgeCharset')),
+      set: (i) => ascii.set('edgeCharset', EDGE_CHARSET_NAMES[i]),
     }), body);
 
     // Color Scheme
@@ -267,6 +296,57 @@ export class ControlPanel {
 
     section.appendChild(body);
     this._asciiSection = section;
+  }
+
+  _buildCRTSection() {
+    const section = h('div', 'section collapsed');
+    const ascii = this._ascii;
+    const r = PARAM_RANGES;
+
+    const title = h('div', 'section-title');
+    title.appendChild(h('span', '', 'CRT'));
+    title.appendChild(h('span', 'section-chevron', '\u25BC'));
+    title.addEventListener('click', () => section.classList.toggle('collapsed'));
+    section.appendChild(title);
+
+    const body = h('div', 'section-body');
+
+    this._register(new Toggle({
+      label: 'CRT Enabled',
+      get: () => ascii.get('crtEnabled'),
+      set: (v) => ascii.set('crtEnabled', v),
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Scanlines', ...r.crtScanlines,
+      get: () => ascii.get('crtScanlines'),
+      set: (v) => ascii.set('crtScanlines', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Glow', ...r.crtGlow,
+      get: () => ascii.get('crtGlow'),
+      set: (v) => ascii.set('crtGlow', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Distortion', ...r.crtDistortion,
+      get: () => ascii.get('crtDistortion'),
+      set: (v) => ascii.set('crtDistortion', v),
+      format: (v) => v.toFixed(2),
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Flicker', ...r.crtFlicker,
+      get: () => ascii.get('crtFlicker'),
+      set: (v) => ascii.set('crtFlicker', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), body);
+
+    section.appendChild(body);
+    this._crtSection = section;
   }
 
   // ─── Layer Tabs ─────────────────────────────────────
@@ -383,6 +463,29 @@ export class ControlPanel {
         return c ? CHARSET_NAMES.indexOf(c) + 1 : 0;
       },
       set: (i) => layer.set('charset', i === 0 ? null : CHARSET_NAMES[i - 1]),
+    }), container);
+
+    // Edge Detect
+    this._register(new Toggle({
+      label: 'Edge Detect',
+      get: () => layer.get('edgeDetect'),
+      set: (v) => layer.set('edgeDetect', v),
+    }), container);
+
+    // Edge Threshold
+    this._register(new BarControl({
+      label: 'Edge Threshold', ...PARAM_RANGES.edgeThreshold,
+      get: () => layer.get('edgeThreshold'),
+      set: (v) => layer.set('edgeThreshold', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), container);
+
+    // Edge Charset
+    this._register(new Selector({
+      label: 'Edge Charset',
+      options: EDGE_CHARSET_NAMES,
+      get: () => EDGE_CHARSET_NAMES.indexOf(layer.get('edgeCharset')),
+      set: (i) => layer.set('edgeCharset', EDGE_CHARSET_NAMES[i]),
     }), container);
 
     // Color Scheme
@@ -502,6 +605,18 @@ export class ControlPanel {
     ascii.set('colorCycle', Math.random() < 0.3);
     ascii.set('colorCycleRate', rand(r.colorCycleRate.min, r.colorCycleRate.max, r.colorCycleRate.step));
 
+    // Edge detection
+    ascii.set('edgeDetect', Math.random() < 0.2);
+    ascii.set('edgeThreshold', rand(r.edgeThreshold.min, r.edgeThreshold.max, r.edgeThreshold.step));
+    ascii.set('edgeCharset', pick(EDGE_CHARSET_NAMES));
+
+    // CRT
+    ascii.set('crtEnabled', Math.random() < 0.25);
+    ascii.set('crtScanlines', rand(r.crtScanlines.min, r.crtScanlines.max, r.crtScanlines.step));
+    ascii.set('crtGlow', rand(r.crtGlow.min, r.crtGlow.max, r.crtGlow.step));
+    ascii.set('crtDistortion', rand(r.crtDistortion.min, r.crtDistortion.max, r.crtDistortion.step));
+    ascii.set('crtFlicker', rand(r.crtFlicker.min, r.crtFlicker.max, r.crtFlicker.step));
+
     // Randomize layers too
     for (const layer of ascii._layers) {
       layer.set('fontSize', rand(r.fontSize.min, r.fontSize.max, r.fontSize.step));
@@ -513,6 +628,9 @@ export class ControlPanel {
       layer.set('fade', rand(r.fade.min, r.fade.max, r.fade.step));
       layer.set('opacity', rand(r.opacity.min, r.opacity.max, r.opacity.step));
       layer.set('blendMode', pick(BLEND_MODES));
+      layer.set('edgeDetect', Math.random() < 0.2);
+      layer.set('edgeThreshold', rand(r.edgeThreshold.min, r.edgeThreshold.max, r.edgeThreshold.step));
+      layer.set('edgeCharset', pick(EDGE_CHARSET_NAMES));
     }
 
   }
@@ -526,11 +644,14 @@ export class ControlPanel {
       'background', 'fade', 'speed', 'pattern', 'patternMix',
       'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
       'blendMode', 'offsetX', 'offsetY', 'zIndex',
+      'edgeDetect', 'edgeThreshold', 'edgeCharset',
+      'crtEnabled', 'crtScanlines', 'crtGlow', 'crtDistortion', 'crtFlicker',
     ];
     const LAYER_KEYS = [
       'visible', 'fontSize', 'density', 'charset', 'colorScheme',
       'pattern', 'patternMix', 'fade', 'opacity', 'blendMode',
       'offsetX', 'offsetY', 'zIndex',
+      'edgeDetect', 'edgeThreshold', 'edgeCharset',
     ];
 
     const snapshot = {};

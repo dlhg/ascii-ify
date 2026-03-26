@@ -1,12 +1,16 @@
 import { EventEmitter } from './events.js';
 import { DEFAULTS, PARAM_RANGES } from './data/defaults.js';
 import { CHARSETS } from './data/charsets.js';
+import { EDGE_CHARSETS } from './data/edge-charsets.js';
 import { COLOR_SCHEMES } from './color/schemes.js';
 import { PATTERNS } from './patterns.js';
 import { calculateGrid } from './grid.js';
 import { sampleCanvas } from './sampler.js';
+import { detectEdges } from './edge-detect.js';
 import { buildColorLUT } from './color/engine.js';
 import { renderLayer } from './renderer.js';
+import { renderEdgeLayer } from './edge-renderer.js';
+import { CRTEffect } from './crt.js';
 import { clamp, lerp } from './utils.js';
 
 export class AsciiIfy extends EventEmitter {
@@ -36,6 +40,9 @@ export class AsciiIfy extends EventEmitter {
 
     // Offscreen sampling context (reused)
     this._sampleCtx = null;
+
+    // CRT post-processing (lazy-initialized)
+    this._crt = null;
 
     // Create overlay canvas
     this._canvas = document.createElement('canvas');
@@ -115,7 +122,7 @@ export class AsciiIfy extends EventEmitter {
 
     // Propagate to implicit-mode layers
     if (this._implicitMode && this._layers.length > 0) {
-      const layerKeys = ['fontSize', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode', 'offsetX', 'offsetY', 'zIndex'];
+      const layerKeys = ['fontSize', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode', 'offsetX', 'offsetY', 'zIndex', 'edgeDetect', 'edgeThreshold', 'edgeCharset'];
       if (layerKeys.includes(key)) {
         this._layers[0].set(key, value);
       }
@@ -256,6 +263,10 @@ export class AsciiIfy extends EventEmitter {
   destroy() {
     this.stop();
     clearTimeout(this._enableTimer);
+    if (this._crt) {
+      this._crt.destroy();
+      this._crt = null;
+    }
     if (this._panel) {
       this._panel.destroy();
       this._panel = null;
@@ -350,15 +361,45 @@ export class AsciiIfy extends EventEmitter {
       // Explicit layer compositing
       this._renderLayers(ctx, w, h, t);
     }
+
+    // CRT post-processing (screen-space, after all layers)
+    if (this._params.crtEnabled) {
+      if (!this._crt) this._crt = new CRTEffect();
+      this._crt.apply(ctx, this._canvas, t, {
+        scanlines: this._params.crtScanlines,
+        glow: this._params.crtGlow,
+        distortion: this._params.crtDistortion,
+        flicker: this._params.crtFlicker,
+      });
+    }
   }
 
   _renderImplicit(ctx, w, h, t) {
     const grid = this._grid;
     if (grid.cols <= 0 || grid.rows <= 0) return;
 
-    // Resolve charset
-    const chars = this._resolveChars(this._params.charset);
     const schemeIndex = this._resolveSchemeIndex(this._params.colorScheme);
+    ctx.font = `${this._params.fontSize}px monospace`;
+
+    // Edge detection path
+    if (this._params.edgeDetect) {
+      const { magnitude, direction, ctx: sCtx } = detectEdges(
+        this._source, grid.cols, grid.rows, this._sampleCtx, this._params.edgeThreshold
+      );
+      this._sampleCtx = sCtx;
+
+      const edgeChars = this._resolveEdgeCharset(this._params.edgeCharset);
+      const colorLUT = buildColorLUT(schemeIndex, 256, t, {
+        cycling: this._params.colorCycle,
+        phase: this._colorPhase,
+      });
+
+      renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t);
+      return;
+    }
+
+    // Standard brightness path
+    const chars = this._resolveChars(this._params.charset);
 
     // Sample source
     const { brightness, ctx: sCtx } = sampleCanvas(this._source, grid.cols, grid.rows, this._sampleCtx);
@@ -386,9 +427,6 @@ export class AsciiIfy extends EventEmitter {
       phase: this._colorPhase,
     });
 
-    // Set font
-    ctx.font = `${this._params.fontSize}px monospace`;
-
     // Render
     renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
   }
@@ -401,46 +439,61 @@ export class AsciiIfy extends EventEmitter {
       const grid = calculateGrid(w, h, layer.get('fontSize'), layer.get('density'));
       if (grid.cols <= 0 || grid.rows <= 0) continue;
 
-      // Sample this layer's source
       const source = layer.source || this._source;
-      const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx);
-      layer._sampleCtx = sCtx;
-
-      // Blend with pattern
-      const patternName = layer.get('pattern');
-      if (patternName) {
-        const patternFn = this._resolvePattern(patternName);
-        if (patternFn) {
-          const mix = layer.get('patternMix');
-          for (let r = 0; r < grid.rows; r++) {
-            for (let c = 0; c < grid.cols; c++) {
-              const i = r * grid.cols + c;
-              const pv = patternFn(c, r, t, grid.cols, grid.rows, grid.ar);
-              brightness[i] = lerp(brightness[i], pv, mix);
-            }
-          }
-        }
-      }
-
-      // Resolve layer params (inherit from instance if null)
-      const charsetVal = layer.get('charset') || this._params.charset;
       const schemeVal = layer.get('colorScheme') || this._params.colorScheme;
-      const chars = this._resolveChars(charsetVal);
       const schemeIndex = this._resolveSchemeIndex(schemeVal);
       const fade = layer.get('fade') ?? this._params.fade;
-
-      // Build color LUT
-      const colorLUT = buildColorLUT(schemeIndex, chars.length, t, {
-        cycling: this._params.colorCycle,
-        phase: this._colorPhase,
-      });
 
       // Render layer to its offscreen canvas
       const offCanvas = layer._ensureOffscreen(w, h);
       const offCtx = layer._offCtx;
       offCtx.clearRect(0, 0, w, h);
       offCtx.font = `${layer.get('fontSize')}px monospace`;
-      renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+
+      if (layer.get('edgeDetect')) {
+        // Edge detection path
+        const { magnitude, direction, ctx: sCtx } = detectEdges(
+          source, grid.cols, grid.rows, layer._sampleCtx, layer.get('edgeThreshold')
+        );
+        layer._sampleCtx = sCtx;
+
+        const edgeChars = this._resolveEdgeCharset(layer.get('edgeCharset') || this._params.edgeCharset);
+        const colorLUT = buildColorLUT(schemeIndex, 256, t, {
+          cycling: this._params.colorCycle,
+          phase: this._colorPhase,
+        });
+
+        renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t);
+      } else {
+        // Standard brightness path
+        const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx);
+        layer._sampleCtx = sCtx;
+
+        // Blend with pattern
+        const patternName = layer.get('pattern');
+        if (patternName) {
+          const patternFn = this._resolvePattern(patternName);
+          if (patternFn) {
+            const mix = layer.get('patternMix');
+            for (let r = 0; r < grid.rows; r++) {
+              for (let c = 0; c < grid.cols; c++) {
+                const i = r * grid.cols + c;
+                const pv = patternFn(c, r, t, grid.cols, grid.rows, grid.ar);
+                brightness[i] = lerp(brightness[i], pv, mix);
+              }
+            }
+          }
+        }
+
+        const charsetVal = layer.get('charset') || this._params.charset;
+        const chars = this._resolveChars(charsetVal);
+        const colorLUT = buildColorLUT(schemeIndex, chars.length, t, {
+          cycling: this._params.colorCycle,
+          phase: this._colorPhase,
+        });
+
+        renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+      }
 
       // Composite onto output (draw DPR-scaled canvas at logical size)
       const blendMode = layer.get('blendMode') || 'replace';
@@ -454,6 +507,11 @@ export class AsciiIfy extends EventEmitter {
     // Reset composite state
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
+  }
+
+  _resolveEdgeCharset(name) {
+    const preset = EDGE_CHARSETS.find(c => c.name === name);
+    return preset ? preset.chars : EDGE_CHARSETS[0].chars;
   }
 
   _resolveChars(charset) {

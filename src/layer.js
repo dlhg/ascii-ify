@@ -29,6 +29,9 @@ export class Layer {
       offsetX: options.offsetX ?? DEFAULTS.offsetX,
       offsetY: options.offsetY ?? DEFAULTS.offsetY,
       zIndex: options.zIndex ?? DEFAULTS.zIndex,
+      edgeDetect: options.edgeDetect ?? DEFAULTS.edgeDetect,
+      edgeThreshold: options.edgeThreshold ?? DEFAULTS.edgeThreshold,
+      edgeCharset: options.edgeCharset ?? DEFAULTS.edgeCharset,
     };
 
     // Reusable offscreen canvases
