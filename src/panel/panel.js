@@ -112,7 +112,7 @@ export class ControlPanel {
 
     // Layer tabs bar (always visible for the Add button)
     this._tabBar = h('div', 'layer-tabs');
-    const addBtn = h('button', 'layer-tab add-layer-btn', '+');
+    const addBtn = h('button', 'add-layer-btn', '+');
     addBtn.title = 'Add layer';
     addBtn.addEventListener('click', () => {
       this._ascii.addLayer({
@@ -272,18 +272,30 @@ export class ControlPanel {
   // ─── Layer Tabs ─────────────────────────────────────
 
   _addLayerTab(layer) {
-    // Create tab button with visibility eye toggle
-    const tab = h('button', 'layer-tab', '');
-    const tabLabel = h('span', 'layer-tab-label', `Layer ${layer.id}`);
-    const eyeBtn = h('span', 'layer-tab-eye', '●');
-    eyeBtn.title = 'Toggle visibility';
-    eyeBtn.addEventListener('click', (e) => {
+    // Create layer row with name, hide/show, and solo buttons
+    const tab = h('div', 'layer-row');
+    const tabLabel = h('span', 'layer-row-label', `Layer ${layer.id}`);
+    tabLabel.addEventListener('click', () => this._activateLayer(layer));
+
+    const btnGroup = h('div', 'layer-row-btns');
+
+    const hideBtn = h('button', 'ctrl-btn layer-hide-btn', 'Hide');
+    hideBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       layer.set('visible', !layer.get('visible'));
     });
+
+    const soloBtn = h('button', 'ctrl-btn layer-solo-btn', 'Solo');
+    soloBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._ascii.soloLayer(layer);
+      this._updateSoloBtns();
+    });
+
+    btnGroup.appendChild(hideBtn);
+    btnGroup.appendChild(soloBtn);
     tab.appendChild(tabLabel);
-    tab.appendChild(eyeBtn);
-    tab.addEventListener('click', () => this._activateLayer(layer));
+    tab.appendChild(btnGroup);
     this._tabBar.appendChild(tab);
 
     // Create tab content
@@ -291,7 +303,7 @@ export class ControlPanel {
     this._buildLayerContent(layer, content);
     this._layerContent.appendChild(content);
 
-    this._layerTabs.set(layer, { tab, content, eyeBtn });
+    this._layerTabs.set(layer, { tab, content, hideBtn, soloBtn });
 
     // Hide placeholder
     this._noLayersMsg.style.display = 'none';
@@ -329,35 +341,22 @@ export class ControlPanel {
       entry.tab.classList.toggle('active', isActive);
       entry.content.classList.toggle('active', isActive);
     }
+    this._updateSoloBtns();
   }
 
   _buildLayerContent(layer, container) {
     const r = PARAM_RANGES;
 
-    // Header with solo and remove buttons
+    // Header with remove button
     const header = h('div', 'layer-header');
     header.appendChild(h('span', 'layer-title', `Layer ${layer.id}`));
     const btnGroup = h('div', 'layer-btn-group');
-    const soloBtn = h('button', 'ctrl-btn solo', 'Solo');
-    soloBtn.addEventListener('click', () => {
-      this._ascii.soloLayer(layer);
-      this._updateSoloBtns();
-    });
-    btnGroup.appendChild(soloBtn);
     const removeBtn = h('button', 'ctrl-btn danger', 'Remove');
     removeBtn.addEventListener('click', () => this._ascii.removeLayer(layer));
     btnGroup.appendChild(removeBtn);
     header.appendChild(btnGroup);
     container.appendChild(header);
-    container._soloBtn = soloBtn;
     container._layer = layer;
-
-    // Visible toggle
-    this._register(new Toggle({
-      label: 'Visible',
-      get: () => layer.get('visible'),
-      set: (v) => layer.set('visible', v),
-    }), container);
 
     // Font Size
     this._register(new BarControl({
@@ -468,8 +467,8 @@ export class ControlPanel {
   _updateSoloBtns() {
     const soloed = this._ascii._soloLayer;
     for (const [layer, entry] of this._layerTabs) {
-      if (entry.content._soloBtn) {
-        entry.content._soloBtn.classList.toggle('active', soloed === layer);
+      if (entry.soloBtn) {
+        entry.soloBtn.classList.toggle('active', soloed === layer);
       }
     }
   }
@@ -583,9 +582,9 @@ export class ControlPanel {
 
   _syncEyeIcons() {
     for (const [layer, entry] of this._layerTabs) {
-      if (entry.eyeBtn) {
+      if (entry.hideBtn) {
         const vis = layer.get('visible');
-        entry.eyeBtn.classList.toggle('off', !vis);
+        entry.hideBtn.textContent = vis ? 'Hide' : 'Show';
         entry.tab.classList.toggle('layer-hidden', !vis);
       }
     }

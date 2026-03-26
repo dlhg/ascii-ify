@@ -270,14 +270,70 @@ export const PANEL_CSS = `
    ═══════════════════════════════════════════════════════ */
 .layer-tabs {
   display: flex;
+  flex-direction: column;
   gap: 3px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-1);
   flex-shrink: 0;
-  flex-wrap: wrap;
 }
 
-.layer-tab {
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-1);
+  transition: all 0.15s;
+}
+
+.layer-row.active {
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.layer-row.layer-hidden {
+  opacity: 0.55;
+}
+
+.layer-row-label {
+  flex: 1;
+  font: 600 9px/1 var(--ui-font);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.layer-row.active .layer-row-label {
+  color: var(--accent);
+}
+
+.layer-row-btns {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.layer-hide-btn,
+.layer-solo-btn {
+  font: 600 8px/1 var(--ui-font) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 8px !important;
+}
+
+.layer-solo-btn.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.add-layer-btn {
   font: 600 9px/1 var(--ui-font);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -288,59 +344,12 @@ export const PANEL_CSS = `
   color: var(--text-4);
   cursor: pointer;
   transition: all 0.15s;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.layer-tab:hover {
-  color: var(--text-2);
-  border-color: var(--border-3);
-}
-
-.layer-tab.active {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-  background: var(--accent-soft);
-  box-shadow: 0 0 6px var(--accent-glow);
-}
-
-.layer-tab.layer-hidden {
-  opacity: 0.45;
-}
-
-.layer-tab-label {
-  pointer-events: none;
-}
-
-.add-layer-btn {
-  font-size: 14px;
-  line-height: 1;
-  padding: 3px 10px;
+  align-self: flex-start;
 }
 
 .add-layer-btn:hover {
   color: var(--accent);
-}
-
-.layer-tab-eye {
-  font-size: 7px;
-  line-height: 1;
-  color: var(--accent);
-  transition: all 0.15s;
-  cursor: pointer;
-  opacity: 0.8;
-}
-
-.layer-tab-eye:hover {
-  opacity: 1;
-  transform: scale(1.3);
-}
-
-.layer-tab-eye.off {
-  color: var(--text-4);
-  opacity: 0.4;
+  border-color: var(--border-3);
 }
 
 .layer-tab-content {
@@ -600,12 +609,6 @@ export const PANEL_CSS = `
   gap: 4px;
 }
 
-.ctrl-btn.solo.active {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-  background: var(--accent-soft);
-  box-shadow: 0 0 6px var(--accent-glow);
-}
 
 /* ═══════════════════════════════════════════════════════
    UTILITY
