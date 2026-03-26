@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Stained Glass</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, dist } from './utils.js';
+
+      // ─── Pane Layout (Rose Window) ──────────────────────
+      // Group 0: center circle
+      // Group 1: inner ring — even sectors (0, 2, 4, 6)
+      // Group 2: inner ring — odd sectors (1, 3, 5, 7)
+      // Group 3: outer ring — even sectors
+      // The groups map to content layers 1-4
+
+      const INNER_SECTORS = 8;
+      const OUTER_SECTORS = 12;
+      const BORDER = 0.025; // relative border width between panes
+
+      function drawPaneGroup(ctx, group, cx, cy, r, t) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.fillStyle = '#fff';
+
+        const breathe = 1 + 0.008 * Math.sin(t * 1.5 + group);
+        const innerR = r * 0.28 * breathe;
+        const midR = r * 0.55 * breathe;
+        const outerR = r * 0.92 * breathe;
+        const border = r * BORDER;
+
+        if (group === 0) {
+          // Center circle
+          ctx.beginPath();
+          ctx.arc(cx, cy, innerR - border, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (group === 1) {
+          // Inner ring — even sectors
+          for (let i = 0; i < INNER_SECTORS; i += 2) {
+            drawSector(ctx, cx, cy, innerR + border, midR - border, i, INNER_SECTORS, border / midR);
+          }
+        } else if (group === 2) {
+          // Inner ring — odd sectors
+          for (let i = 1; i < INNER_SECTORS; i += 2) {
+            drawSector(ctx, cx, cy, innerR + border, midR - border, i, INNER_SECTORS, border / midR);
+          }
+        } else {
+          // Outer ring — all sectors (alternating already gives visual variety through layer properties)
+          for (let i = 0; i < OUTER_SECTORS; i++) {
+            drawSector(ctx, cx, cy, midR + border, outerR - border, i, OUTER_SECTORS, border / outerR);
+          }
+        }
+      }
+
+      function drawSector(ctx, cx, cy, rInner, rOuter, index, total, borderAngle) {
+        const startAngle = (index / total) * Math.PI * 2 + borderAngle;
+        const endAngle = ((index + 1) / total) * Math.PI * 2 - borderAngle;
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, rOuter, startAngle, endAngle);
+        ctx.arc(cx, cy, rInner, endAngle, startAngle, true);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // ─── Draw Generative Content ────────────────────────
+      function drawContent(ctx, t, w, h) {
+        // Dark base
+        ctx.fillStyle = '#050508';
+        ctx.fillRect(0, 0, w, h);
+
+        const cx = w / 2, cy = h / 2;
+
+        // Swirling nebula clouds
+        for (let i = 0; i < 6; i++) {
+          const angle = t * 0.2 + (i / 6) * Math.PI * 2;
+          const dist = Math.min(w, h) * (0.15 + 0.1 * Math.sin(t * 0.5 + i));
+          const gx = cx + Math.cos(angle) * dist;
+          const gy = cy + Math.sin(angle) * dist;
+          const r = Math.min(w, h) * 0.2;
+
+          const hue = (i * 60 + t * 30) % 360;
+          const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+          grad.addColorStop(0, `hsla(${hue}, 80%, 45%, 0.35)`);
+          grad.addColorStop(0.5, `hsla(${hue + 30}, 70%, 30%, 0.15)`);
+          grad.addColorStop(1, `hsla(${hue + 60}, 60%, 20%, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(gx, gy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Radial spokes (for edge detection layer to pick up)
+        ctx.strokeStyle = 'rgba(180, 160, 200, 0.15)';
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 24; i++) {
+          const angle = (i / 24) * Math.PI * 2 + t * 0.05;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + Math.cos(angle) * Math.min(w, h) * 0.48, cy + Math.sin(angle) * Math.min(w, h) * 0.48);
+          ctx.stroke();
+        }
+
+        // Concentric rings
+        for (let i = 1; i < 6; i++) {
+          const ringR = Math.min(w, h) * i * 0.09;
+          const pulse = 0.05 + 0.05 * Math.sin(t * 2 + i);
+          ctx.strokeStyle = `rgba(200, 180, 220, ${pulse})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Drifting bright particles
+        for (let i = 0; i < 40; i++) {
+          const angle = i * 2.399 + t * 0.3;
+          const r = ((i * 0.618 + t * 0.02) % 1) * Math.min(w, h) * 0.45;
+          const px = cx + Math.cos(angle) * r;
+          const py = cy + Math.sin(angle) * r;
+          const hue = (i * 30 + t * 50) % 360;
+          const alpha = 0.3 + 0.3 * Math.sin(t * 3 + i * 1.7);
+
+          ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(px, py, 2, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Glow
+          const glow = ctx.createRadialGradient(px, py, 0, px, py, 10);
+          glow.addColorStop(0, `hsla(${hue}, 70%, 50%, ${alpha * 0.3})`);
+          glow.addColorStop(1, `hsla(${hue}, 60%, 40%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(px, py, 10, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Pulsing light intensity (global overlay)
+        const lightPulse = 0.03 + 0.02 * Math.sin(t * 0.8);
+        ctx.fillStyle = `rgba(255, 240, 200, ${lightPulse})`;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#02020a', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Fire pane content
+          { fontSize: 6, charset: 'density', colorScheme: 'fire', pattern: 'plasma', patternMix: 0.35, opacity: 1 },
+          // Layer 2: Ocean pane content
+          { fontSize: 5, charset: 'braille', colorScheme: 'ocean', pattern: 'waves', patternMix: 0.4, opacity: 1 },
+          // Layer 3: Vapor pane content
+          { fontSize: 7, charset: 'blocks', colorScheme: 'vapor', pattern: 'spiral', patternMix: 0.35, opacity: 1 },
+          // Layer 4: Acid pane content
+          { fontSize: 6, charset: 'density', colorScheme: 'acid', pattern: 'breathing', patternMix: 0.3, opacity: 1 },
+          // Layer 5: Lead borders (edge detection, unmasked)
+          { fontSize: 8, charset: 'density', colorScheme: 'mono', edgeDetect: true, edgeCharset: 'box-heavy', edgeThreshold: 0.08, opacity: 0.5 },
+          // Layers 6-9: Mask layers (invisible)
+          { fontSize: 4, charset: 'blocks', colorScheme: 'mono', opacity: 0 },
+          { fontSize: 4, charset: 'blocks', colorScheme: 'mono', opacity: 0 },
+          { fontSize: 4, charset: 'blocks', colorScheme: 'mono', opacity: 0 },
+          { fontSize: 4, charset: 'blocks', colorScheme: 'mono', opacity: 0 },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawContent(ctx, time / 1000, w, h);
+        },
+      });
+
+      // ─── Mask Canvases ──────────────────────────────────
+      const maskCanvases = Array.from({ length: 4 }, () => {
+        const c = document.createElement('canvas');
+        return { canvas: c, ctx: c.getContext('2d') };
+      });
+
+      function resizeMasks() {
+        for (const m of maskCanvases) {
+          m.canvas.width = app.canvas.width;
+          m.canvas.height = app.canvas.height;
+        }
+      }
+      resizeMasks();
+      window.addEventListener('resize', resizeMasks);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+
+      // Wire mask layers (6-9) as sources for mask canvases
+      for (let i = 0; i < 4; i++) {
+        layers[6 + i].set('source', maskCanvases[i].canvas);
+        layers[1 + i].set('maskLayer', layers[6 + i].id);
+      }
+
+      app.ascii.on('render', () => {
+        const t = performance.now() / 1000;
+        const w = app.canvas.width;
+        const h = app.canvas.height;
+        const cx = w / 2, cy = h / 2;
+        const r = Math.min(w, h) * 0.48;
+
+        for (let i = 0; i < 4; i++) {
+          drawPaneGroup(maskCanvases[i].ctx, i, cx, cy, r, t);
+        }
+      });
+    </script>
+  </body>
+</html>

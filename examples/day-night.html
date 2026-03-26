@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Day Night</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep } from './utils.js';
+
+      // ─── Stars ──────────────────────────────────────────
+      const NUM_STARS = 120;
+      const stars = [];
+      function initStars(w, h) {
+        stars.length = 0;
+        for (let i = 0; i < NUM_STARS; i++) {
+          stars.push({
+            x: Math.random() * w,
+            y: Math.random() * h * 0.5,
+            r: 0.3 + Math.random() * 1.5,
+            phase: Math.random() * Math.PI * 2,
+            speed: 1 + Math.random() * 3,
+          });
+        }
+      }
+
+      // ─── Fireflies ─────────────────────────────────────
+      const NUM_FIREFLIES = 30;
+      const fireflies = [];
+      function initFireflies(w, h) {
+        fireflies.length = 0;
+        for (let i = 0; i < NUM_FIREFLIES; i++) {
+          fireflies.push({
+            x: Math.random() * w,
+            y: h * 0.45 + Math.random() * h * 0.45,
+            vx: (Math.random() - 0.5) * 20,
+            vy: (Math.random() - 0.5) * 12,
+            phase: Math.random() * Math.PI * 2,
+            blinkSpeed: 1.5 + Math.random() * 3,
+            size: 2 + Math.random() * 3,
+          });
+        }
+      }
+
+      // ─── Trees ──────────────────────────────────────────
+      const trees = [];
+      function initTrees(w, h) {
+        trees.length = 0;
+        for (let i = 0; i < 18; i++) {
+          trees.push({
+            x: Math.random() * w,
+            baseY: h * (0.52 + Math.random() * 0.25),
+            height: 30 + Math.random() * 60,
+            width: 15 + Math.random() * 25,
+            type: Math.random() > 0.4 ? 'pine' : 'round',
+          });
+        }
+        trees.sort((a, b) => a.baseY - b.baseY);
+      }
+
+      // ─── Houses ─────────────────────────────────────────
+      const houses = [];
+      function initHouses(w, h) {
+        houses.length = 0;
+        const count = 5;
+        const spacing = w / (count + 1);
+        for (let i = 0; i < count; i++) {
+          houses.push({
+            x: spacing * (i + 0.6) + (Math.random() - 0.5) * spacing * 0.3,
+            baseY: h * 0.68 + Math.random() * h * 0.05,
+            w: 25 + Math.random() * 15,
+            h: 20 + Math.random() * 12,
+          });
+        }
+      }
+
+      // ─── Draw Landscape ─────────────────────────────────
+      function drawLandscape(ctx, t, w, h) {
+        // Sky gradient shifts with sun position
+        const sunPhase = t * 0.3;
+        const sunX = w * (0.5 + 0.55 * Math.sin(sunPhase));
+        const sunAltitude = Math.cos(sunPhase); // -1 = midnight, 1 = noon
+        const dayAmount = clamp((sunAltitude + 0.3) / 1.3, 0, 1);
+
+        // Sky
+        const skyGrad = ctx.createLinearGradient(0, 0, 0, h * 0.6);
+        if (dayAmount > 0.5) {
+          skyGrad.addColorStop(0, `rgb(${lerp(40, 100, dayAmount)}, ${lerp(50, 160, dayAmount)}, ${lerp(100, 220, dayAmount)})`);
+          skyGrad.addColorStop(1, `rgb(${lerp(80, 200, dayAmount)}, ${lerp(60, 180, dayAmount)}, ${lerp(50, 140, dayAmount)})`);
+        } else {
+          skyGrad.addColorStop(0, `rgb(${lerp(5, 40, dayAmount * 2)}, ${lerp(5, 30, dayAmount * 2)}, ${lerp(20, 70, dayAmount * 2)})`);
+          skyGrad.addColorStop(1, `rgb(${lerp(10, 60, dayAmount * 2)}, ${lerp(8, 40, dayAmount * 2)}, ${lerp(15, 50, dayAmount * 2)})`);
+        }
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Sun
+        if (sunAltitude > -0.2) {
+          const sunY = h * (0.35 - sunAltitude * 0.25);
+          const sunGlow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 120);
+          sunGlow.addColorStop(0, `rgba(255, 240, 200, ${0.9 * dayAmount})`);
+          sunGlow.addColorStop(0.3, `rgba(255, 200, 100, ${0.4 * dayAmount})`);
+          sunGlow.addColorStop(1, 'rgba(255, 150, 50, 0)');
+          ctx.fillStyle = sunGlow;
+          ctx.fillRect(0, 0, w, h);
+          ctx.fillStyle = `rgba(255, 250, 230, ${0.9 * dayAmount})`;
+          ctx.beginPath();
+          ctx.arc(sunX, sunY, 20, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Moon
+        if (sunAltitude < 0.2) {
+          const moonX = w - sunX;
+          const moonY = h * 0.15;
+          const moonBright = clamp((0.2 - sunAltitude) / 0.4, 0, 1);
+          ctx.fillStyle = `rgba(200, 210, 230, ${0.7 * moonBright})`;
+          ctx.beginPath();
+          ctx.arc(moonX, moonY, 15, 0, Math.PI * 2);
+          ctx.fill();
+          const moonGlow = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, 60);
+          moonGlow.addColorStop(0, `rgba(150, 170, 220, ${0.15 * moonBright})`);
+          moonGlow.addColorStop(1, 'rgba(100, 120, 180, 0)');
+          ctx.fillStyle = moonGlow;
+          ctx.beginPath();
+          ctx.arc(moonX, moonY, 60, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Stars
+        for (const s of stars) {
+          const twinkle = 0.4 + 0.6 * Math.sin(t * s.speed + s.phase);
+          const alpha = twinkle * clamp(1 - dayAmount * 1.8, 0, 1);
+          if (alpha < 0.02) continue;
+          ctx.fillStyle = `rgba(220, 230, 255, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Mountains (background)
+        ctx.fillStyle = `rgb(${lerp(15, 80, dayAmount)}, ${lerp(18, 90, dayAmount)}, ${lerp(35, 120, dayAmount)})`;
+        ctx.beginPath();
+        ctx.moveTo(0, h * 0.55);
+        for (let x = 0; x <= w; x += 3) {
+          const y = h * 0.55 - Math.abs(Math.sin(x * 0.003 + 1) * 80 + Math.sin(x * 0.007) * 40);
+          ctx.lineTo(x, y);
+        }
+        ctx.lineTo(w, h);
+        ctx.lineTo(0, h);
+        ctx.fill();
+
+        // Hills (3 layers)
+        for (let layer = 0; layer < 3; layer++) {
+          const hillY = h * (0.58 + layer * 0.07);
+          const green = lerp(20 + layer * 10, 80 + layer * 25, dayAmount);
+          const red = lerp(10 + layer * 5, 50 + layer * 15, dayAmount);
+          const blue = lerp(15 + layer * 3, 40 + layer * 10, dayAmount);
+          ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+          ctx.beginPath();
+          ctx.moveTo(0, h);
+          for (let x = 0; x <= w; x += 2) {
+            const y = hillY + Math.sin(x * 0.005 + layer * 2) * 25 + Math.sin(x * 0.013 + layer) * 12;
+            ctx.lineTo(x, y);
+          }
+          ctx.lineTo(w, h);
+          ctx.fill();
+        }
+
+        // Trees
+        for (const tree of trees) {
+          const trunkW = tree.width * 0.2;
+          const green = lerp(15, 50, dayAmount);
+          const darkGreen = lerp(10, 35, dayAmount);
+          // Trunk
+          ctx.fillStyle = `rgb(${lerp(20, 60, dayAmount)}, ${lerp(15, 40, dayAmount)}, ${lerp(10, 25, dayAmount)})`;
+          ctx.fillRect(tree.x - trunkW / 2, tree.baseY - tree.height * 0.4, trunkW, tree.height * 0.4);
+
+          if (tree.type === 'pine') {
+            for (let i = 0; i < 3; i++) {
+              const ly = tree.baseY - tree.height * (0.35 + i * 0.22);
+              const lw = tree.width * (1 - i * 0.25);
+              ctx.fillStyle = `rgb(${lerp(8, 30, dayAmount)}, ${darkGreen + i * 5}, ${lerp(8, 20, dayAmount)})`;
+              ctx.beginPath();
+              ctx.moveTo(tree.x, ly - tree.height * 0.2);
+              ctx.lineTo(tree.x + lw / 2, ly);
+              ctx.lineTo(tree.x - lw / 2, ly);
+              ctx.fill();
+            }
+          } else {
+            ctx.fillStyle = `rgb(${lerp(12, 40, dayAmount)}, ${green}, ${lerp(8, 25, dayAmount)})`;
+            ctx.beginPath();
+            ctx.arc(tree.x, tree.baseY - tree.height * 0.55, tree.width * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Houses
+        for (const house of houses) {
+          // Wall
+          ctx.fillStyle = `rgb(${lerp(25, 90, dayAmount)}, ${lerp(22, 80, dayAmount)}, ${lerp(20, 70, dayAmount)})`;
+          ctx.fillRect(house.x - house.w / 2, house.baseY - house.h, house.w, house.h);
+
+          // Roof
+          ctx.fillStyle = `rgb(${lerp(30, 100, dayAmount)}, ${lerp(15, 45, dayAmount)}, ${lerp(12, 35, dayAmount)})`;
+          ctx.beginPath();
+          ctx.moveTo(house.x, house.baseY - house.h - house.h * 0.6);
+          ctx.lineTo(house.x + house.w / 2 + 5, house.baseY - house.h);
+          ctx.lineTo(house.x - house.w / 2 - 5, house.baseY - house.h);
+          ctx.fill();
+
+          // Window — lit at night
+          const winGlow = clamp(1 - dayAmount * 2, 0, 1) * (0.7 + 0.3 * Math.sin(t * 0.5 + house.x));
+          ctx.fillStyle = `rgba(255, 220, 120, ${winGlow})`;
+          const winW = house.w * 0.25, winH = house.h * 0.3;
+          ctx.fillRect(house.x - winW / 2, house.baseY - house.h * 0.7, winW, winH);
+
+          // Window glow halo
+          if (winGlow > 0.1) {
+            const wGlow = ctx.createRadialGradient(house.x, house.baseY - house.h * 0.55, 0, house.x, house.baseY - house.h * 0.55, 30);
+            wGlow.addColorStop(0, `rgba(255, 200, 80, ${0.15 * winGlow})`);
+            wGlow.addColorStop(1, 'rgba(255, 180, 60, 0)');
+            ctx.fillStyle = wGlow;
+            ctx.fillRect(house.x - 30, house.baseY - house.h * 0.55 - 30, 60, 60);
+          }
+        }
+
+        // Fireflies (drawn as warm dots)
+        for (const f of fireflies) {
+          f.x += f.vx * 0.016;
+          f.y += f.vy * 0.016 + Math.sin(t * 2 + f.phase) * 0.3;
+          f.vx += (Math.random() - 0.5) * 2;
+          f.vy += (Math.random() - 0.5) * 1.5;
+          f.vx *= 0.98;
+          f.vy *= 0.98;
+          if (f.x < 0) f.x = w;
+          if (f.x > w) f.x = 0;
+          if (f.y < h * 0.4) f.y = h * 0.4;
+          if (f.y > h * 0.9) f.y = h * 0.9;
+
+          const blink = Math.max(0, Math.sin(t * f.blinkSpeed + f.phase));
+          const nightAmount = clamp(1 - dayAmount * 1.5, 0, 1);
+          const alpha = blink * nightAmount * 0.9;
+          if (alpha < 0.01) continue;
+
+          const glow = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.size * 4);
+          glow.addColorStop(0, `rgba(180, 255, 80, ${alpha})`);
+          glow.addColorStop(0.3, `rgba(150, 230, 60, ${alpha * 0.4})`);
+          glow.addColorStop(1, 'rgba(100, 200, 40, 0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(f.x, f.y, f.size * 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = `rgba(220, 255, 150, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(f.x, f.y, f.size * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── Sunlight Mask ──────────────────────────────────
+      function drawSunlightMask(ctx, t, w, h) {
+        const sunPhase = t * 0.3;
+        const sunX = w * (0.5 + 0.55 * Math.sin(sunPhase));
+        const sunAltitude = Math.cos(sunPhase);
+
+        // The mask is a wide gradient centered on the sun position
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        if (sunAltitude > -0.4) {
+          const brightness = clamp((sunAltitude + 0.4) / 1.4, 0, 1);
+          const radius = w * (0.5 + brightness * 0.6);
+
+          const sunY = h * 0.35;
+          const grad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, radius);
+          const peak = Math.min(brightness * 1.2, 1);
+          grad.addColorStop(0, `rgba(255, 255, 255, ${peak})`);
+          grad.addColorStop(0.4, `rgba(255, 255, 255, ${peak * 0.8})`);
+          grad.addColorStop(0.7, `rgba(255, 255, 255, ${peak * 0.3})`);
+          grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, w, h);
+        }
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#04060e', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Day scene — visible in sunlight
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'fire',
+            opacity: 1,
+          },
+          // Layer 2: Night scene — visible in darkness
+          {
+            fontSize: 10,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            opacity: 1,
+          },
+          // Layer 3: Stars — visible in darkness
+          {
+            fontSize: 16,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            blendMode: 'add',
+            opacity: 0.5,
+          },
+          // Layer 4: Fireflies — visible in darkness
+          {
+            fontSize: 12,
+            charset: 'braille',
+            colorScheme: 'acid',
+            blendMode: 'add',
+            opacity: 0.6,
+          },
+          // Layer 5: Sunlight mask — invisible
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawLandscape(ctx, time / 1000, w, h);
+        },
+        onResize(ctx, w, h) {
+          initStars(w, h);
+          initFireflies(w, h);
+          initTrees(w, h);
+          initHouses(w, h);
+        },
+      });
+
+      // ─── Mask Setup ─────────────────────────────────────
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+
+      function resizeMask() {
+        maskCanvas.width = app.canvas.width;
+        maskCanvas.height = app.canvas.height;
+      }
+      resizeMask();
+      window.addEventListener('resize', resizeMask);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+      layers[5].set('source', maskCanvas);
+
+      // Day visible in sunlight (normal mask)
+      layers[1].set('maskLayer', layers[5].id);
+
+      // Night visible in darkness (inverted mask)
+      layers[2].set('maskLayer', layers[5].id);
+      layers[2].set('invertMask', true);
+
+      // Stars visible in darkness
+      layers[3].set('maskLayer', layers[5].id);
+      layers[3].set('invertMask', true);
+
+      // Fireflies visible in darkness
+      layers[4].set('maskLayer', layers[5].id);
+      layers[4].set('invertMask', true);
+
+      app.ascii.on('render', () => {
+        const t = performance.now() / 1000;
+        drawSunlightMask(maskCtx, t, maskCanvas.width, maskCanvas.height);
+      });
+    </script>
+  </body>
+</html>

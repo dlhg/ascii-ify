@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — X-Ray</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, dist } from './utils.js';
+
+      // ─── Scan State ─────────────────────────────────────
+      let spotX = 0, spotY = 0;
+      let targetX = 0, targetY = 0;
+      let scanRadius = 0.22;
+
+      // ─── Gear State ─────────────────────────────────────
+      const gears = [];
+      function initGears(w, h) {
+        gears.length = 0;
+        const cx = w / 2, cy = h / 2;
+        const s = Math.min(w, h);
+        // Main body gears
+        gears.push({ x: cx - s * 0.12, y: cy - s * 0.05, r: s * 0.07, teeth: 12, speed: 0.5, phase: 0 });
+        gears.push({ x: cx + s * 0.08, y: cy - s * 0.03, r: s * 0.05, teeth: 8, speed: -0.7, phase: 1 });
+        gears.push({ x: cx, y: cy + s * 0.12, r: s * 0.06, teeth: 10, speed: 0.6, phase: 2 });
+        gears.push({ x: cx - s * 0.05, y: cy - s * 0.18, r: s * 0.04, teeth: 6, speed: -0.9, phase: 0.5 });
+        gears.push({ x: cx + s * 0.14, y: cy + s * 0.08, r: s * 0.035, teeth: 7, speed: 0.8, phase: 1.5 });
+      }
+
+      // ─── Draw Robot / Machine ───────────────────────────
+      function drawScene(ctx, t, w, h) {
+        const cx = w / 2, cy = h / 2;
+        const s = Math.min(w, h);
+
+        // Background
+        const bg = ctx.createLinearGradient(0, 0, 0, h);
+        bg.addColorStop(0, '#0a0c14');
+        bg.addColorStop(1, '#060810');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Robot body (exterior shapes) ──
+        // Torso
+        const torsoW = s * 0.28, torsoH = s * 0.35;
+        const torsoX = cx - torsoW / 2, torsoY = cy - torsoH * 0.3;
+        ctx.fillStyle = '#1a1e2e';
+        ctx.strokeStyle = '#2a3050';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(torsoX, torsoY, torsoW, torsoH, 12);
+        ctx.fill();
+        ctx.stroke();
+
+        // Armor plating lines
+        for (let i = 1; i < 4; i++) {
+          const ly = torsoY + torsoH * (i / 4);
+          ctx.strokeStyle = `rgba(60, 80, 130, ${0.3 + 0.1 * Math.sin(t + i)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(torsoX + 10, ly);
+          ctx.lineTo(torsoX + torsoW - 10, ly);
+          ctx.stroke();
+        }
+
+        // Head
+        const headR = s * 0.08;
+        const headY = torsoY - headR * 0.6;
+        ctx.fillStyle = '#1e2236';
+        ctx.strokeStyle = '#2a3050';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, headY, headR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Eyes
+        const eyeGlow = 0.5 + 0.5 * Math.sin(t * 2);
+        for (const ex of [-1, 1]) {
+          ctx.fillStyle = `rgba(100, 200, 255, ${0.6 + 0.4 * eyeGlow})`;
+          ctx.beginPath();
+          ctx.arc(cx + ex * headR * 0.35, headY - headR * 0.05, headR * 0.12, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Arms
+        for (const side of [-1, 1]) {
+          const armX = cx + side * (torsoW / 2 + s * 0.03);
+          ctx.fillStyle = '#161a28';
+          ctx.strokeStyle = '#2a3050';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.roundRect(armX - s * 0.025, torsoY + s * 0.03, s * 0.05, s * 0.25, 6);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        // Legs
+        for (const side of [-1, 1]) {
+          const legX = cx + side * s * 0.07;
+          ctx.fillStyle = '#141828';
+          ctx.strokeStyle = '#2a3050';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.roundRect(legX - s * 0.03, torsoY + torsoH - 2, s * 0.06, s * 0.2, 6);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        // ── Internal details (visible through x-ray) ──
+
+        // Energy core — pulsing
+        const coreY = cy + s * 0.02;
+        const corePulse = 0.6 + 0.4 * Math.sin(t * 3);
+        const coreGrad = ctx.createRadialGradient(cx, coreY, 0, cx, coreY, s * 0.06 * corePulse);
+        coreGrad.addColorStop(0, `rgba(0, 255, 200, ${0.8 * corePulse})`);
+        coreGrad.addColorStop(0.4, `rgba(0, 200, 255, ${0.4 * corePulse})`);
+        coreGrad.addColorStop(1, 'rgba(0, 100, 200, 0)');
+        ctx.fillStyle = coreGrad;
+        ctx.beginPath();
+        ctx.arc(cx, coreY, s * 0.06 * corePulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rotating gears
+        for (const gear of gears) {
+          const angle = t * gear.speed + gear.phase;
+          ctx.save();
+          ctx.translate(gear.x, gear.y);
+          ctx.rotate(angle);
+
+          // Gear outline
+          ctx.strokeStyle = `rgba(0, 180, 160, ${0.4 + 0.2 * Math.sin(t + gear.phase)})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          for (let i = 0; i < gear.teeth * 2; i++) {
+            const a = (i / (gear.teeth * 2)) * Math.PI * 2;
+            const r = i % 2 === 0 ? gear.r : gear.r * 0.8;
+            if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+            else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+          }
+          ctx.closePath();
+          ctx.stroke();
+
+          // Center dot
+          ctx.fillStyle = 'rgba(0, 220, 180, 0.5)';
+          ctx.beginPath();
+          ctx.arc(0, 0, gear.r * 0.15, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        }
+
+        // Circuit lines
+        ctx.strokeStyle = 'rgba(0, 200, 180, 0.25)';
+        ctx.lineWidth = 1;
+        const circuitPaths = [
+          [[cx, coreY], [cx, torsoY + 15], [cx - s * 0.08, torsoY + 15], [cx - s * 0.08, headY]],
+          [[cx, coreY], [cx + s * 0.1, coreY], [cx + s * 0.1, cy + s * 0.15]],
+          [[cx, coreY], [cx - s * 0.1, coreY + s * 0.05], [cx - s * 0.15, coreY + s * 0.05]],
+          [[cx, coreY], [cx, cy + s * 0.1], [cx - s * 0.05, cy + s * 0.2]],
+          [[cx, coreY], [cx, cy + s * 0.1], [cx + s * 0.05, cy + s * 0.2]],
+        ];
+        for (const path of circuitPaths) {
+          // Animate energy pulse along circuit
+          const pulsePos = (t * 0.5) % 1;
+          ctx.beginPath();
+          ctx.moveTo(path[0][0], path[0][1]);
+          for (let i = 1; i < path.length; i++) {
+            ctx.lineTo(path[i][0], path[i][1]);
+          }
+          ctx.stroke();
+
+          // Energy dot traveling along path
+          const segIdx = Math.floor(pulsePos * (path.length - 1));
+          const segT = (pulsePos * (path.length - 1)) % 1;
+          if (segIdx < path.length - 1) {
+            const px = lerp(path[segIdx][0], path[segIdx + 1][0], segT);
+            const py = lerp(path[segIdx][1], path[segIdx + 1][1], segT);
+            const dotGrad = ctx.createRadialGradient(px, py, 0, px, py, 8);
+            dotGrad.addColorStop(0, 'rgba(0, 255, 200, 0.8)');
+            dotGrad.addColorStop(1, 'rgba(0, 255, 200, 0)');
+            ctx.fillStyle = dotGrad;
+            ctx.beginPath();
+            ctx.arc(px, py, 8, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Skeletal frame lines (spine + ribs)
+        ctx.strokeStyle = 'rgba(80, 120, 200, 0.2)';
+        ctx.lineWidth = 2;
+        // Spine
+        ctx.beginPath();
+        ctx.moveTo(cx, headY + headR);
+        ctx.lineTo(cx, torsoY + torsoH - 5);
+        ctx.stroke();
+        // Ribs
+        for (let i = 0; i < 4; i++) {
+          const ry = torsoY + 30 + i * (torsoH - 40) / 4;
+          ctx.beginPath();
+          ctx.moveTo(cx, ry);
+          ctx.quadraticCurveTo(cx + s * 0.08, ry - 5, cx + s * 0.12, ry + 5);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx, ry);
+          ctx.quadraticCurveTo(cx - s * 0.08, ry - 5, cx - s * 0.12, ry + 5);
+          ctx.stroke();
+        }
+      }
+
+      // ─── Draw X-Ray Mask ────────────────────────────────
+      function drawXRayMask(ctx, t, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        const r = scanRadius * Math.min(w, h);
+        const breathe = 1 + 0.02 * Math.sin(t * 3);
+        const finalR = r * breathe;
+
+        const grad = ctx.createRadialGradient(spotX, spotY, 0, spotX, spotY, finalR);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.6, '#cccccc');
+        grad.addColorStop(1, '#000000');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(spotX, spotY, finalR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#06080e', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Exterior — visible OUTSIDE x-ray beam
+          {
+            fontSize: 10,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 1,
+          },
+          // Layer 2: Interior — visible INSIDE x-ray beam
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'neon',
+            opacity: 1,
+          },
+          // Layer 3: Edge glow inside beam
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'acid',
+            edgeDetect: true,
+            edgeCharset: 'box-light',
+            blendMode: 'add',
+            opacity: 0.3,
+          },
+          // Layer 4: X-ray mask — invisible
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          spotX = lerp(spotX, targetX, 1 - Math.exp(-8 * dt));
+          spotY = lerp(spotY, targetY, 1 - Math.exp(-8 * dt));
+          drawScene(ctx, time / 1000, w, h);
+        },
+        onResize(ctx, w, h) {
+          initGears(w, h);
+          spotX = targetX = w / 2;
+          spotY = targetY = h / 2;
+        },
+      });
+
+      // ─── Mask Setup ─────────────────────────────────────
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+
+      function resizeMask() {
+        maskCanvas.width = app.canvas.width;
+        maskCanvas.height = app.canvas.height;
+      }
+      resizeMask();
+      window.addEventListener('resize', resizeMask);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+      layers[4].set('source', maskCanvas);
+
+      // Exterior visible OUTSIDE beam (inverted mask)
+      layers[1].set('maskLayer', layers[4].id);
+      layers[1].set('invertMask', true);
+
+      // Interior visible INSIDE beam (normal mask)
+      layers[2].set('maskLayer', layers[4].id);
+
+      // Edge glow inside beam
+      layers[3].set('maskLayer', layers[4].id);
+
+      app.ascii.on('render', () => {
+        const t = performance.now() / 1000;
+        drawXRayMask(maskCtx, t, maskCanvas.width, maskCanvas.height);
+      });
+
+      // ─── Input ──────────────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        const rect = app.canvas.getBoundingClientRect();
+        targetX = (e.clientX - rect.left) * (app.canvas.width / rect.width);
+        targetY = (e.clientY - rect.top) * (app.canvas.height / rect.height);
+      });
+      window.addEventListener('touchmove', (e) => {
+        const touch = e.touches[0];
+        const rect = app.canvas.getBoundingClientRect();
+        targetX = (touch.clientX - rect.left) * (app.canvas.width / rect.width);
+        targetY = (touch.clientY - rect.top) * (app.canvas.height / rect.height);
+      });
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        scanRadius += e.deltaY * -0.0003;
+        scanRadius = Math.max(0.06, Math.min(0.4, scanRadius));
+      }, { passive: false });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Porthole</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, dist, clamp } from './utils.js';
+
+      // ─── Mouse Parallax ─────────────────────────────────
+      let mouseX = 0.5, mouseY = 0.5;
+      let smoothMX = 0.5, smoothMY = 0.5;
+
+      // ─── Fish ───────────────────────────────────────────
+      const fish = [];
+      function initFish(w, h) {
+        fish.length = 0;
+        for (let i = 0; i < 12; i++) {
+          const dir = Math.random() > 0.5 ? 1 : -1;
+          fish.push({
+            x: Math.random() * w,
+            y: h * 0.15 + Math.random() * h * 0.6,
+            speed: 20 + Math.random() * 40,
+            dir,
+            size: 6 + Math.random() * 10,
+            hue: 160 + Math.random() * 80,
+            yPhase: Math.random() * Math.PI * 2,
+            ySpeed: 0.5 + Math.random() * 1.5,
+            depth: Math.random(), // 0=near, 1=far
+          });
+        }
+        fish.sort((a, b) => b.depth - a.depth);
+      }
+
+      // ─── Jellyfish ──────────────────────────────────────
+      const jellies = [];
+      function initJellies(w, h) {
+        jellies.length = 0;
+        for (let i = 0; i < 4; i++) {
+          jellies.push({
+            x: Math.random() * w,
+            y: h * 0.2 + Math.random() * h * 0.5,
+            size: 15 + Math.random() * 20,
+            phase: Math.random() * Math.PI * 2,
+            driftX: (Math.random() - 0.5) * 10,
+            driftY: -3 - Math.random() * 5,
+            hue: 260 + Math.random() * 60,
+          });
+        }
+      }
+
+      // ─── Bioluminescent particles ───────────────────────
+      const bioParticles = [];
+      function initBio(w, h) {
+        bioParticles.length = 0;
+        for (let i = 0; i < 40; i++) {
+          bioParticles.push({
+            x: Math.random() * w,
+            y: Math.random() * h,
+            vx: (Math.random() - 0.5) * 5,
+            vy: -1 - Math.random() * 3,
+            size: 1 + Math.random() * 2.5,
+            hue: [180, 220, 280, 120][Math.floor(Math.random() * 4)],
+            phase: Math.random() * Math.PI * 2,
+            blinkSpeed: 1 + Math.random() * 3,
+          });
+        }
+      }
+
+      // ─── Draw Ocean Scene ───────────────────────────────
+      function drawOcean(ctx, t, w, h) {
+        // Deep ocean gradient
+        const bg = ctx.createLinearGradient(0, 0, 0, h);
+        bg.addColorStop(0, '#0a1828');
+        bg.addColorStop(0.3, '#061020');
+        bg.addColorStop(0.7, '#040a18');
+        bg.addColorStop(1, '#020510');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // Surface caustics (light patterns near top)
+        for (let i = 0; i < 10; i++) {
+          const cx = w * 0.1 + i * w * 0.085;
+          const wobble = Math.sin(t * 1.5 + i * 0.8) * 20;
+          const cy = h * 0.05 + Math.sin(t * 0.8 + i * 1.2) * 15;
+
+          ctx.strokeStyle = `rgba(80, 160, 220, ${0.08 + 0.04 * Math.sin(t * 2 + i)})`;
+          ctx.lineWidth = 2 + Math.sin(t + i) * 1;
+          ctx.beginPath();
+          ctx.moveTo(cx + wobble, cy);
+          ctx.quadraticCurveTo(cx + wobble + 30, cy + 30, cx + wobble - 10, cy + 60);
+          ctx.stroke();
+        }
+
+        // Distant whale shadow (occasional)
+        const whaleCycle = t * 0.03;
+        const whaleProgress = whaleCycle % 1;
+        if (whaleProgress > 0.3 && whaleProgress < 0.7) {
+          const whaleAlpha = 0.06 * Math.sin((whaleProgress - 0.3) / 0.4 * Math.PI);
+          const whaleX = lerp(-w * 0.2, w * 1.2, whaleProgress);
+          const whaleY = h * 0.7;
+          ctx.fillStyle = `rgba(10, 20, 50, ${whaleAlpha})`;
+          ctx.beginPath();
+          ctx.ellipse(whaleX, whaleY, 100, 25, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Fish
+        for (const f of fish) {
+          f.x += f.speed * f.dir * 0.016;
+          const yOff = Math.sin(t * f.ySpeed + f.yPhase) * 8;
+
+          // Wrap
+          if (f.dir > 0 && f.x > w + 30) f.x = -30;
+          if (f.dir < 0 && f.x < -30) f.x = w + 30;
+
+          const depthAlpha = 0.3 + (1 - f.depth) * 0.5;
+          const depthScale = 0.5 + (1 - f.depth) * 0.5;
+          const s = f.size * depthScale;
+
+          ctx.fillStyle = `hsla(${f.hue}, 70%, 50%, ${depthAlpha})`;
+          // Body
+          ctx.beginPath();
+          ctx.ellipse(f.x, f.y + yOff, s, s * 0.4, 0, 0, Math.PI * 2);
+          ctx.fill();
+          // Tail
+          ctx.beginPath();
+          ctx.moveTo(f.x - f.dir * s, f.y + yOff);
+          ctx.lineTo(f.x - f.dir * s * 1.6, f.y + yOff - s * 0.35);
+          ctx.lineTo(f.x - f.dir * s * 1.6, f.y + yOff + s * 0.35);
+          ctx.fill();
+          // Eye
+          ctx.fillStyle = `rgba(255, 255, 200, ${depthAlpha * 0.8})`;
+          ctx.beginPath();
+          ctx.arc(f.x + f.dir * s * 0.4, f.y + yOff - s * 0.1, s * 0.1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Jellyfish
+        for (const j of jellies) {
+          j.x += j.driftX * 0.016;
+          j.y += j.driftY * 0.016;
+          if (j.y < -50) j.y = h + 50;
+          if (j.x < -50) j.x = w + 50;
+          if (j.x > w + 50) j.x = -50;
+
+          const pulse = 0.85 + 0.15 * Math.sin(t * 2 + j.phase);
+          const bellW = j.size * pulse;
+          const bellH = j.size * 0.6 * (2 - pulse);
+
+          // Bell glow
+          const glow = ctx.createRadialGradient(j.x, j.y, 0, j.x, j.y, j.size * 1.5);
+          glow.addColorStop(0, `hsla(${j.hue}, 60%, 50%, 0.2)`);
+          glow.addColorStop(1, `hsla(${j.hue}, 50%, 30%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(j.x, j.y, j.size * 1.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Bell
+          ctx.fillStyle = `hsla(${j.hue}, 50%, 55%, 0.4)`;
+          ctx.beginPath();
+          ctx.ellipse(j.x, j.y, bellW, bellH, 0, Math.PI, 0);
+          ctx.fill();
+
+          // Tentacles
+          ctx.strokeStyle = `hsla(${j.hue}, 40%, 50%, 0.2)`;
+          ctx.lineWidth = 1;
+          for (let k = 0; k < 5; k++) {
+            const tx = j.x + (k - 2) * j.size * 0.25;
+            ctx.beginPath();
+            ctx.moveTo(tx, j.y + bellH * 0.3);
+            for (let s = 1; s <= 4; s++) {
+              const sy = j.y + bellH * 0.3 + s * j.size * 0.3;
+              const sx = tx + Math.sin(t * 1.5 + k + s * 0.5) * 5;
+              ctx.lineTo(sx, sy);
+            }
+            ctx.stroke();
+          }
+        }
+
+        // Bioluminescent particles
+        for (const p of bioParticles) {
+          p.x += p.vx * 0.016;
+          p.y += p.vy * 0.016;
+          if (p.y < -10) { p.y = h + 10; p.x = Math.random() * w; }
+          if (p.x < -10) p.x = w + 10;
+          if (p.x > w + 10) p.x = -10;
+
+          const blink = 0.3 + 0.7 * Math.max(0, Math.sin(t * p.blinkSpeed + p.phase));
+          const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 4);
+          glow.addColorStop(0, `hsla(${p.hue}, 80%, 60%, ${0.5 * blink})`);
+          glow.addColorStop(0.5, `hsla(${p.hue}, 70%, 40%, ${0.15 * blink})`);
+          glow.addColorStop(1, `hsla(${p.hue}, 60%, 30%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = `hsla(${p.hue}, 80%, 70%, ${0.7 * blink})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Bubbles
+        for (let i = 0; i < 6; i++) {
+          const bx = w * 0.3 + i * w * 0.08;
+          const by = ((h + 20) - (t * 30 + i * 80) % (h + 40));
+          const br = 2 + Math.sin(t + i) * 1;
+          ctx.strokeStyle = 'rgba(100, 180, 220, 0.15)';
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.arc(bx + Math.sin(t * 2 + i) * 5, by, br, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Submarine interior (dark metallic, drawn over everything outside porthole conceptually)
+        // We draw rivets and metallic texture — the mask will sort out what's visible
+        const portholeR = Math.min(w, h) * 0.33;
+        const pcx = w / 2, pcy = h / 2;
+
+        // Dark interior panels
+        ctx.fillStyle = '#0a0c10';
+        // Draw frame-like areas beyond the porthole radius
+        // Top/bottom/left/right darker bars for the interior
+        const frameW = 30;
+        ctx.fillRect(0, 0, w, pcy - portholeR - frameW);
+        ctx.fillRect(0, pcy + portholeR + frameW, w, h);
+        ctx.fillRect(0, 0, pcx - portholeR - frameW, h);
+        ctx.fillRect(pcx + portholeR + frameW, 0, w, h);
+
+        // Rivets around porthole area
+        const numRivets = 20;
+        for (let i = 0; i < numRivets; i++) {
+          const angle = (i / numRivets) * Math.PI * 2;
+          const rx = pcx + Math.cos(angle) * (portholeR + 18);
+          const ry = pcy + Math.sin(angle) * (portholeR + 18);
+          ctx.fillStyle = 'rgba(60, 65, 80, 0.5)';
+          ctx.beginPath();
+          ctx.arc(rx, ry, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = 'rgba(90, 95, 110, 0.3)';
+          ctx.beginPath();
+          ctx.arc(rx - 0.5, ry - 0.5, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Metallic ring
+        ctx.strokeStyle = 'rgba(50, 55, 70, 0.4)';
+        ctx.lineWidth = 12;
+        ctx.beginPath();
+        ctx.arc(pcx, pcy, portholeR + 6, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(70, 75, 90, 0.25)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(pcx, pcy, portholeR + 15, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // ─── Porthole Mask ──────────────────────────────────
+      function drawPortholeMask(ctx, t, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        const portholeR = Math.min(w, h) * 0.33;
+        const parallaxX = (smoothMX - 0.5) * 20;
+        const parallaxY = (smoothMY - 0.5) * 15;
+        const cx = w / 2 + parallaxX;
+        const cy = h / 2 + parallaxY;
+
+        // Soft-edged circle
+        const grad = ctx.createRadialGradient(cx, cy, portholeR * 0.92, cx, cy, portholeR);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(1, '#000000');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, portholeR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Hard inner circle
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(cx, cy, portholeR * 0.92, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#040610', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Surface water — through porthole
+          { fontSize: 10, charset: 'braille', colorScheme: 'ocean', pattern: 'waves', patternMix: 0.25, blendMode: 'add', opacity: 0.35 },
+          // Layer 2: Mid-depth fish — through porthole
+          { fontSize: 7, charset: 'density', colorScheme: 'neon', opacity: 1 },
+          // Layer 3: Deep bioluminescence — through porthole
+          { fontSize: 5, charset: 'braille', colorScheme: 'acid', blendMode: 'add', opacity: 0.6 },
+          // Layer 4: Porthole frame — OUTSIDE porthole
+          { fontSize: 8, charset: 'blocks', colorScheme: 'mono', edgeDetect: true, edgeCharset: 'box-heavy', opacity: 0.7 },
+          // Layer 5: Glass reflection — always visible
+          { fontSize: 14, charset: 'minimal', colorScheme: 'mono', blendMode: 'add', fade: 0.6, opacity: 0.08 },
+          // Layer 6: Porthole mask — invisible
+          { fontSize: 4, charset: 'blocks', colorScheme: 'mono', opacity: 0 },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          smoothMX = lerp(smoothMX, mouseX, 1 - Math.exp(-3 * dt));
+          smoothMY = lerp(smoothMY, mouseY, 1 - Math.exp(-3 * dt));
+          drawOcean(ctx, time / 1000, w, h);
+        },
+        onResize(ctx, w, h) {
+          initFish(w, h);
+          initJellies(w, h);
+          initBio(w, h);
+        },
+      });
+
+      // ─── Mask Setup ─────────────────────────────────────
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+
+      function resizeMask() {
+        maskCanvas.width = app.canvas.width;
+        maskCanvas.height = app.canvas.height;
+      }
+      resizeMask();
+      window.addEventListener('resize', resizeMask);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+      layers[6].set('source', maskCanvas);
+
+      // Ocean depths through porthole (normal mask)
+      layers[1].set('maskLayer', layers[6].id);
+      layers[2].set('maskLayer', layers[6].id);
+      layers[3].set('maskLayer', layers[6].id);
+
+      // Frame visible outside porthole (inverted mask)
+      layers[4].set('maskLayer', layers[6].id);
+      layers[4].set('invertMask', true);
+
+      app.ascii.on('render', () => {
+        const t = performance.now() / 1000;
+        drawPortholeMask(maskCtx, t, maskCanvas.width, maskCanvas.height);
+      });
+
+      // ─── Mouse Input ────────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = e.clientY / window.innerHeight;
+      });
+    </script>
+  </body>
+</html>

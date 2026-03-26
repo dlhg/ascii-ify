@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Fog of War</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, dist, clamp } from './utils.js';
+
+      // ─── Seeded Random ──────────────────────────────────
+      function seededRand(x, y) {
+        let h = (x * 374761393 + y * 668265263 + 1013904223) | 0;
+        h = ((h >> 13) ^ h) * 1274126177;
+        h = ((h >> 16) ^ h);
+        return (h & 0x7fffffff) / 0x7fffffff;
+      }
+
+      // ─── Terrain ────────────────────────────────────────
+      const TILE = 24;
+      const terrainTypes = ['grass', 'grass', 'grass', 'forest', 'forest', 'water', 'mountain'];
+
+      function getTerrain(tx, ty) {
+        const r = seededRand(tx, ty);
+        if (r < 0.45) return 'grass';
+        if (r < 0.65) return 'forest';
+        if (r < 0.8) return 'water';
+        return 'mountain';
+      }
+
+      // ─── Units ──────────────────────────────────────────
+      const friendlies = [
+        { x: 0, y: 0, targetX: 0, targetY: 0, selected: false, visRadius: 120 },
+        { x: 0, y: 0, targetX: 0, targetY: 0, selected: false, visRadius: 100 },
+        { x: 0, y: 0, targetX: 0, targetY: 0, selected: false, visRadius: 110 },
+      ];
+
+      const enemies = [];
+      const resources = [];
+
+      function initUnits(w, h) {
+        // Place friendlies near bottom-left
+        friendlies[0].x = friendlies[0].targetX = w * 0.15;
+        friendlies[0].y = friendlies[0].targetY = h * 0.75;
+        friendlies[1].x = friendlies[1].targetX = w * 0.1;
+        friendlies[1].y = friendlies[1].targetY = h * 0.85;
+        friendlies[2].x = friendlies[2].targetX = w * 0.22;
+        friendlies[2].y = friendlies[2].targetY = h * 0.8;
+        friendlies[0].selected = true;
+
+        // Enemies patrolling
+        enemies.length = 0;
+        const patrols = [
+          [w * 0.6, h * 0.2, w * 0.8, h * 0.2],
+          [w * 0.4, h * 0.4, w * 0.4, h * 0.6],
+          [w * 0.7, h * 0.5, w * 0.9, h * 0.7],
+          [w * 0.3, h * 0.15, w * 0.5, h * 0.35],
+          [w * 0.85, h * 0.3, w * 0.85, h * 0.5],
+        ];
+        for (const [x1, y1, x2, y2] of patrols) {
+          enemies.push({ x: x1, y: y1, x1, y1, x2, y2, phase: Math.random() * Math.PI * 2, speed: 0.3 + Math.random() * 0.3 });
+        }
+
+        // Resources
+        resources.length = 0;
+        resources.push(
+          { x: w * 0.5, y: h * 0.3 },
+          { x: w * 0.2, y: h * 0.15 },
+          { x: w * 0.75, y: h * 0.65 },
+          { x: w * 0.9, y: h * 0.15 },
+        );
+      }
+
+      // ─── Draw Terrain ───────────────────────────────────
+      function drawScene(ctx, t, w, h) {
+        ctx.fillStyle = '#0a0e08';
+        ctx.fillRect(0, 0, w, h);
+
+        const cols = Math.ceil(w / TILE) + 1;
+        const rows = Math.ceil(h / TILE) + 1;
+
+        for (let ty = 0; ty < rows; ty++) {
+          for (let tx = 0; tx < cols; tx++) {
+            const terrain = getTerrain(tx, ty);
+            const px = tx * TILE, py = ty * TILE;
+            const v = seededRand(tx + 100, ty + 200) * 0.15;
+
+            switch (terrain) {
+              case 'grass':
+                ctx.fillStyle = `rgb(${20 + v * 40}, ${50 + v * 60}, ${15 + v * 20})`;
+                break;
+              case 'forest':
+                ctx.fillStyle = `rgb(${10 + v * 20}, ${35 + v * 40}, ${12 + v * 15})`;
+                break;
+              case 'water':
+                const wave = Math.sin(t * 1.5 + tx * 0.3 + ty * 0.2) * 0.1;
+                ctx.fillStyle = `rgb(${15 + v * 20}, ${30 + v * 30}, ${60 + v * 60 + wave * 40})`;
+                break;
+              case 'mountain':
+                ctx.fillStyle = `rgb(${40 + v * 50}, ${38 + v * 45}, ${35 + v * 40})`;
+                break;
+            }
+            ctx.fillRect(px, py, TILE, TILE);
+
+            // Grid lines
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(px, py, TILE, TILE);
+
+            // Trees in forest
+            if (terrain === 'forest' && seededRand(tx + 50, ty + 50) > 0.4) {
+              ctx.fillStyle = `rgb(8, ${25 + v * 30}, 10)`;
+              ctx.beginPath();
+              ctx.arc(px + TILE / 2, py + TILE / 2, TILE * 0.3, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        // Resources (golden nodes)
+        for (const r of resources) {
+          const pulse = 0.6 + 0.4 * Math.sin(t * 3 + r.x);
+          const glow = ctx.createRadialGradient(r.x, r.y, 0, r.x, r.y, 18);
+          glow.addColorStop(0, `rgba(255, 220, 50, ${0.9 * pulse})`);
+          glow.addColorStop(0.5, `rgba(255, 180, 30, ${0.4 * pulse})`);
+          glow.addColorStop(1, 'rgba(200, 150, 20, 0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, 18, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = `rgba(255, 230, 80, ${pulse})`;
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Enemies (red)
+        for (const e of enemies) {
+          const progress = (Math.sin(t * e.speed + e.phase) + 1) / 2;
+          e.x = lerp(e.x1, e.x2, progress);
+          e.y = lerp(e.y1, e.y2, progress);
+
+          const pulse = 0.6 + 0.4 * Math.sin(t * 4 + e.phase);
+          ctx.fillStyle = `rgba(220, 50, 50, ${0.8 * pulse})`;
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 7, 0, Math.PI * 2);
+          ctx.fill();
+
+          const eGlow = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, 15);
+          eGlow.addColorStop(0, `rgba(255, 60, 40, ${0.3 * pulse})`);
+          eGlow.addColorStop(1, 'rgba(200, 40, 30, 0)');
+          ctx.fillStyle = eGlow;
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 15, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Friendly units (blue/cyan)
+        for (const u of friendlies) {
+          // Move toward target
+          const dx = u.targetX - u.x;
+          const dy = u.targetY - u.y;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d > 2) {
+            const speed = 100;
+            u.x += (dx / d) * Math.min(speed * 0.016, d);
+            u.y += (dy / d) * Math.min(speed * 0.016, d);
+          }
+
+          ctx.fillStyle = 'rgba(50, 180, 255, 0.9)';
+          ctx.beginPath();
+          ctx.arc(u.x, u.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+
+          if (u.selected) {
+            ctx.strokeStyle = `rgba(100, 255, 255, ${0.5 + 0.5 * Math.sin(t * 4)})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(u.x, u.y, 13, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          // Vision circle hint
+          ctx.strokeStyle = 'rgba(50, 150, 255, 0.06)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(u.x, u.y, u.visRadius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // ─── Masks ──────────────────────────────────────────
+      function drawActiveMask(ctx, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        for (const u of friendlies) {
+          const grad = ctx.createRadialGradient(u.x, u.y, 0, u.x, u.y, u.visRadius);
+          grad.addColorStop(0, '#ffffff');
+          grad.addColorStop(0.6, '#cccccc');
+          grad.addColorStop(1, '#000000');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(u.x, u.y, u.visRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawExploredMask(ctx, w, h) {
+        // Accumulate — never clear
+        ctx.globalCompositeOperation = 'lighter';
+        for (const u of friendlies) {
+          const grad = ctx.createRadialGradient(u.x, u.y, 0, u.x, u.y, u.visRadius * 0.9);
+          grad.addColorStop(0, 'rgba(255, 255, 255, 0.04)');
+          grad.addColorStop(0.7, 'rgba(255, 255, 255, 0.02)');
+          grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(u.x, u.y, u.visRadius * 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#040608', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Full terrain — visible near units
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'rainbow',
+            opacity: 1,
+          },
+          // Layer 2: Explored dim memory
+          {
+            fontSize: 14,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            opacity: 0.2,
+          },
+          // Layer 3: Fog atmosphere
+          {
+            fontSize: 18,
+            charset: 'braille',
+            colorScheme: 'mono',
+            pattern: 'plasma',
+            patternMix: 0.7,
+            opacity: 0.1,
+          },
+          // Layer 4: Active visibility mask — invisible
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+          // Layer 5: Explored mask — invisible
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawScene(ctx, time / 1000, w, h);
+        },
+        onResize(ctx, w, h) {
+          initUnits(w, h);
+          // Reset explored mask on resize
+          exploredMaskCtx.fillStyle = '#000';
+          exploredMaskCtx.fillRect(0, 0, exploredMaskCanvas.width, exploredMaskCanvas.height);
+        },
+      });
+
+      // ─── Mask Canvases ──────────────────────────────────
+      const activeMaskCanvas = document.createElement('canvas');
+      const activeMaskCtx = activeMaskCanvas.getContext('2d');
+      const exploredMaskCanvas = document.createElement('canvas');
+      const exploredMaskCtx = exploredMaskCanvas.getContext('2d');
+
+      function resizeMasks() {
+        activeMaskCanvas.width = app.canvas.width;
+        activeMaskCanvas.height = app.canvas.height;
+        exploredMaskCanvas.width = app.canvas.width;
+        exploredMaskCanvas.height = app.canvas.height;
+        exploredMaskCtx.fillStyle = '#000';
+        exploredMaskCtx.fillRect(0, 0, exploredMaskCanvas.width, exploredMaskCanvas.height);
+      }
+      resizeMasks();
+      window.addEventListener('resize', resizeMasks);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+
+      layers[4].set('source', activeMaskCanvas);
+      layers[5].set('source', exploredMaskCanvas);
+
+      // Full terrain masked by active visibility
+      layers[1].set('maskLayer', layers[4].id);
+
+      // Explored dim layer masked by accumulated exploration
+      layers[2].set('maskLayer', layers[5].id);
+
+      app.ascii.on('render', () => {
+        const w = activeMaskCanvas.width;
+        const h = activeMaskCanvas.height;
+        drawActiveMask(activeMaskCtx, w, h);
+        drawExploredMask(exploredMaskCtx, w, h);
+      });
+
+      // ─── Click Handling ─────────────────────────────────
+      app.canvas.addEventListener('click', (e) => {
+        const rect = app.canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (app.canvas.width / rect.width);
+        const my = (e.clientY - rect.top) * (app.canvas.height / rect.height);
+
+        // Try to select a unit first
+        let clickedUnit = false;
+        for (const u of friendlies) {
+          if (dist(mx, my, u.x, u.y) < 20) {
+            friendlies.forEach(f => f.selected = false);
+            u.selected = true;
+            clickedUnit = true;
+            break;
+          }
+        }
+
+        // If no unit clicked, move the selected unit
+        if (!clickedUnit) {
+          const sel = friendlies.find(u => u.selected);
+          if (sel) {
+            sel.targetX = mx;
+            sel.targetY = my;
+          }
+        }
+      });
+
+      // Tab to cycle selection
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const idx = friendlies.findIndex(u => u.selected);
+          friendlies.forEach(f => f.selected = false);
+          friendlies[(idx + 1) % friendlies.length].selected = true;
+        }
+      });
+    </script>
+  </body>
+</html>

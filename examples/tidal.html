@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Tidal</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep } from './utils.js';
+
+      // ─── Beach Objects ──────────────────────────────────
+      const treasures = [];
+      const creatures = [];
+
+      function initObjects(w, h) {
+        treasures.length = 0;
+        creatures.length = 0;
+
+        // Scattered treasures on the beach
+        for (let i = 0; i < 15; i++) {
+          const type = ['coin', 'gem', 'shell', 'starfish'][Math.floor(Math.random() * 4)];
+          treasures.push({
+            x: Math.random() * w,
+            y: h * 0.35 + Math.random() * h * 0.55,
+            type,
+            size: 3 + Math.random() * 5,
+            phase: Math.random() * Math.PI * 2,
+            hue: type === 'coin' ? 45 : type === 'gem' ? 0 : type === 'shell' ? 30 : 330,
+          });
+        }
+
+        // Tide pool creatures
+        for (let i = 0; i < 8; i++) {
+          creatures.push({
+            x: Math.random() * w,
+            y: h * 0.4 + Math.random() * h * 0.35,
+            type: Math.random() > 0.5 ? 'crab' : 'fish',
+            size: 5 + Math.random() * 8,
+            phase: Math.random() * Math.PI * 2,
+            speed: 0.5 + Math.random() * 1.5,
+            dx: (Math.random() - 0.5) * 30,
+          });
+        }
+      }
+
+      // ─── Tide Line ──────────────────────────────────────
+      function getTideY(x, t, w, h) {
+        const baseY = h * (0.35 + 0.22 * Math.sin(t * 0.4));
+        return baseY
+          + Math.sin(x * 0.015 + t * 1.2) * 18
+          + Math.sin(x * 0.035 + t * 1.8) * 10
+          + Math.sin(x * 0.008 + t * 0.7) * 25;
+      }
+
+      // ─── Draw Scene ─────────────────────────────────────
+      function drawScene(ctx, t, w, h) {
+        // Ocean (top portion)
+        const oceanGrad = ctx.createLinearGradient(0, 0, 0, h * 0.5);
+        oceanGrad.addColorStop(0, '#0a1830');
+        oceanGrad.addColorStop(1, '#0c2040');
+        ctx.fillStyle = oceanGrad;
+        ctx.fillRect(0, 0, w, h * 0.6);
+
+        // Water ripples
+        ctx.strokeStyle = 'rgba(40, 100, 160, 0.15)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 15; i++) {
+          const ry = h * 0.05 + i * h * 0.035;
+          ctx.beginPath();
+          for (let x = 0; x < w; x += 3) {
+            const y = ry + Math.sin(x * 0.02 + t * 2 + i * 0.8) * 4;
+            if (x === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+
+        // Sand (bottom portion)
+        const sandGrad = ctx.createLinearGradient(0, h * 0.3, 0, h);
+        sandGrad.addColorStop(0, '#3a3020');
+        sandGrad.addColorStop(0.5, '#2e2518');
+        sandGrad.addColorStop(1, '#251e14');
+        ctx.fillStyle = sandGrad;
+        ctx.fillRect(0, h * 0.3, w, h * 0.7);
+
+        // Sand texture (speckles)
+        for (let i = 0; i < 200; i++) {
+          const sx = (i * 137.5) % w;
+          const sy = h * 0.35 + ((i * 97.3) % (h * 0.6));
+          const brightness = 35 + ((i * 73) % 30);
+          ctx.fillStyle = `rgb(${brightness + 10}, ${brightness + 5}, ${brightness - 5})`;
+          ctx.fillRect(sx, sy, 1.5, 1.5);
+        }
+
+        // Foam line along tide edge
+        for (let x = 0; x < w; x += 2) {
+          const tideY = getTideY(x, t, w, h);
+          const foamAlpha = 0.3 + 0.2 * Math.sin(x * 0.05 + t * 3);
+          ctx.fillStyle = `rgba(200, 220, 240, ${foamAlpha})`;
+          ctx.fillRect(x, tideY - 3, 2, 6 + Math.sin(x * 0.1 + t * 4) * 3);
+        }
+
+        // Treasures
+        for (const tr of treasures) {
+          const pulse = 0.6 + 0.4 * Math.sin(t * 2 + tr.phase);
+          const glow = ctx.createRadialGradient(tr.x, tr.y, 0, tr.x, tr.y, tr.size * 3);
+
+          if (tr.type === 'coin') {
+            glow.addColorStop(0, `rgba(255, 220, 50, ${0.8 * pulse})`);
+            glow.addColorStop(0.5, `rgba(220, 180, 30, ${0.3 * pulse})`);
+            glow.addColorStop(1, 'rgba(200, 160, 20, 0)');
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(tr.x, tr.y, tr.size * 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `rgba(255, 230, 80, ${pulse})`;
+            ctx.beginPath();
+            ctx.arc(tr.x, tr.y, tr.size, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (tr.type === 'gem') {
+            glow.addColorStop(0, `rgba(255, 50, 80, ${0.7 * pulse})`);
+            glow.addColorStop(0.5, `rgba(200, 30, 60, ${0.3 * pulse})`);
+            glow.addColorStop(1, 'rgba(150, 20, 40, 0)');
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(tr.x, tr.y, tr.size * 3, 0, Math.PI * 2);
+            ctx.fill();
+            // Diamond shape
+            ctx.fillStyle = `rgba(255, 80, 100, ${pulse})`;
+            ctx.beginPath();
+            ctx.moveTo(tr.x, tr.y - tr.size);
+            ctx.lineTo(tr.x + tr.size * 0.7, tr.y);
+            ctx.lineTo(tr.x, tr.y + tr.size);
+            ctx.lineTo(tr.x - tr.size * 0.7, tr.y);
+            ctx.fill();
+          } else if (tr.type === 'shell') {
+            ctx.fillStyle = `rgba(240, 220, 200, ${0.6 * pulse})`;
+            ctx.beginPath();
+            ctx.arc(tr.x, tr.y, tr.size, 0, Math.PI);
+            ctx.fill();
+            // Spiral lines
+            ctx.strokeStyle = `rgba(200, 180, 160, ${0.4 * pulse})`;
+            ctx.lineWidth = 0.5;
+            for (let j = 0; j < 3; j++) {
+              ctx.beginPath();
+              ctx.arc(tr.x, tr.y, tr.size * (0.3 + j * 0.25), -Math.PI * 0.1, Math.PI * 1.1);
+              ctx.stroke();
+            }
+          } else {
+            // Starfish
+            ctx.fillStyle = `rgba(230, 100, 150, ${0.6 * pulse})`;
+            ctx.beginPath();
+            for (let j = 0; j < 5; j++) {
+              const a = (j / 5) * Math.PI * 2 - Math.PI / 2;
+              const outerX = tr.x + Math.cos(a) * tr.size;
+              const outerY = tr.y + Math.sin(a) * tr.size;
+              const innerA = a + Math.PI / 5;
+              const innerX = tr.x + Math.cos(innerA) * tr.size * 0.4;
+              const innerY = tr.y + Math.sin(innerA) * tr.size * 0.4;
+              if (j === 0) ctx.moveTo(outerX, outerY);
+              else ctx.lineTo(outerX, outerY);
+              ctx.lineTo(innerX, innerY);
+            }
+            ctx.fill();
+          }
+        }
+
+        // Sea creatures
+        for (const c of creatures) {
+          const ox = Math.sin(t * c.speed + c.phase) * c.dx;
+          const cx = c.x + ox;
+          const pulse = 0.5 + 0.5 * Math.sin(t * 3 + c.phase);
+
+          if (c.type === 'crab') {
+            ctx.fillStyle = `rgba(200, 80, 50, ${0.6 * pulse})`;
+            // Body
+            ctx.beginPath();
+            ctx.ellipse(cx, c.y, c.size, c.size * 0.6, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Claws
+            for (const side of [-1, 1]) {
+              const clawAngle = Math.sin(t * 2 + c.phase) * 0.3;
+              ctx.beginPath();
+              ctx.arc(cx + side * c.size * 1.2, c.y - c.size * 0.3, c.size * 0.3, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            // Eyes
+            ctx.fillStyle = `rgba(255, 200, 50, ${0.8 * pulse})`;
+            ctx.beginPath();
+            ctx.arc(cx - c.size * 0.3, c.y - c.size * 0.4, 1.5, 0, Math.PI * 2);
+            ctx.arc(cx + c.size * 0.3, c.y - c.size * 0.4, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            // Fish
+            const dir = Math.sign(Math.cos(t * c.speed + c.phase));
+            ctx.fillStyle = `rgba(60, 180, 220, ${0.6 * pulse})`;
+            ctx.beginPath();
+            ctx.ellipse(cx, c.y, c.size, c.size * 0.4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Tail
+            ctx.beginPath();
+            ctx.moveTo(cx - dir * c.size, c.y);
+            ctx.lineTo(cx - dir * c.size * 1.5, c.y - c.size * 0.4);
+            ctx.lineTo(cx - dir * c.size * 1.5, c.y + c.size * 0.4);
+            ctx.fill();
+            // Eye
+            ctx.fillStyle = `rgba(255, 255, 200, ${0.7 * pulse})`;
+            ctx.beginPath();
+            ctx.arc(cx + dir * c.size * 0.5, c.y - c.size * 0.1, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      // ─── Tide Mask ──────────────────────────────────────
+      function drawTideMask(ctx, t, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        // White above tide line (water), black below (beach)
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(w, 0);
+        for (let x = w; x >= 0; x -= 2) {
+          ctx.lineTo(x, getTideY(x, t, w, h));
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // Soft edge at the tide line
+        for (let x = 0; x < w; x += 2) {
+          const tideY = getTideY(x, t, w, h);
+          const grad = ctx.createLinearGradient(0, tideY - 15, 0, tideY + 15);
+          grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+          grad.addColorStop(0.5, 'rgba(255, 255, 255, 0.5)');
+          grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(x, tideY - 15, 2, 30);
+        }
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#08060a', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Ocean water — visible where water IS
+          { fontSize: 8, charset: 'braille', colorScheme: 'ocean', pattern: 'waves', patternMix: 0.25, opacity: 1 },
+          // Layer 2: Sand/beach — visible where water ISN'T
+          { fontSize: 10, charset: 'blocks', colorScheme: 'mono', opacity: 0.8 },
+          // Layer 3: Treasures — revealed when water recedes
+          { fontSize: 6, charset: 'density', colorScheme: 'fire', blendMode: 'add', opacity: 0.8 },
+          // Layer 4: Sea creatures — revealed when water recedes
+          { fontSize: 7, charset: 'density', colorScheme: 'neon', blendMode: 'add', opacity: 0.7 },
+          // Layer 5: Foam edge detection
+          { fontSize: 6, charset: 'density', colorScheme: 'mono', edgeDetect: true, edgeCharset: 'box-light', blendMode: 'add', opacity: 0.35 },
+          // Layer 6: Tide mask — invisible
+          { fontSize: 4, charset: 'blocks', colorScheme: 'mono', opacity: 0 },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawScene(ctx, time / 1000, w, h);
+        },
+        onResize(ctx, w, h) {
+          initObjects(w, h);
+        },
+      });
+
+      // ─── Mask Setup ─────────────────────────────────────
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+
+      function resizeMask() {
+        maskCanvas.width = app.canvas.width;
+        maskCanvas.height = app.canvas.height;
+      }
+      resizeMask();
+      window.addEventListener('resize', resizeMask);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+      layers[6].set('source', maskCanvas);
+
+      // Water visible where tide IS (normal mask)
+      layers[1].set('maskLayer', layers[6].id);
+
+      // Sand visible where tide ISN'T (inverted)
+      layers[2].set('maskLayer', layers[6].id);
+      layers[2].set('invertMask', true);
+
+      // Treasures revealed when water recedes (inverted)
+      layers[3].set('maskLayer', layers[6].id);
+      layers[3].set('invertMask', true);
+
+      // Creatures revealed when water recedes (inverted)
+      layers[4].set('maskLayer', layers[6].id);
+      layers[4].set('invertMask', true);
+
+      // Foam follows the tide edge
+      layers[5].set('maskLayer', layers[6].id);
+
+      app.ascii.on('render', () => {
+        const t = performance.now() / 1000;
+        drawTideMask(maskCtx, t, maskCanvas.width, maskCanvas.height);
+      });
+    </script>
+  </body>
+</html>
