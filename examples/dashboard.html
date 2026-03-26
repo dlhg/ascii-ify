@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Dashboard</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep, mulberry32 } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────────
+      const TAU = Math.PI * 2;
+      const BG = '#08090f';
+      const GRID_COLS = 4;
+      const GRID_ROWS = 3;
+      const PAD = 6;
+      const TITLE_H = 18;
+
+      // ─── Color Palette ─────────────────────────────────────
+      const COLORS = {
+        cyan:    [80, 200, 220],
+        magenta: [200, 80, 200],
+        green:   [80, 200, 120],
+        amber:   [220, 180, 60],
+        blue:    [80, 120, 220],
+        red:     [220, 80, 80],
+        purple:  [140, 80, 220],
+        teal:    [60, 180, 180],
+      };
+      const PALETTE = Object.values(COLORS);
+
+      let hueShift = 0; // slow global hue drift
+
+      function shiftColor(c, shift) {
+        // Rotate hue roughly by converting to HSL-ish approach
+        // Simple approximation: rotate RGB channels
+        const r = c[0], g = c[1], b = c[2];
+        const cs = Math.cos(shift);
+        const sn = Math.sin(shift);
+        return [
+          clamp((0.5 + 0.5 * cs) * r + (0.5 - 0.5 * cs) * g + (-0.289 * sn) * b, 0, 255),
+          clamp((-0.289 * sn) * r + (0.5 + 0.5 * cs) * g + (0.5 - 0.5 * cs) * b, 0, 255),
+          clamp((0.5 - 0.5 * cs) * r + (-0.289 * sn) * g + (0.5 + 0.5 * cs) * b, 0, 255),
+        ];
+      }
+
+      function rgba(c, a = 1) {
+        const sc = shiftColor(c, hueShift);
+        return `rgba(${sc[0] | 0},${sc[1] | 0},${sc[2] | 0},${a})`;
+      }
+
+      // ─── Data Generation ───────────────────────────────────
+      function dataValue(time, freq, phase, harmonics = 1) {
+        let v = Math.sin(time * freq + phase);
+        if (harmonics >= 2) v += Math.sin(time * freq * 2.1 + phase * 1.7) * 0.5;
+        if (harmonics >= 3) v += Math.sin(time * freq * 0.4 + phase * 3.1) * 0.3;
+        return v / (1 + 0.5 * Math.max(0, harmonics - 1));
+      }
+
+      // ─── Widget Layout ─────────────────────────────────────
+      const WIDGETS = [
+        // Row 0
+        { title: 'NETWORK THROUGHPUT',   col: 0, row: 0, colSpan: 2, rowSpan: 1, draw: drawLineChart,      seed: 42 },
+        { title: 'REVENUE BY SEGMENT',   col: 2, row: 0, colSpan: 1, rowSpan: 1, draw: drawBarChart,       seed: 137 },
+        { title: 'RESOURCE ALLOCATION',  col: 3, row: 0, colSpan: 1, rowSpan: 1, draw: drawDonutChart,     seed: 271 },
+        // Row 1
+        { title: 'MEMORY UTILIZATION',   col: 0, row: 1, colSpan: 1, rowSpan: 1, draw: drawAreaChart,      seed: 389 },
+        { title: 'CLUSTER METRICS',      col: 1, row: 1, colSpan: 2, rowSpan: 1, draw: drawSparklineMatrix,seed: 503 },
+        { title: 'SYSTEM HEALTH',        col: 3, row: 1, colSpan: 1, rowSpan: 1, draw: drawGauges,         seed: 619 },
+        // Row 2
+        { title: 'TOP ENDPOINTS',        col: 0, row: 2, colSpan: 1, rowSpan: 1, draw: drawHorizontalBars, seed: 743 },
+        { title: 'KEY METRICS',          col: 1, row: 2, colSpan: 1, rowSpan: 1, draw: drawNumberTicker,   seed: 857 },
+        { title: 'LATENCY DISTRIBUTION', col: 2, row: 2, colSpan: 1, rowSpan: 1, draw: drawScatterPlot,    seed: 953 },
+        { title: 'PIPELINE STATUS',      col: 3, row: 2, colSpan: 1, rowSpan: 1, draw: drawMiniSparklines, seed: 1087 },
+      ];
+
+      function getWidgetRect(w, widget) {
+        const cellW = w.width / GRID_COLS;
+        const cellH = w.height / GRID_ROWS;
+        const x = widget.col * cellW + PAD;
+        const y = widget.row * cellH + PAD;
+        const ww = widget.colSpan * cellW - PAD * 2;
+        const hh = widget.rowSpan * cellH - PAD * 2;
+        return {
+          x, y, w: ww, h: hh,
+          // Inner content area (inside border + title)
+          cx: x + PAD, cy: y + TITLE_H + PAD,
+          cw: ww - PAD * 2, ch: hh - TITLE_H - PAD * 2,
+        };
+      }
+
+      // ─── Widget Frame ──────────────────────────────────────
+      let flashWidget = -1;
+      let flashTimer = 0;
+
+      function drawWidgetFrame(ctx, r, title, index, time) {
+        // Border
+        const isFlash = index === flashWidget;
+        const borderAlpha = isFlash ? 0.6 + Math.sin(time * 12) * 0.3 : 0.25;
+        ctx.strokeStyle = rgba(COLORS.blue, borderAlpha);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+
+        // Title bar line
+        ctx.strokeStyle = rgba(COLORS.blue, borderAlpha * 0.6);
+        ctx.beginPath();
+        ctx.moveTo(r.x, r.y + TITLE_H);
+        ctx.lineTo(r.x + r.w, r.y + TITLE_H);
+        ctx.stroke();
+
+        // Title text
+        ctx.font = '10px monospace';
+        ctx.fillStyle = rgba([160, 180, 210], 0.7);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(title, r.x + PAD, r.y + TITLE_H / 2 + 1);
+
+        // Status dot
+        const dotPhase = Math.sin(time * 0.8 + index * 1.3);
+        const dotColor = dotPhase > 0.3 ? COLORS.green : dotPhase > -0.5 ? COLORS.amber : COLORS.red;
+        ctx.fillStyle = rgba(dotColor, 0.7);
+        ctx.beginPath();
+        ctx.arc(r.x + r.w - PAD - 4, r.y + TITLE_H / 2 + 1, 3, 0, TAU);
+        ctx.fill();
+      }
+
+      // ─── Grid Lines Helper ─────────────────────────────────
+      function drawGridLines(ctx, x, y, w, h, cols, rows, alpha = 0.08) {
+        ctx.strokeStyle = rgba([80, 100, 140], alpha);
+        ctx.lineWidth = 0.5;
+        for (let i = 1; i < cols; i++) {
+          const gx = x + (i / cols) * w;
+          ctx.beginPath(); ctx.moveTo(gx, y); ctx.lineTo(gx, y + h); ctx.stroke();
+        }
+        for (let i = 1; i < rows; i++) {
+          const gy = y + (i / rows) * h;
+          ctx.beginPath(); ctx.moveTo(x, gy); ctx.lineTo(x + w, gy); ctx.stroke();
+        }
+      }
+
+      // ─── 1. Multi-Line Chart ───────────────────────────────
+      function drawLineChart(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+
+        drawGridLines(ctx, cx, cy, cw, ch, 8, 4);
+
+        const series = [
+          { color: COLORS.cyan,    freq: 0.7,  phase: seed,       harmonics: 3 },
+          { color: COLORS.magenta, freq: 1.1,  phase: seed + 2.1, harmonics: 2 },
+          { color: COLORS.amber,   freq: 0.5,  phase: seed + 4.3, harmonics: 3 },
+        ];
+
+        const windowDuration = 8;
+        const points = 80;
+
+        for (const s of series) {
+          // Glow pass
+          ctx.strokeStyle = rgba(s.color, 0.15);
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          for (let i = 0; i < points; i++) {
+            const nx = i / (points - 1);
+            const sampleT = t - (1 - nx) * windowDuration;
+            const v = dataValue(sampleT, s.freq, s.phase, s.harmonics);
+            const px = cx + nx * cw;
+            const py = cy + ch * 0.5 - v * ch * 0.4;
+            i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+
+          // Sharp pass
+          ctx.strokeStyle = rgba(s.color, 0.8);
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          for (let i = 0; i < points; i++) {
+            const nx = i / (points - 1);
+            const sampleT = t - (1 - nx) * windowDuration;
+            const v = dataValue(sampleT, s.freq, s.phase, s.harmonics);
+            const px = cx + nx * cw;
+            const py = cy + ch * 0.5 - v * ch * 0.4;
+            i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+
+          // Leading dot
+          const lastV = dataValue(t, s.freq, s.phase, s.harmonics);
+          const dotX = cx + cw;
+          const dotY = cy + ch * 0.5 - lastV * ch * 0.4;
+          ctx.fillStyle = rgba(s.color, 0.9);
+          ctx.beginPath();
+          ctx.arc(dotX, dotY, 3, 0, TAU);
+          ctx.fill();
+        }
+      }
+
+      // ─── 2. Bar Chart ──────────────────────────────────────
+      function drawBarChart(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+        const rng = mulberry32(seed);
+        const numBars = 8;
+        const barW = cw / numBars * 0.7;
+        const gap = cw / numBars * 0.3;
+
+        drawGridLines(ctx, cx, cy, cw, ch, 0, 4, 0.06);
+
+        for (let i = 0; i < numBars; i++) {
+          const phase = rng() * TAU;
+          const speed = 0.3 + rng() * 0.5;
+          const h = 0.15 + 0.85 * (Math.sin(t * speed + phase) * 0.5 + 0.5);
+          const barH = h * ch;
+          const bx = cx + i * (barW + gap) + gap * 0.5;
+          const by = cy + ch - barH;
+
+          const colorIdx = i % PALETTE.length;
+          const pulse = Math.sin(t * 3 + i * 1.7) > 0.9 ? 1.3 : 1;
+
+          // Glow
+          ctx.fillStyle = rgba(PALETTE[colorIdx], 0.1 * pulse);
+          ctx.fillRect(bx - 2, by - 2, barW + 4, barH + 4);
+
+          // Bar
+          ctx.fillStyle = rgba(PALETTE[colorIdx], 0.7 * pulse);
+          ctx.fillRect(bx, by, barW, barH);
+
+          // Top highlight
+          ctx.fillStyle = rgba(PALETTE[colorIdx], 0.9);
+          ctx.fillRect(bx, by, barW, 2);
+        }
+      }
+
+      // ─── 3. Donut Chart ────────────────────────────────────
+      const donutState = { segments: [], lastUpdate: 0 };
+
+      function initDonut(seed) {
+        const rng = mulberry32(seed);
+        donutState.segments = [];
+        for (let i = 0; i < 5; i++) {
+          const v = 0.1 + rng() * 0.3;
+          donutState.segments.push({ current: v, target: v });
+        }
+      }
+
+      function drawDonutChart(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+
+        if (donutState.segments.length === 0) initDonut(seed);
+
+        // Update targets periodically
+        if (t - donutState.lastUpdate > 3) {
+          donutState.lastUpdate = t;
+          const rng = mulberry32(seed + (t | 0));
+          for (const seg of donutState.segments) {
+            seg.target = 0.08 + rng() * 0.4;
+          }
+        }
+
+        // Lerp current toward target
+        for (const seg of donutState.segments) {
+          seg.current = lerp(seg.current, seg.target, 0.02);
+        }
+
+        // Normalize
+        const total = donutState.segments.reduce((s, seg) => s + seg.current, 0);
+
+        const centerX = cx + cw / 2;
+        const centerY = cy + ch / 2;
+        const outerR = Math.min(cw, ch) * 0.42;
+        const innerR = outerR * 0.55;
+        const rotation = t * 0.15;
+
+        let angle = rotation;
+        for (let i = 0; i < donutState.segments.length; i++) {
+          const seg = donutState.segments[i];
+          const sweep = (seg.current / total) * TAU;
+          const color = PALETTE[i % PALETTE.length];
+
+          // Segment
+          ctx.fillStyle = rgba(color, 0.7);
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, outerR, angle, angle + sweep);
+          ctx.arc(centerX, centerY, innerR, angle + sweep, angle, true);
+          ctx.closePath();
+          ctx.fill();
+
+          // Edge highlight
+          ctx.strokeStyle = rgba(color, 0.3);
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          angle += sweep;
+        }
+
+        // Center hole
+        ctx.fillStyle = BG;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, innerR - 1, 0, TAU);
+        ctx.fill();
+
+        // Center text
+        const pct = ((donutState.segments[0].current / total) * 100) | 0;
+        ctx.font = 'bold 14px monospace';
+        ctx.fillStyle = rgba([200, 210, 230], 0.8);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${pct}%`, centerX, centerY);
+      }
+
+      // ─── 4. Area Chart ─────────────────────────────────────
+      function drawAreaChart(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+
+        drawGridLines(ctx, cx, cy, cw, ch, 6, 3, 0.06);
+
+        const points = 60;
+        const windowDuration = 6;
+
+        // Fill area
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + ch);
+        for (let i = 0; i < points; i++) {
+          const nx = i / (points - 1);
+          const sampleT = t - (1 - nx) * windowDuration;
+          const v = dataValue(sampleT, 0.6, seed, 3);
+          const py = cy + ch * 0.5 - v * ch * 0.35;
+          ctx.lineTo(cx + nx * cw, py);
+        }
+        ctx.lineTo(cx + cw, cy + ch);
+        ctx.closePath();
+
+        const grad = ctx.createLinearGradient(0, cy, 0, cy + ch);
+        grad.addColorStop(0, rgba(COLORS.teal, 0.4));
+        grad.addColorStop(1, rgba(COLORS.teal, 0.02));
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Stroke line on top
+        ctx.strokeStyle = rgba(COLORS.teal, 0.8);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < points; i++) {
+          const nx = i / (points - 1);
+          const sampleT = t - (1 - nx) * windowDuration;
+          const v = dataValue(sampleT, 0.6, seed, 3);
+          const py = cy + ch * 0.5 - v * ch * 0.35;
+          i === 0 ? ctx.moveTo(cx + nx * cw, py) : ctx.lineTo(cx + nx * cw, py);
+        }
+        ctx.stroke();
+      }
+
+      // ─── 5. Sparkline Matrix ───────────────────────────────
+      function drawSparklineMatrix(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+        const matCols = 4;
+        const matRows = 3;
+        const cellW = cw / matCols;
+        const cellH = ch / matRows;
+        const labels = [
+          'CPU-0', 'CPU-1', 'CPU-2', 'CPU-3',
+          'MEM',   'DISK',  'NET-I', 'NET-O',
+          'GPU-0', 'GPU-1', 'SWAP',  'IOPS',
+        ];
+        const rng = mulberry32(seed);
+
+        for (let row = 0; row < matRows; row++) {
+          for (let col = 0; col < matCols; col++) {
+            const idx = row * matCols + col;
+            const sx = cx + col * cellW + 4;
+            const sy = cy + row * cellH + 2;
+            const sw = cellW - 8;
+            const sh = cellH - 14;
+
+            const freq = 0.4 + rng() * 1.2;
+            const phase = rng() * TAU;
+            const color = PALETTE[idx % PALETTE.length];
+
+            // Label
+            ctx.font = '8px monospace';
+            ctx.fillStyle = rgba([130, 150, 180], 0.5);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(labels[idx], sx, sy);
+
+            // Sparkline
+            const points = 30;
+            ctx.strokeStyle = rgba(color, 0.7);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let i = 0; i < points; i++) {
+              const nx = i / (points - 1);
+              const sampleT = t - (1 - nx) * 5;
+              const v = dataValue(sampleT, freq, phase, 2);
+              const px = sx + nx * sw;
+              const py = sy + 10 + sh * 0.5 - v * sh * 0.4;
+              i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+
+            // Current value
+            const curVal = dataValue(t, freq, phase, 2);
+            const pct = ((curVal * 0.5 + 0.5) * 100) | 0;
+            ctx.font = '8px monospace';
+            ctx.fillStyle = rgba(color, 0.6);
+            ctx.textAlign = 'right';
+            ctx.fillText(`${pct}%`, sx + sw, sy);
+          }
+        }
+      }
+
+      // ─── 6. Gauges ─────────────────────────────────────────
+      function drawGauges(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+
+        const gauges = [
+          { label: 'LOAD', freq: 0.25, phase: seed },
+          { label: 'TEMP', freq: 0.18, phase: seed + 3 },
+          { label: 'PWR',  freq: 0.35, phase: seed + 7 },
+        ];
+
+        const gaugeH = ch / gauges.length;
+
+        for (let i = 0; i < gauges.length; i++) {
+          const g = gauges[i];
+          const gcx = cx + cw / 2;
+          const gcy = cy + i * gaugeH + gaugeH * 0.6;
+          const radius = Math.min(cw * 0.4, gaugeH * 0.45);
+
+          const value = dataValue(t, g.freq, g.phase, 2) * 0.5 + 0.5; // 0..1
+
+          // Background arc
+          const startAngle = Math.PI * 0.8;
+          const endAngle = Math.PI * 2.2;
+          const sweep = endAngle - startAngle;
+
+          ctx.strokeStyle = rgba([40, 50, 70], 0.4);
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.arc(gcx, gcy, radius, startAngle, endAngle);
+          ctx.stroke();
+
+          // Value arc - color based on value
+          const valAngle = startAngle + sweep * value;
+          const hue = 120 - value * 120; // green to red
+          const valColor = [
+            clamp(255 * (value > 0.5 ? 1 : value * 2), 50, 255),
+            clamp(255 * (value < 0.5 ? 1 : (1 - value) * 2), 50, 255),
+            50,
+          ];
+
+          // Glow
+          ctx.strokeStyle = rgba(valColor, 0.2);
+          ctx.lineWidth = 9;
+          ctx.beginPath();
+          ctx.arc(gcx, gcy, radius, startAngle, valAngle);
+          ctx.stroke();
+
+          // Sharp
+          ctx.strokeStyle = rgba(valColor, 0.8);
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.arc(gcx, gcy, radius, startAngle, valAngle);
+          ctx.stroke();
+
+          // Value text
+          const pct = (value * 100) | 0;
+          ctx.font = 'bold 12px monospace';
+          ctx.fillStyle = rgba(valColor, 0.9);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`${pct}%`, gcx, gcy - 2);
+
+          // Label
+          ctx.font = '8px monospace';
+          ctx.fillStyle = rgba([140, 160, 190], 0.5);
+          ctx.fillText(g.label, gcx, gcy + 12);
+        }
+      }
+
+      // ─── 7. Horizontal Bars ────────────────────────────────
+      function drawHorizontalBars(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+        const rng = mulberry32(seed);
+        const labels = ['/api/users', '/api/data', '/api/auth', '/graphql', '/health', '/ws'];
+        const numBars = labels.length;
+        const barH = ch / numBars * 0.65;
+        const gap = ch / numBars * 0.35;
+        const labelW = cw * 0.3;
+
+        for (let i = 0; i < numBars; i++) {
+          const phase = rng() * TAU;
+          const speed = 0.2 + rng() * 0.4;
+          const value = 0.2 + 0.8 * (Math.sin(t * speed + phase) * 0.5 + 0.5);
+          const by = cy + i * (barH + gap) + gap * 0.5;
+          const bw = value * (cw - labelW - 8);
+          const color = PALETTE[i % PALETTE.length];
+
+          // Label
+          ctx.font = '8px monospace';
+          ctx.fillStyle = rgba([130, 150, 180], 0.5);
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labels[i], cx, by + barH / 2);
+
+          // Bar glow
+          ctx.fillStyle = rgba(color, 0.1);
+          ctx.fillRect(cx + labelW, by - 1, bw + 2, barH + 2);
+
+          // Bar
+          ctx.fillStyle = rgba(color, 0.6);
+          ctx.fillRect(cx + labelW, by, bw, barH);
+
+          // Right edge highlight
+          ctx.fillStyle = rgba(color, 0.9);
+          ctx.fillRect(cx + labelW + bw - 2, by, 2, barH);
+        }
+      }
+
+      // ─── 8. Number Ticker ──────────────────────────────────
+      const kpiState = { values: [], targets: [], lastUpdate: 0 };
+
+      function initKPIs(seed) {
+        const rng = mulberry32(seed);
+        kpiState.values = [];
+        kpiState.targets = [];
+        for (let i = 0; i < 4; i++) {
+          const v = rng() * 10000;
+          kpiState.values.push(v);
+          kpiState.targets.push(v);
+        }
+      }
+
+      function drawNumberTicker(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+
+        if (kpiState.values.length === 0) initKPIs(seed);
+
+        // Update targets
+        if (t - kpiState.lastUpdate > 2) {
+          kpiState.lastUpdate = t;
+          const rng = mulberry32(seed + (t | 0));
+          for (let i = 0; i < 4; i++) {
+            kpiState.targets[i] = kpiState.values[i] + (rng() - 0.5) * 2000;
+            kpiState.targets[i] = Math.max(0, kpiState.targets[i]);
+          }
+        }
+
+        // Lerp values
+        for (let i = 0; i < 4; i++) {
+          kpiState.values[i] = lerp(kpiState.values[i], kpiState.targets[i], 0.03);
+        }
+
+        const labels = ['REVENUE', 'USERS', 'UPTIME', 'LATENCY'];
+        const units = ['$', '', '%', 'ms'];
+        const rowH = ch / 4;
+
+        for (let i = 0; i < 4; i++) {
+          const ry = cy + i * rowH;
+          const val = kpiState.values[i];
+          const delta = kpiState.targets[i] - val;
+          const isUp = delta > 0;
+          const color = isUp ? COLORS.green : COLORS.red;
+
+          // Label
+          ctx.font = '8px monospace';
+          ctx.fillStyle = rgba([120, 140, 170], 0.5);
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(labels[i], cx, ry + 2);
+
+          // Value
+          let displayVal;
+          if (i === 2) displayVal = (val / 100).toFixed(1);
+          else if (i === 3) displayVal = val.toFixed(0);
+          else displayVal = val.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+          ctx.font = 'bold 16px monospace';
+          ctx.fillStyle = rgba([200, 210, 230], 0.85);
+          ctx.textAlign = 'left';
+          ctx.fillText(`${units[i]}${displayVal}`, cx, ry + 14);
+
+          // Arrow
+          const arrowX = cx + cw - 12;
+          const arrowY = ry + rowH / 2;
+          ctx.fillStyle = rgba(color, 0.7);
+          ctx.beginPath();
+          if (isUp) {
+            ctx.moveTo(arrowX, arrowY + 4);
+            ctx.lineTo(arrowX - 4, arrowY + 4);
+            ctx.lineTo(arrowX, arrowY - 4);
+            ctx.lineTo(arrowX + 4, arrowY + 4);
+          } else {
+            ctx.moveTo(arrowX, arrowY - 4);
+            ctx.lineTo(arrowX - 4, arrowY - 4);
+            ctx.lineTo(arrowX, arrowY + 4);
+            ctx.lineTo(arrowX + 4, arrowY - 4);
+          }
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // ─── 9. Scatter Plot ───────────────────────────────────
+      const scatterDots = [];
+
+      function initScatter(seed, count = 40) {
+        scatterDots.length = 0;
+        const rng = mulberry32(seed);
+        for (let i = 0; i < count; i++) {
+          scatterDots.push({
+            x: rng(),
+            y: rng(),
+            vx: (rng() - 0.5) * 0.02,
+            vy: (rng() - 0.5) * 0.02,
+            hueIdx: i % PALETTE.length,
+            size: 1.5 + rng() * 2,
+            phase: rng() * TAU,
+          });
+        }
+      }
+
+      function drawScatterPlot(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+
+        if (scatterDots.length === 0) initScatter(seed);
+
+        drawGridLines(ctx, cx, cy, cw, ch, 5, 5, 0.05);
+
+        // Update dots
+        for (const d of scatterDots) {
+          d.vx += Math.sin(t * 0.5 + d.phase) * 0.0003;
+          d.vy += Math.cos(t * 0.4 + d.phase * 1.3) * 0.0003;
+          d.vx *= 0.995;
+          d.vy *= 0.995;
+          d.x += d.vx;
+          d.y += d.vy;
+          if (d.x < 0 || d.x > 1) { d.vx *= -1; d.x = clamp(d.x, 0, 1); }
+          if (d.y < 0 || d.y > 1) { d.vy *= -1; d.y = clamp(d.y, 0, 1); }
+        }
+
+        // Draw connections between nearby dots
+        ctx.lineWidth = 0.5;
+        for (let i = 0; i < scatterDots.length; i++) {
+          for (let j = i + 1; j < scatterDots.length; j++) {
+            const a = scatterDots[i];
+            const b = scatterDots[j];
+            const dx = (a.x - b.x) * cw;
+            const dy = (a.y - b.y) * ch;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 50) {
+              const alpha = (1 - dist / 50) * 0.15;
+              ctx.strokeStyle = rgba(PALETTE[a.hueIdx], alpha);
+              ctx.beginPath();
+              ctx.moveTo(cx + a.x * cw, cy + a.y * ch);
+              ctx.lineTo(cx + b.x * cw, cy + b.y * ch);
+              ctx.stroke();
+            }
+          }
+        }
+
+        // Draw dots
+        for (const d of scatterDots) {
+          const px = cx + d.x * cw;
+          const py = cy + d.y * ch;
+          const color = PALETTE[d.hueIdx];
+
+          // Glow
+          ctx.fillStyle = rgba(color, 0.15);
+          ctx.beginPath();
+          ctx.arc(px, py, d.size * 3, 0, TAU);
+          ctx.fill();
+
+          // Core
+          ctx.fillStyle = rgba(color, 0.8);
+          ctx.beginPath();
+          ctx.arc(px, py, d.size, 0, TAU);
+          ctx.fill();
+        }
+      }
+
+      // ─── 10. Mini Sparklines ───────────────────────────────
+      function drawMiniSparklines(ctx, r, time, seed) {
+        const { cx, cy, cw, ch } = r;
+        const t = time * 0.001;
+        const rng = mulberry32(seed);
+        const labels = ['BUILD', 'TEST', 'DEPLOY', 'MONITOR', 'ALERT'];
+        const count = labels.length;
+        const rowH = ch / count;
+
+        for (let i = 0; i < count; i++) {
+          const sy = cy + i * rowH + 2;
+          const sh = rowH - 6;
+          const freq = 0.5 + rng() * 1.0;
+          const phase = rng() * TAU;
+          const color = PALETTE[i % PALETTE.length];
+
+          // Label
+          ctx.font = '7px monospace';
+          ctx.fillStyle = rgba([120, 140, 170], 0.45);
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(labels[i], cx, sy);
+
+          // Sparkline
+          const points = 40;
+          ctx.strokeStyle = rgba(color, 0.65);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          for (let j = 0; j < points; j++) {
+            const nx = j / (points - 1);
+            const sampleT = t - (1 - nx) * 6;
+            const v = dataValue(sampleT, freq, phase, 2);
+            const px = cx + nx * cw;
+            const py = sy + 9 + sh * 0.5 - v * sh * 0.35;
+            j === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+
+          // Status indicator
+          const curVal = dataValue(t, freq, phase, 2);
+          const statusColor = curVal > 0.2 ? COLORS.green : curVal > -0.3 ? COLORS.amber : COLORS.red;
+          ctx.fillStyle = rgba(statusColor, 0.7);
+          ctx.beginPath();
+          ctx.arc(cx + cw - 4, sy + sh / 2 + 5, 2, 0, TAU);
+          ctx.fill();
+        }
+      }
+
+      // ─── Scanlines ─────────────────────────────────────────
+      function drawScanlines(ctx, w, h, time) {
+        ctx.fillStyle = 'rgba(0,0,0,0.04)';
+        for (let y = 0; y < h; y += 3) {
+          ctx.fillRect(0, y, w, 1);
+        }
+      }
+
+      // ─── Paused State ──────────────────────────────────────
+      let paused = false;
+      let pauseLabel = '';
+      let pauseLabelAlpha = 0;
+
+      // ─── Main Draw ─────────────────────────────────────────
+      function draw(ctx, { time, dt, width, height }) {
+        if (paused) {
+          // Still render ASCII but don't advance time
+          return;
+        }
+
+        const t = time * 0.001;
+
+        // Global hue drift
+        hueShift = t * 0.015; // ~5 degrees per minute in radians
+
+        // Global breathing
+        const breathe = 0.98 + Math.sin(t * 0.5) * 0.02;
+
+        // Clear
+        ctx.fillStyle = BG;
+        ctx.fillRect(0, 0, width, height);
+
+        // Widget flash timer
+        flashTimer += dt;
+        if (flashTimer > 5 + Math.random() * 5) {
+          flashTimer = 0;
+          flashWidget = (Math.random() * WIDGETS.length) | 0;
+          setTimeout(() => { flashWidget = -1; }, 600);
+        }
+
+        // Draw each widget
+        for (let i = 0; i < WIDGETS.length; i++) {
+          const widget = WIDGETS[i];
+          const r = getWidgetRect({ width, height }, widget);
+
+          drawWidgetFrame(ctx, r, widget.title, i, t);
+
+          // Clip to content area
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(r.cx, r.cy, r.cw, r.ch);
+          ctx.clip();
+
+          widget.draw(ctx, r, t * 1000, widget.seed);
+
+          ctx.restore();
+        }
+
+        // Scanlines
+        drawScanlines(ctx, width, height, t);
+
+        // Global breathing overlay
+        if (breathe < 0.995) {
+          ctx.fillStyle = `rgba(8,9,15,${(1 - breathe) * 2})`;
+          ctx.fillRect(0, 0, width, height);
+        }
+
+        // Pause label
+        if (pauseLabelAlpha > 0.01) {
+          pauseLabelAlpha -= dt * 0.5;
+          ctx.save();
+          ctx.globalAlpha = clamp(pauseLabelAlpha, 0, 1);
+          ctx.font = 'bold 20px monospace';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(pauseLabel, width / 2, height / 2);
+          ctx.restore();
+        }
+
+        // Instructions
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        ctx.font = '11px monospace';
+        ctx.fillStyle = '#8899aa';
+        ctx.textAlign = 'center';
+        ctx.fillText('space pause · P panel · E toggle', width / 2, height - 12);
+        ctx.restore();
+      }
+
+      // ─── App ────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#08090f',
+          sourceOpacity: 0,
+          speed: 0.8,
+        },
+        layers: [
+          {
+            fontSize: 14,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 6,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.8,
+          },
+          {
+            fontSize: 10,
+            charset: 'braille',
+            colorScheme: 'vapor',
+            pattern: 'plasma',
+            patternMix: 0.06,
+            blendMode: 'add',
+            opacity: 0.1,
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) {
+          // Re-init stateful widgets
+          donutState.segments = [];
+          kpiState.values = [];
+          scatterDots.length = 0;
+        },
+        onKeydown(e) {
+          if (e.key === ' ') {
+            e.preventDefault();
+            paused = !paused;
+            pauseLabel = paused ? 'PAUSED' : 'RUNNING';
+            pauseLabelAlpha = 1;
+          }
+        },
+        showPanel: true,
+      });
+    </script>
+  </body>
+</html>
