@@ -59,9 +59,9 @@
 
       function createDrop(w, h, layer, randomY) {
         const configs = {
-          far:  { speed: [120, 200], length: [6, 12],  opacity: [0.12, 0.25], width: 0.5 },
-          mid:  { speed: [220, 360], length: [12, 22], opacity: [0.2, 0.4],   width: 0.8 },
-          near: { speed: [380, 550], length: [18, 35], opacity: [0.35, 0.65], width: 1.2 },
+          far:  { speed: [120, 200], length: [8, 16],  opacity: [0.25, 0.45], width: 1.0 },
+          mid:  { speed: [220, 360], length: [14, 26], opacity: [0.4, 0.7],   width: 1.5 },
+          near: { speed: [380, 550], length: [20, 40], opacity: [0.6, 0.9],   width: 2.0 },
         };
         const cfg = configs[layer];
         const speed = cfg.speed[0] + Math.random() * (cfg.speed[1] - cfg.speed[0]);
@@ -108,7 +108,7 @@
             rx: 80 + Math.random() * 160,
             ry: 20 + Math.random() * 30,
             speed: 3 + Math.random() * 8,
-            opacity: 0.04 + Math.random() * 0.06,
+            opacity: 0.08 + Math.random() * 0.1,
           });
         }
 
@@ -246,12 +246,16 @@
 
       // ─── Drawing Functions ──────────────────────────────
       function drawSkyGradient(ctx, w, h) {
+        // Use a semi-transparent overlay to create trails instead of full clear
+        ctx.fillStyle = 'rgba(6, 6, 16, 0.35)';
+        ctx.fillRect(0, 0, w, h);
+
+        // Subtle sky gradient on top
         const grad = ctx.createLinearGradient(0, 0, 0, h);
-        grad.addColorStop(0,    'rgb(6, 6, 18)');
-        grad.addColorStop(0.3,  'rgb(10, 12, 28)');
-        grad.addColorStop(0.6,  'rgb(14, 16, 32)');
-        grad.addColorStop(0.85, 'rgb(18, 20, 36)');
-        grad.addColorStop(1,    'rgb(12, 14, 26)');
+        grad.addColorStop(0,    'rgba(12, 14, 35, 0.06)');
+        grad.addColorStop(0.5,  'rgba(18, 22, 45, 0.04)');
+        grad.addColorStop(0.85, 'rgba(22, 26, 50, 0.03)');
+        grad.addColorStop(1,    'rgba(15, 18, 35, 0.03)');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, w, h);
       }
@@ -263,7 +267,7 @@
             cloud.x = -cloud.rx;
             cloud.y = 20 + Math.random() * h * 0.18;
           }
-          ctx.fillStyle = `rgba(30, 35, 50, ${cloud.opacity})`;
+          ctx.fillStyle = `rgba(45, 55, 80, ${cloud.opacity})`;
           ctx.beginPath();
           ctx.ellipse(cloud.x, cloud.y, cloud.rx, cloud.ry, 0, 0, Math.PI * 2);
           ctx.fill();
@@ -281,10 +285,10 @@
           const windAngle = Math.atan2(drop.speed, windStrength * drop.windFactor);
           const endX = drop.x + (windStrength * drop.windFactor / drop.speed) * drop.length;
 
-          // Rain color: subtle blue-white tint
-          const r = 140 + Math.floor(lightningBoost * 115);
-          const g = 160 + Math.floor(lightningBoost * 95);
-          const b = 200 + Math.floor(lightningBoost * 55);
+          // Rain color: bright blue-white
+          const r = 180 + Math.floor(lightningBoost * 75);
+          const g = 200 + Math.floor(lightningBoost * 55);
+          const b = 240 + Math.floor(lightningBoost * 15);
           ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
           ctx.lineWidth = drop.width;
           ctx.beginPath();
@@ -295,17 +299,17 @@
       }
 
       function drawGround(ctx, w, h, time) {
-        // Ground fill
+        // Ground fill — brighter for contrast
         const groundGrad = ctx.createLinearGradient(0, groundY, 0, h);
-        groundGrad.addColorStop(0, 'rgb(16, 18, 28)');
-        groundGrad.addColorStop(0.3, 'rgb(12, 14, 22)');
-        groundGrad.addColorStop(1, 'rgb(8, 10, 16)');
+        groundGrad.addColorStop(0, 'rgb(30, 35, 55)');
+        groundGrad.addColorStop(0.3, 'rgb(22, 26, 42)');
+        groundGrad.addColorStop(1, 'rgb(14, 16, 28)');
         ctx.fillStyle = groundGrad;
         ctx.fillRect(0, groundY, w, h - groundY);
 
-        // Ground line
-        ctx.strokeStyle = 'rgba(40, 50, 70, 0.5)';
-        ctx.lineWidth = 1;
+        // Ground line — visible wet reflection
+        ctx.strokeStyle = 'rgba(70, 90, 130, 0.6)';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(0, groundY);
         ctx.lineTo(w, groundY);
@@ -315,13 +319,13 @@
       function drawPuddles(ctx, w, time, lightningBoost) {
         for (const puddle of puddles) {
           const shimmer = 0.5 + 0.5 * Math.sin(time * puddle.shimmerSpeed + puddle.shimmerPhase);
-          const alpha = (0.04 + shimmer * 0.06 + lightningBoost * 0.15);
+          const alpha = (0.15 + shimmer * 0.15 + lightningBoost * 0.3);
           const grad = ctx.createRadialGradient(
             puddle.x, groundY + 3, 0,
             puddle.x, groundY + 3, puddle.width * 0.5,
           );
-          grad.addColorStop(0, `rgba(60, 80, 120, ${alpha})`);
-          grad.addColorStop(0.6, `rgba(40, 55, 85, ${alpha * 0.5})`);
+          grad.addColorStop(0, `rgba(80, 110, 160, ${alpha})`);
+          grad.addColorStop(0.6, `rgba(50, 70, 110, ${alpha * 0.5})`);
           grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
           ctx.fillStyle = grad;
           ctx.fillRect(puddle.x - puddle.width * 0.5, groundY, puddle.width, 8);
@@ -356,8 +360,9 @@
           }
 
           const alpha = (s.life / s.maxLife) * s.brightness;
-          ctx.fillStyle = `rgba(160, 185, 220, ${alpha})`;
-          ctx.fillRect(s.x - s.size * 0.5, s.y - s.size * 0.5, s.size, s.size);
+          ctx.fillStyle = `rgba(200, 220, 255, ${alpha})`;
+          const sz = s.size * 1.5;
+          ctx.fillRect(s.x - sz * 0.5, s.y - sz * 0.5, sz, sz);
         }
         splashes.length = len;
       }
@@ -420,7 +425,7 @@
         if (lightningBolts.length === 0 || lightningAlpha <= 0) return;
 
         // Screen flash
-        ctx.fillStyle = `rgba(200, 210, 240, ${lightningAlpha * 0.15})`;
+        ctx.fillStyle = `rgba(200, 210, 240, ${lightningAlpha * 0.4})`;
         ctx.fillRect(0, 0, w, h);
 
         // Draw bolt segments
@@ -454,9 +459,9 @@
         const mistH = 60;
         const grad = ctx.createLinearGradient(0, mistY, 0, mistY + mistH);
         const sway = Math.sin(time * 0.3) * 0.01;
-        grad.addColorStop(0, 'rgba(20, 25, 40, 0)');
-        grad.addColorStop(0.5, `rgba(20, 25, 40, ${0.08 + sway})`);
-        grad.addColorStop(1, 'rgba(20, 25, 40, 0)');
+        grad.addColorStop(0, 'rgba(30, 40, 65, 0)');
+        grad.addColorStop(0.5, `rgba(30, 40, 65, ${0.15 + sway})`);
+        grad.addColorStop(1, 'rgba(30, 40, 65, 0)');
         ctx.fillStyle = grad;
         ctx.fillRect(0, mistY, w, mistH);
 
@@ -585,6 +590,17 @@
       // ── Initialize ──────────────────────────────────────
       groundY = app.height * GROUND_Y_RATIO;
       regenerateRain(app.width, app.height);
+
+      // Fill initial background so first frames aren't pure black
+      {
+        const ctx = app.ctx;
+        const grad = ctx.createLinearGradient(0, 0, 0, app.height);
+        grad.addColorStop(0, 'rgb(12, 14, 35)');
+        grad.addColorStop(0.85, 'rgb(22, 26, 50)');
+        grad.addColorStop(1, 'rgb(30, 35, 55)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, app.width, app.height);
+      }
 
       // ─── Input ──────────────────────────────────────────
       function placeUmbrella(e) {
