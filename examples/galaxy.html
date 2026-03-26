@@ -283,33 +283,46 @@
 
       // ─── App ──────────────────────────────────────────────
       const app = createApp({
-        asciiConfig: { background: '#04040a', sourceOpacity: 0 },
+        asciiConfig: {
+          fontSize: 16,
+          colorScheme: 'rainbow',
+          background: '#04040a',
+          sourceOpacity: 0,
+        },
         layers: [
-          // Layer 1 (core): large blocks, fire palette
           {
-            fontSize: 18,
-            charset: 'blocks',
-            colorScheme: 'fire',
-            blendMode: 'replace',
-            opacity: 1,
-          },
-          // Layer 2 (arms/stars): small density characters, vapor palette
-          {
-            fontSize: 8,
+            fontSize: 3.5,
             charset: 'density',
             colorScheme: 'vapor',
-            blendMode: 'add',
-            opacity: 0.6,
+            offsetX: -107,
+            offsetY: -2,
+            zIndex: 15,
           },
-          // Layer 3 (cosmic dust): braille characters, ocean palette with moire pattern
           {
-            fontSize: 12,
+            fontSize: 3.5,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            offsetX: -72,
+          },
+          {
+            fontSize: 14.5,
+            charset: 'minimal',
+            colorScheme: 'vapor',
+            patternMix: 0.58,
+            opacity: 0.6,
+            blendMode: 'add',
+          },
+          {
+            fontSize: 5.5,
             charset: 'braille',
             colorScheme: 'ocean',
             pattern: 'moiré',
             patternMix: 0.5,
+            fade: 1,
             blendMode: 'add',
-            opacity: 0.15,
+            offsetX: -72,
+            offsetY: 33,
+            edgeDetect: true,
           },
         ],
         draw(ctx, { dt, width: w, height: h }) {
