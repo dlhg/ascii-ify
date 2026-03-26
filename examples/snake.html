@@ -126,7 +126,7 @@
       // ─── App ─────────────────────────────────────────────
       const app = createApp({
         asciiConfig: { fontSize: 10, charset: 'density', colorScheme: 'acid', sourceOpacity: 0 },
-        onResize(w, h) {
+        onResize(ctx, w, h) {
           recalcGrid(w, h);
           resetGame();
         },
