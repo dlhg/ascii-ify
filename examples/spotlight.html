@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Spotlight</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, dist, smoothstep } from './utils.js';
+
+      // ─── Firefly State ─────────────────────────────────
+      const NUM_FLIES = 60;
+      const flies = [];
+
+      class Firefly {
+        constructor(w, h) {
+          this.x = Math.random() * w;
+          this.y = Math.random() * h;
+          this.vx = (Math.random() - 0.5) * 30;
+          this.vy = (Math.random() - 0.5) * 30;
+          this.phase = Math.random() * Math.PI * 2;
+          this.freq = 0.5 + Math.random() * 1.5;
+          this.size = 2 + Math.random() * 4;
+          this.hue = 40 + Math.random() * 40; // warm yellow-green
+        }
+
+        update(dt, w, h) {
+          // Gentle wandering
+          this.vx += (Math.random() - 0.5) * 80 * dt;
+          this.vy += (Math.random() - 0.5) * 80 * dt;
+          this.vx *= 0.98;
+          this.vy *= 0.98;
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+
+          // Wrap around
+          if (this.x < 0) this.x += w;
+          if (this.x > w) this.x -= w;
+          if (this.y < 0) this.y += h;
+          if (this.y > h) this.y -= h;
+        }
+      }
+
+      // ─── Hidden Scene: Enchanted Forest ─────────────────
+      const trees = [];
+      const NUM_TREES = 25;
+
+      function initTrees(w, h) {
+        trees.length = 0;
+        for (let i = 0; i < NUM_TREES; i++) {
+          trees.push({
+            x: Math.random() * w,
+            trunkH: 60 + Math.random() * 120,
+            canopyR: 30 + Math.random() * 60,
+            hue: 100 + Math.random() * 60,
+            sway: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+
+      function drawHiddenScene(ctx, t, w, h) {
+        // Forest background — brighter so ASCII picks it up
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, '#0c1830');
+        grad.addColorStop(0.4, '#102840');
+        grad.addColorStop(0.7, '#0c2018');
+        grad.addColorStop(1, '#142810');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Ground glow
+        const floorGrad = ctx.createLinearGradient(0, h * 0.7, 0, h);
+        floorGrad.addColorStop(0, 'rgba(20, 60, 30, 0)');
+        floorGrad.addColorStop(1, 'rgba(30, 80, 40, 0.4)');
+        ctx.fillStyle = floorGrad;
+        ctx.fillRect(0, h * 0.7, w, h * 0.3);
+
+        // Glowing mushrooms on floor — much brighter
+        for (let i = 0; i < 20; i++) {
+          const mx = (i * 137.5 + 50) % w;
+          const my = h - 20 - (i * 17) % 60;
+          const mHue = 270 + (i * 25) % 80;
+          const pulse = 0.5 + 0.5 * Math.sin(t * 1.5 + i * 0.9);
+
+          const glow = ctx.createRadialGradient(mx, my, 0, mx, my, 50 + pulse * 30);
+          glow.addColorStop(0, `hsla(${mHue}, 100%, 70%, ${0.7 + pulse * 0.3})`);
+          glow.addColorStop(0.3, `hsla(${mHue}, 90%, 55%, ${0.4 + pulse * 0.2})`);
+          glow.addColorStop(0.6, `hsla(${mHue}, 80%, 40%, ${0.15 + pulse * 0.1})`);
+          glow.addColorStop(1, `hsla(${mHue}, 70%, 30%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(mx, my, 50 + pulse * 30, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Mushroom cap
+          ctx.fillStyle = `hsla(${mHue}, 95%, 65%, ${0.8 + pulse * 0.2})`;
+          ctx.beginPath();
+          ctx.ellipse(mx, my, 12 + pulse * 5, 7 + pulse * 3, 0, Math.PI, 0);
+          ctx.fill();
+        }
+
+        // Trees — brighter canopies
+        for (const tree of trees) {
+          const swayX = Math.sin(t * 0.4 + tree.sway) * 5;
+          const baseY = h - 10;
+
+          // Trunk
+          ctx.strokeStyle = `hsl(${tree.hue - 60}, 40%, 30%)`;
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.moveTo(tree.x, baseY);
+          ctx.lineTo(tree.x + swayX, baseY - tree.trunkH);
+          ctx.stroke();
+
+          // Canopy glow
+          const cx = tree.x + swayX;
+          const cy = baseY - tree.trunkH;
+          const pulse = 0.7 + 0.3 * Math.sin(t * 0.8 + tree.sway);
+          const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, tree.canopyR * 1.2 * pulse);
+          glow.addColorStop(0, `hsla(${tree.hue}, 80%, 50%, 0.6)`);
+          glow.addColorStop(0.4, `hsla(${tree.hue}, 70%, 35%, 0.3)`);
+          glow.addColorStop(1, `hsla(${tree.hue}, 50%, 20%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(cx, cy, tree.canopyR * 1.2 * pulse, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Canopy fill
+          ctx.fillStyle = `hsla(${tree.hue}, 60%, 35%, ${0.7 * pulse})`;
+          ctx.beginPath();
+          ctx.arc(cx, cy, tree.canopyR * 0.7 * pulse, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Fireflies — larger, brighter
+        for (const fly of flies) {
+          const glow = 0.4 + 0.6 * Math.pow(Math.sin(t * fly.freq + fly.phase) * 0.5 + 0.5, 2);
+          const r = fly.size * glow;
+
+          const grad = ctx.createRadialGradient(fly.x, fly.y, 0, fly.x, fly.y, r * 7);
+          grad.addColorStop(0, `hsla(${fly.hue}, 100%, 85%, ${glow})`);
+          grad.addColorStop(0.2, `hsla(${fly.hue}, 100%, 70%, ${glow * 0.6})`);
+          grad.addColorStop(0.5, `hsla(${fly.hue}, 90%, 50%, ${glow * 0.2})`);
+          grad.addColorStop(1, `hsla(${fly.hue}, 80%, 40%, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(fly.x, fly.y, r * 7, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = `hsla(${fly.hue}, 100%, 95%, ${glow})`;
+          ctx.beginPath();
+          ctx.arc(fly.x, fly.y, r * 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── Spotlight Mask ──────────────────────────────────
+      let spotX = 0;
+      let spotY = 0;
+      let targetX = 0;
+      let targetY = 0;
+      let spotRadius = 0.3; // fraction of min dimension
+
+      function drawSpotlightMask(ctx, t, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        const r = spotRadius * Math.min(w, h);
+        const breathe = 1 + 0.03 * Math.sin(t * 2.5);
+        const finalR = r * breathe;
+
+        // Bright spot — this is what the mask layer will use
+        const grad = ctx.createRadialGradient(spotX, spotY, 0, spotX, spotY, finalR);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.7, '#cccccc');
+        grad.addColorStop(1, '#000000');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(spotX, spotY, finalR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#020208', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: The hidden scene — masked by Layer 3
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'rainbow',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Ambient dark texture — always visible
+          {
+            fontSize: 22,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            blendMode: 'replace',
+            opacity: 0.15,
+            pattern: 'breathing',
+            patternMix: 0.8,
+          },
+          // Layer 3: Spotlight mask shape
+          {
+            fontSize: 6,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            blendMode: 'replace',
+            opacity: 0,  // invisible itself — used only as a mask
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          // Smooth spotlight follow
+          spotX = lerp(spotX, targetX, 1 - Math.exp(-8 * dt));
+          spotY = lerp(spotY, targetY, 1 - Math.exp(-8 * dt));
+
+          // Update fireflies
+          for (const fly of flies) fly.update(dt, w, h);
+
+          // Draw the hidden colorful scene
+          drawHiddenScene(ctx, time / 1000, w, h);
+
+          // Draw the mask shape to a region of the canvas that the mask layer will sample
+          // We use a second pass — the mask layer reads this same canvas
+          // Since both layers share the source canvas, we draw the spotlight on top
+          // and the mask layer (Layer 3) picks up the bright spot
+        },
+        onResize(ctx, w, h) {
+          initTrees(w, h);
+          flies.length = 0;
+          for (let i = 0; i < NUM_FLIES; i++) flies.push(new Firefly(w, h));
+          spotX = targetX = w / 2;
+          spotY = targetY = h / 2;
+        },
+      });
+
+      // ─── Setup Masking ───────────────────────────────────
+      // We need a separate canvas for the mask shape so it can be a different source
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+
+      function resizeMask() {
+        maskCanvas.width = app.canvas.width;
+        maskCanvas.height = app.canvas.height;
+      }
+      resizeMask();
+      window.addEventListener('resize', resizeMask);
+
+      // layers[0] is the auto-created default; our configs are at [1], [2], [3]
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);      // hide default — it would show the full scene unmasked
+      layers[3].set('source', maskCanvas);  // mask shape layer
+
+      // Hidden scene (Layer 1) is masked by the spotlight shape (Layer 3)
+      layers[1].set('maskLayer', layers[3].id);
+
+      // Override draw to also update the mask canvas
+      const origDraw = app.ascii;
+      const drawLoop = () => {
+        const t = performance.now() / 1000;
+        drawSpotlightMask(maskCtx, t, maskCanvas.width, maskCanvas.height);
+      };
+
+      // Hook into the render cycle
+      app.ascii.on('render', drawLoop);
+
+      // ─── Input ────────────────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        const rect = app.canvas.getBoundingClientRect();
+        targetX = (e.clientX - rect.left) * (app.canvas.width / rect.width);
+        targetY = (e.clientY - rect.top) * (app.canvas.height / rect.height);
+      });
+
+      window.addEventListener('touchmove', (e) => {
+        const touch = e.touches[0];
+        const rect = app.canvas.getBoundingClientRect();
+        targetX = (touch.clientX - rect.left) * (app.canvas.width / rect.width);
+        targetY = (touch.clientY - rect.top) * (app.canvas.height / rect.height);
+      });
+
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        spotRadius += e.deltaY * -0.0003;
+        spotRadius = Math.max(0.05, Math.min(0.4, spotRadius));
+      }, { passive: false });
+    </script>
+  </body>
+</html>

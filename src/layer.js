@@ -32,6 +32,8 @@ export class Layer {
       edgeDetect: options.edgeDetect ?? DEFAULTS.edgeDetect,
       edgeThreshold: options.edgeThreshold ?? DEFAULTS.edgeThreshold,
       edgeCharset: options.edgeCharset ?? DEFAULTS.edgeCharset,
+      maskLayer: options.maskLayer ?? DEFAULTS.maskLayer,
+      invertMask: options.invertMask ?? DEFAULTS.invertMask,
     };
 
     // Reusable offscreen canvases

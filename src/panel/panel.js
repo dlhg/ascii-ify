@@ -40,8 +40,8 @@ export class ControlPanel {
     this._buildDrawer();
 
     // Listen for layer changes
-    this._onLayerAdd = (layer) => this._addLayerTab(layer);
-    this._onLayerRemove = (layer) => this._removeLayerTab(layer);
+    this._onLayerAdd = (layer) => { this._addLayerTab(layer); this._updateMaskSelectors(); };
+    this._onLayerRemove = (layer) => { this._removeLayerTab(layer); this._updateMaskSelectors(); };
     ascii.on('layeradd', this._onLayerAdd);
     ascii.on('layerremove', this._onLayerRemove);
 
@@ -542,6 +542,31 @@ export class ControlPanel {
       set: (i) => layer.set('blendMode', BLEND_MODES[i]),
     }), container);
 
+    // Mask Layer
+    let maskSelector;
+    maskSelector = this._register(new Selector({
+      label: 'Mask',
+      options: this._buildMaskOptions(layer),
+      get: () => {
+        const id = layer.get('maskLayer');
+        if (id == null || !maskSelector) return 0;
+        return Math.max(0, maskSelector.options.findIndex(o => o === `Layer ${id}`));
+      },
+      set: (i) => {
+        if (i === 0 || !maskSelector) { layer.set('maskLayer', null); return; }
+        const match = maskSelector.options[i]?.match(/^Layer (\d+)$/);
+        if (match) layer.set('maskLayer', parseInt(match[1], 10));
+      },
+    }), container);
+    container._maskSelector = maskSelector;
+
+    // Invert Mask
+    this._register(new Toggle({
+      label: 'Invert Mask',
+      get: () => layer.get('invertMask'),
+      set: (v) => layer.set('invertMask', v),
+    }), container);
+
     // Offset X
     this._register(new BarControl({
       label: 'Offset X', ...r.offsetX,
@@ -573,6 +598,27 @@ export class ControlPanel {
       if (entry.soloBtn) {
         entry.soloBtn.classList.toggle('active', soloed === layer);
       }
+    }
+  }
+
+  _buildMaskOptions(layer) {
+    const options = ['none'];
+    for (const other of this._ascii._layers) {
+      if (other === layer) continue;
+      options.push(`Layer ${other.id}`);
+    }
+    return options;
+  }
+
+  _updateMaskSelectors() {
+    for (const [layer, entry] of this._layerTabs) {
+      const sel = entry.content._maskSelector;
+      if (!sel) continue;
+      const prev = layer.get('maskLayer');
+      sel.options = this._buildMaskOptions(layer);
+      // If the previously selected mask layer was removed, the get() will return -1
+      // which the Selector handles gracefully, and the value is already null from removeLayer
+      sel.update();
     }
   }
 
@@ -631,6 +677,8 @@ export class ControlPanel {
       layer.set('edgeDetect', Math.random() < 0.2);
       layer.set('edgeThreshold', rand(r.edgeThreshold.min, r.edgeThreshold.max, r.edgeThreshold.step));
       layer.set('edgeCharset', pick(EDGE_CHARSET_NAMES));
+      layer.set('maskLayer', null);
+      layer.set('invertMask', false);
     }
 
   }
@@ -652,6 +700,7 @@ export class ControlPanel {
       'pattern', 'patternMix', 'fade', 'opacity', 'blendMode',
       'offsetX', 'offsetY', 'zIndex',
       'edgeDetect', 'edgeThreshold', 'edgeCharset',
+      'maskLayer', 'invertMask',
     ];
 
     const snapshot = {};

@@ -23,6 +23,10 @@ export const DEFAULTS = {
   edgeThreshold: 0.15,
   edgeCharset: 'box-light',
 
+  // Masking (per-layer)
+  maskLayer: null,
+  invertMask: false,
+
   // CRT post-processing (global)
   crtEnabled: false,
   crtScanlines: 0.3,

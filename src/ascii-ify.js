@@ -179,6 +179,10 @@ export class AsciiIfy extends EventEmitter {
     const idx = this._layers.indexOf(layer);
     if (idx >= 0) {
       if (this._soloLayer === layer) this._soloLayer = null;
+      // Clear mask references to this layer
+      for (const other of this._layers) {
+        if (other.get('maskLayer') === layer.id) other.set('maskLayer', null);
+      }
       this._layers.splice(idx, 1);
       layer.destroy();
       this.emit('layerremove', layer);
@@ -433,6 +437,8 @@ export class AsciiIfy extends EventEmitter {
 
   _renderLayers(ctx, w, h, t) {
     const sorted = [...this._layers].sort((a, b) => (a.get('zIndex') || 0) - (b.get('zIndex') || 0));
+
+    // Pass 1: Render all visible layers to their offscreen canvases
     for (const layer of sorted) {
       if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
 
@@ -493,6 +499,29 @@ export class AsciiIfy extends EventEmitter {
         });
 
         renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+      }
+    }
+
+    // Pass 2: Apply masks and composite onto output
+    for (const layer of sorted) {
+      if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
+      if (!layer._offscreen) continue;
+
+      const offCanvas = layer._offscreen;
+      const offCtx = layer._offCtx;
+
+      // Apply mask if set
+      const maskId = layer.get('maskLayer');
+      if (maskId != null) {
+        const maskLayer = this._layers.find(l => l.id === maskId);
+        if (maskLayer && maskLayer._offscreen) {
+          // Reset to pixel space so the DPR-scaled canvases align 1:1
+          offCtx.save();
+          offCtx.setTransform(1, 0, 0, 1, 0, 0);
+          offCtx.globalCompositeOperation = layer.get('invertMask') ? 'destination-out' : 'destination-in';
+          offCtx.drawImage(maskLayer._offscreen, 0, 0);
+          offCtx.restore();
+        }
       }
 
       // Composite onto output (draw DPR-scaled canvas at logical size)
