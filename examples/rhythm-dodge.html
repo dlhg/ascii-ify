@@ -32,7 +32,7 @@
       // ─── Constants ────────────────────────────────────────
       const PLAYER_RADIUS = 12;
       const PLAYER_SPEED = 300;
-      const BPM = 90;
+      const BPM = 72;
       const BEAT_INTERVAL = 60 / BPM;
       const WAVE_THICKNESS = 28;
       const TRAIL_LENGTH = 8;
@@ -44,7 +44,7 @@
       let playerX = 0, playerY = 0;
       let score = 0, combo = 0, bestCombo = 0, lives = 0;
       const MAX_LIVES = 5;
-      let beatTimer = 0, beatFlash = 0;
+      let beatTimer = 0;
       let shakeTimer = 0, hitFlash = 0;
       let comboPopScale = 0;
       let waves = [];
@@ -91,10 +91,10 @@
       function spawnWave() {
         const w = source.width, h = source.height;
         const maxR = Math.sqrt(w * w + h * h) / 2 + 60;
-        // Gap shrinks with score: starts at PI/2, minimum PI/6
-        const gapSize = Math.max(Math.PI / 6, Math.PI / 2 - score * 0.008);
-        // Speed increases with score
-        const speed = 180 + score * 3;
+        // Gap shrinks with score: starts wide, narrows gradually
+        const gapSize = Math.max(Math.PI / 6, Math.PI * 0.7 - score * 0.005);
+        // Speed increases with score, starts slower
+        const speed = 140 + score * 2;
         waves.push({
           radius: maxR,
           speed: speed,
@@ -153,11 +153,9 @@
           beatTimer += dt;
           if (beatTimer >= BEAT_INTERVAL) {
             beatTimer -= BEAT_INTERVAL;
-            beatFlash = 1;
             spawnWave();
           }
         }
-        beatFlash = Math.max(0, beatFlash - dt * 4);
         hitFlash = Math.max(0, hitFlash - dt * 4);
         comboPopScale = Math.max(0, comboPopScale - dt * 5);
         if (shakeTimer > 0) shakeTimer -= dt;
@@ -237,15 +235,14 @@
         ctx.save();
         ctx.translate(shakeX, shakeY);
 
-        // Background with beat pulse
-        const bgBright = Math.floor(8 + beatFlash * 20);
-        ctx.fillStyle = `rgb(${bgBright}, ${bgBright}, ${Math.floor(bgBright + 8)})`;
+        // Background
+        ctx.fillStyle = 'rgb(8, 8, 16)';
         ctx.fillRect(-10, -10, w + 20, h + 20);
 
         // Arena circle (subtle border)
         ctx.beginPath();
         ctx.arc(cx, cy, arenaRadius, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(60, 80, 120, ${0.2 + beatFlash * 0.3})`;
+        ctx.strokeStyle = 'rgba(60, 80, 120, 0.2)';
         ctx.lineWidth = 2;
         ctx.stroke();
 
