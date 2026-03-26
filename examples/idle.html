@@ -78,10 +78,10 @@
       const shop = document.getElementById('shop');
 
       // ─── Constants ──────────────────────────────────────
-      const TILE_W = 64;
-      const TILE_H = 32;
-      const GRID = 8;
-      const MAX_PARTICLES = 300;
+      const TILE_W = 72;
+      const TILE_H = 36;
+      const GRID = 16;
+      const MAX_PARTICLES = 600;
 
       const BUILDINGS = {
         crystal: {
@@ -131,7 +131,7 @@
       let resources = { shards: 15, energy: 0 };
       let production = { shards: 0, energy: 0 };
       let nexusLevel = 1;
-      const nexusPos = { col: 3, row: 3 };
+      const nexusPos = { col: 7, row: 7 };
       let particles = [];
       let bgStars = [];
       let hoverTile = null;  // { col, row } or null
@@ -155,7 +155,7 @@
 
       function initStars() {
         bgStars = [];
-        for (let i = 0; i < 70; i++) {
+        for (let i = 0; i < 120; i++) {
           bgStars.push({
             x: Math.random(),
             y: Math.random(),
@@ -170,7 +170,7 @@
       function getCenter() {
         return {
           x: app.width / 2,
-          y: app.height * 0.32,
+          y: app.height * 0.28,
         };
       }
 
@@ -560,9 +560,9 @@
       function drawCrystalNode(ctx, x, y, tier, t, seed) {
         const info = BUILDINGS.crystal;
         const color = info.colors[tier - 1];
-        const glow = info.glowRadius[tier - 1];
+        const glow = info.glowRadius[tier - 1] * 0.85;
         const pulse = 1 + 0.08 * Math.sin(t * 2 + seed);
-        const size = (12 + tier * 4) * pulse;
+        const size = (10 + tier * 3.5) * pulse;
 
         // Glow
         const grad = ctx.createRadialGradient(x, y - 10, 0, x, y - 10, glow * pulse);
@@ -586,8 +586,8 @@
       function drawCollector(ctx, x, y, tier, t, seed) {
         const info = BUILDINGS.collector;
         const color = info.colors[tier - 1];
-        const glow = info.glowRadius[tier - 1];
-        const radius = 10 + tier * 3;
+        const glow = info.glowRadius[tier - 1] * 0.85;
+        const radius = 9 + tier * 2.5;
 
         // Glow
         const grad = ctx.createRadialGradient(x, y - 8, 0, x, y - 8, glow);
@@ -629,9 +629,9 @@
       function drawAmplifier(ctx, x, y, tier, t, seed) {
         const info = BUILDINGS.amplifier;
         const color = info.colors[tier - 1];
-        const glow = info.glowRadius[tier - 1];
-        const height = 25 + tier * 12;
-        const width = 6 + tier * 2;
+        const glow = info.glowRadius[tier - 1] * 0.85;
+        const height = 22 + tier * 10;
+        const width = 5 + tier * 1.8;
 
         // Glow
         const grad = ctx.createRadialGradient(x, y - height / 2, 0, x, y - height / 2, glow);
@@ -665,8 +665,8 @@
       }
 
       function drawNexus(ctx, x, y, level, t) {
-        const radius = 16 + level * 4;
-        const glowR = 50 + level * 12;
+        const radius = 14 + level * 3.5;
+        const glowR = 40 + level * 10;
         const breathe = 0.92 + 0.08 * Math.sin(t * 0.8);
 
         // Large glow
@@ -793,7 +793,7 @@
         ctx.font = '11px monospace';
         ctx.textAlign = 'center';
         ctx.fillStyle = 'rgba(255, 255, 255, 0.13)';
-        ctx.fillText('click tile to build \u00b7 click building to upgrade \u00b7 P panel \u00b7 E toggle \u00b7 R reset', w / 2, h - 16);
+        ctx.fillText('auto-playing \u00b7 click to interact \u00b7 R R reset', w / 2, h - 16);
       }
 
       function formatNum(n) {
@@ -922,6 +922,9 @@
         resources.shards += production.shards * dt;
         resources.energy += production.energy * dt;
 
+        // Auto-play AI
+        autoPlay(dt);
+
         // Update particles
         updateParticles(dt);
 
@@ -935,7 +938,7 @@
 
       // ─── Save / Load ───────────────────────────────────
       const SAVE_KEY = 'ascii-ify-idle-save';
-      const SAVE_VERSION = 1;
+      const SAVE_VERSION = 2;
 
       function saveGame() {
         const data = {
@@ -983,6 +986,118 @@
         initGrid();
         calculateProduction();
         hideShop();
+      }
+
+      // ─── Auto-Play AI ────────────────────────────────
+      let autoPlayTimer = 0;
+
+      function countBuildings(type) {
+        let n = 0;
+        for (let r = 0; r < GRID; r++)
+          for (let c = 0; c < GRID; c++)
+            if (grid[r][c] && grid[r][c].type === type) n++;
+        return n;
+      }
+
+      function distToNexus(c, r) {
+        return Math.abs(c - nexusPos.col) + Math.abs(r - nexusPos.row);
+      }
+
+      function getEmptyTiles() {
+        const tiles = [];
+        for (let r = 0; r < GRID; r++)
+          for (let c = 0; c < GRID; c++)
+            if (!grid[r][c]) tiles.push({ col: c, row: r });
+        // Sort by distance to nexus (build outward from center)
+        tiles.sort((a, b) => distToNexus(a.col, a.row) - distToNexus(b.col, b.row));
+        return tiles;
+      }
+
+      function autoPlay(dt) {
+        autoPlayTimer -= dt;
+        if (autoPlayTimer > 0) return;
+        autoPlayTimer = 0.4 + Math.random() * 0.3;
+
+        const crystals = countBuildings('crystal');
+        const collectors = countBuildings('collector');
+        const amplifiers = countBuildings('amplifier');
+
+        // Try upgrading nexus when affordable
+        if (canAfford('energy', getNexusUpgradeCost())) {
+          upgradeNexus();
+          return;
+        }
+
+        // Try upgrading cheapest building first
+        let cheapestUpgrade = null;
+        let cheapestCost = Infinity;
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = grid[r][c];
+            if (!b || b.type === 'nexus' || b.tier >= 3) continue;
+            const cost = getUpgradeCost(b.type, b.tier);
+            const costType = UPGRADE_COSTS[b.type].costType;
+            if (canAfford(costType, cost) && cost < cheapestCost) {
+              cheapestCost = cost;
+              cheapestUpgrade = { col: c, row: r };
+            }
+          }
+        }
+        if (cheapestUpgrade && Math.random() < 0.4) {
+          upgradeBuilding(cheapestUpgrade.col, cheapestUpgrade.row);
+          return;
+        }
+
+        const empty = getEmptyTiles();
+        if (empty.length === 0) return;
+
+        // Build collector adjacent to crystal (priority when we have crystals but few collectors)
+        if (collectors < crystals * 0.7) {
+          for (const tile of empty) {
+            const adj = getAdjacent(tile.col, tile.row);
+            const hasCrystal = adj.some(a => a.building.type === 'crystal');
+            if (hasCrystal && canAfford('shards', getBuildCost('collector'))) {
+              placeBuilding(tile.col, tile.row, 'collector');
+              return;
+            }
+          }
+        }
+
+        // Build crystals (the backbone)
+        if (canAfford('shards', getBuildCost('crystal'))) {
+          // Prefer tiles adjacent to existing collectors or near nexus
+          let best = empty[0];
+          for (const tile of empty) {
+            const adj = getAdjacent(tile.col, tile.row);
+            const nearCollector = adj.some(a => a.building.type === 'collector');
+            if (nearCollector) { best = tile; break; }
+          }
+          placeBuilding(best.col, best.row, 'crystal');
+          return;
+        }
+
+        // Build amplifiers when we have enough infrastructure
+        if (amplifiers < Math.floor((crystals + collectors) / 6) && canAfford('energy', getBuildCost('amplifier'))) {
+          // Place near clusters
+          let best = null;
+          let bestAdj = -1;
+          for (const tile of empty) {
+            const adj = getAdjacent(tile.col, tile.row);
+            if (adj.length > bestAdj) {
+              bestAdj = adj.length;
+              best = tile;
+            }
+          }
+          if (best) {
+            placeBuilding(best.col, best.row, 'amplifier');
+            return;
+          }
+        }
+
+        // Fall back to upgrading if we skipped it earlier
+        if (cheapestUpgrade) {
+          upgradeBuilding(cheapestUpgrade.col, cheapestUpgrade.row);
+        }
       }
 
       // ─── Init ─────────────────────────────────────────
