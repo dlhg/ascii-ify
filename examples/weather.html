@@ -108,9 +108,7 @@
         return weights;
       }
 
-      function spawnParticle() {
-        const w = app.canvas.width;
-        const h = app.canvas.height;
+      function spawnParticle(w, h) {
         const weights = getSeasonWeights(seasonPhase);
 
         // Determine particle type by weighted random
@@ -185,14 +183,12 @@
       let lightningTimer = 0;
       let lightningAlpha = 0;
 
-      function updateParticles(dt) {
-        const w = app.canvas.width;
-        const h = app.canvas.height;
+      function updateParticles(dt, w, h) {
         const target = Math.min(getTargetParticleCount(seasonPhase), MAX_PARTICLES);
 
         // Spawn to meet target
         while (particles.length < target) {
-          particles.push(spawnParticle());
+          particles.push(spawnParticle(w, h));
         }
 
         // Update existing (swap-and-pop)
@@ -284,10 +280,8 @@
       // ─── Clouds / Fog ─────────────────────────────────────
       let clouds = [];
 
-      function generateClouds() {
+      function generateClouds(w, h) {
         clouds = [];
-        const w = app.canvas.width;
-        const h = app.canvas.height;
         const count = 8 + Math.floor(Math.random() * 5);
         for (let i = 0; i < count; i++) {
           clouds.push({
@@ -431,8 +425,8 @@
           speed: 0.6,
         },
         layers: [],
-        onResize() {
-          generateClouds();
+        onResize(ctx, w, h) {
+          generateClouds(w, h);
         },
         onKeydown(e) {
           if (e.key.toLowerCase() === 'a') autoAdvance = !autoAdvance;
@@ -451,7 +445,7 @@
           drawTerrain(ctx, width, height, pal);
 
           // 2. Precipitation
-          updateParticles(dt);
+          updateParticles(dt, width, height);
           drawParticles(ctx, width, height);
 
           // 3. Clouds / fog
@@ -486,7 +480,7 @@
         patternMix: 0.15,
       });
 
-      generateClouds();
+      generateClouds(app.canvas.width, app.canvas.height);
 
       // ─── Input ─────────────────────────────────────────────
       window.addEventListener('wheel', (e) => {
