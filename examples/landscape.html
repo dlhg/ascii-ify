@@ -289,27 +289,100 @@
 
       function generateChunk(index) {
         const rng = mulberry32(index * 73856093);
-        const numTrees = 1 + (rng() * 3 | 0);
-        const numBushes = 2 + (rng() * 4 | 0);
+        const numTrees = 2 + (rng() * 4 | 0);
+        const numBushes = 3 + (rng() * 4 | 0);
+        const numFlowers = 3 + (rng() * 6 | 0);
+        const numRocks = rng() < 0.6 ? 1 + (rng() * 2 | 0) : 0;
         const trees = [];
         const bushes = [];
+        const flowers = [];
+        const rocks = [];
+
+        const FLOWER_COLORS = [[220,50,50],[240,200,40],[180,80,200],[240,240,240]];
 
         for (let i = 0; i < numTrees; i++) {
-          trees.push({
+          const r = rng();
+          let type;
+          if (r < 0.4) type = 'pine';
+          else if (r < 0.8) type = 'oak';
+          else type = 'birch';
+
+          const tree = {
             ox: rng() * CHUNK_SIZE,
-            height: 40 + rng() * 40,
-            width: 20 + rng() * 30,
-            tiers: 1 + (rng() * 3 | 0), // 1–3 triangle tiers
-          });
+            height: 100 + rng() * 80,
+            width: 50 + rng() * 50,
+            type,
+            swayPhase: rng() * Math.PI * 2,
+            swayAmount: 0.008 + rng() * 0.015,
+          };
+
+          if (type === 'pine') {
+            tree.tiers = 2 + (rng() * 4 | 0);
+          } else if (type === 'oak') {
+            const numBlobs = 4 + (rng() * 3 | 0);
+            tree.crownBlobs = [];
+            for (let j = 0; j < numBlobs; j++) {
+              tree.crownBlobs.push({
+                ox: (rng() - 0.5) * tree.width * 0.7,
+                oy: (rng() - 0.5) * tree.height * 0.3,
+                r: tree.width * (0.2 + rng() * 0.15),
+                greenOff: (rng() - 0.5) * 20,
+              });
+            }
+          } else {
+            const numLeafClusters = 6 + (rng() * 4 | 0);
+            tree.leafClusters = [];
+            for (let j = 0; j < numLeafClusters; j++) {
+              tree.leafClusters.push({
+                ox: (rng() - 0.5) * tree.width * 0.6,
+                oy: -rng() * tree.height * 0.6,
+                r: 5 + rng() * 8,
+                greenOff: (rng() - 0.5) * 15,
+              });
+            }
+          }
+          trees.push(tree);
         }
+
         for (let i = 0; i < numBushes; i++) {
+          const numBlobs = 3 + (rng() * 3 | 0);
+          const bw = 28 + rng() * 30;
+          const bh = 18 + rng() * 24;
+          const blobs = [];
+          for (let j = 0; j < numBlobs; j++) {
+            blobs.push({
+              ox: (rng() - 0.5) * bw * 0.6,
+              oy: (rng() - 0.3) * bh * 0.4,
+              r: bh * (0.3 + rng() * 0.2),
+              greenOff: (rng() - 0.5) * 10,
+            });
+          }
           bushes.push({
             ox: rng() * CHUNK_SIZE,
-            height: 12 + rng() * 18,
-            width: 20 + rng() * 25,
+            height: bh,
+            width: bw,
+            blobs,
+            swayPhase: rng() * Math.PI * 2,
           });
         }
-        return { trees, bushes };
+
+        for (let i = 0; i < numFlowers; i++) {
+          flowers.push({
+            ox: rng() * CHUNK_SIZE,
+            color: FLOWER_COLORS[rng() * 4 | 0],
+            size: 3 + rng() * 3,
+          });
+        }
+
+        for (let i = 0; i < numRocks; i++) {
+          rocks.push({
+            ox: rng() * CHUNK_SIZE,
+            width: 8 + rng() * 14,
+            height: 5 + rng() * 8,
+          });
+        }
+
+        return { trees, bushes, flowers, rocks };
       }
 
       function getChunk(index) {
@@ -516,46 +589,262 @@
         ctx.globalAlpha = 1;
       }
 
-      function drawGround(ctx, w, h, tod) {
-        const groundTop = h * GROUND_Y;
-        const grad = ctx.createLinearGradient(0, groundTop, 0, h);
-        grad.addColorStop(0, rgb(tod.terrainColor));
-        const darker = tod.terrainColor.map(c => c * 0.6);
-        grad.addColorStop(1, rgb(darker));
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, groundTop, w, h - groundTop);
+      function groundYAt(worldX, h) {
+        return h * GROUND_Y + Math.sin(worldX * 0.02) * 4 + Math.sin(worldX * 0.007) * 6;
       }
 
+      function drawGround(ctx, w, h, tod) {
+        const darker = tod.terrainColor.map(c => c * 0.6);
+
+        // Undulating ground fill
+        ctx.beginPath();
+        for (let sx = 0; sx <= w; sx += 3) {
+          const gy = groundYAt(cameraX + sx, h);
+          if (sx === 0) ctx.moveTo(sx, gy);
+          else ctx.lineTo(sx, gy);
+        }
+        ctx.lineTo(w, h);
+        ctx.lineTo(0, h);
+        ctx.closePath();
+        const grad = ctx.createLinearGradient(0, h * GROUND_Y - 10, 0, h);
+        grad.addColorStop(0, rgb(tod.terrainColor));
+        grad.addColorStop(1, rgb(darker));
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Grass blades along the top edge
+        const grassColor = [
+          Math.min(255, tod.terrainColor[0] + 5),
+          Math.min(255, tod.terrainColor[1] + 18),
+          Math.min(255, tod.terrainColor[2] + 3),
+        ];
+        ctx.strokeStyle = rgb(grassColor);
+        ctx.lineWidth = 1;
+        for (let sx = 0; sx < w; sx += 4) {
+          const worldX = cameraX + sx;
+          const seed = (worldX * 0.25) | 0;
+          // Simple hash for deterministic skip/height
+          const h1 = ((seed * 2654435761) >>> 0) / 4294967296;
+          if (h1 < 0.35) continue; // skip some for variation
+          const gy = groundYAt(worldX, h);
+          const bladeH = 4 + h1 * 10;
+          const lean = (h1 - 0.5) * 0.4;
+          ctx.beginPath();
+          ctx.moveTo(sx, gy);
+          ctx.lineTo(sx + lean * bladeH, gy - bladeH);
+          ctx.stroke();
+        }
+      }
+
+      function drawGroundDetails(ctx, w, h, tod) {
+        const startChunk = Math.floor((cameraX - 100) / CHUNK_SIZE);
+        const endChunk = Math.floor((cameraX + w + 100) / CHUNK_SIZE);
+
+        for (let ci = startChunk; ci <= endChunk; ci++) {
+          const chunk = getChunk(ci);
+          const chunkWorldX = ci * CHUNK_SIZE;
+
+          // Rocks
+          for (const rock of chunk.rocks) {
+            const screenX = (chunkWorldX + rock.ox) - cameraX;
+            if (screenX < -30 || screenX > w + 30) continue;
+            const gy = groundYAt(chunkWorldX + rock.ox, h);
+            const rockDay = [120, 115, 105];
+            const rockNight = [35, 33, 30];
+            const rc = lerpColor(rockNight, rockDay, tod.skyBrightness);
+            const rcDark = lerpColor(rc, [0, 0, 0], 0.2);
+            ctx.fillStyle = rgb(rcDark);
+            ctx.beginPath();
+            ctx.ellipse(screenX, gy - rock.height * 0.3, rock.width * 0.5, rock.height * 0.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = rgb(rc);
+            ctx.beginPath();
+            ctx.ellipse(screenX - rock.width * 0.05, gy - rock.height * 0.4, rock.width * 0.45, rock.height * 0.4, 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Flowers (fade at night)
+          if (tod.skyBrightness > 0.15) {
+            const fa = clamp((tod.skyBrightness - 0.15) * 2, 0, 0.9);
+            for (const flower of chunk.flowers) {
+              const screenX = (chunkWorldX + flower.ox) - cameraX;
+              if (screenX < -10 || screenX > w + 10) continue;
+              const gy = groundYAt(chunkWorldX + flower.ox, h);
+              ctx.fillStyle = rgb(flower.color, fa);
+              // Tiny cross/star
+              const s = flower.size;
+              ctx.fillRect(screenX - s / 2, gy - s - 1, s, 1.5);
+              ctx.fillRect(screenX - 0.75, gy - s - s / 2, 1.5, s);
+              // Stem
+              ctx.strokeStyle = rgb(tod.terrainColor, fa);
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(screenX, gy);
+              ctx.lineTo(screenX, gy - s);
+              ctx.stroke();
+            }
+          }
+        }
+      }
+
+      // Shared tree colors
+      const CANOPY_DAY = [22, 75, 16];
+      const CANOPY_NIGHT = [8, 18, 8];
+      const TRUNK_DAY = [58, 37, 16];
+      const TRUNK_NIGHT = [20, 14, 8];
+
       function drawTree(ctx, x, groundY, tree, tod) {
+        if (tree.type === 'oak') drawOak(ctx, x, groundY, tree, tod);
+        else if (tree.type === 'birch') drawBirch(ctx, x, groundY, tree, tod);
+        else drawPine(ctx, x, groundY, tree, tod);
+      }
+
+      function drawPine(ctx, x, groundY, tree, tod) {
         const { height, width, tiers } = tree;
-        const trunkW = width * 0.15;
-        const trunkH = height * 0.25;
+        const trunkW = width * 0.12;
+        const trunkH = height * 0.28;
+        const canopyColor = lerpColor(CANOPY_NIGHT, CANOPY_DAY, tod.skyBrightness);
+        const shadowColor = lerpColor(canopyColor, [0, 0, 0], 0.3);
+        const trunkColor = lerpColor(TRUNK_NIGHT, TRUNK_DAY, tod.skyBrightness);
+        const barkDark = lerpColor(trunkColor, [0, 0, 0], 0.3);
 
-        // Colors
-        const canopyDay = [22, 75, 16];
-        const canopyNight = [8, 18, 8];
-        const trunkDay = [58, 37, 16];
-        const trunkNight = [20, 14, 8];
-        const canopyColor = lerpColor(canopyNight, canopyDay, tod.skyBrightness);
-        const trunkColor = lerpColor(trunkNight, trunkDay, tod.skyBrightness);
-
-        // Trunk
+        // Tapered trunk
+        const baseW = trunkW * 1.3;
         ctx.fillStyle = rgb(trunkColor);
-        ctx.fillRect(x - trunkW / 2, groundY - trunkH, trunkW, trunkH);
+        ctx.beginPath();
+        ctx.moveTo(x - baseW / 2, groundY);
+        ctx.lineTo(x - trunkW / 2, groundY - trunkH);
+        ctx.lineTo(x + trunkW / 2, groundY - trunkH);
+        ctx.lineTo(x + baseW / 2, groundY);
+        ctx.closePath();
+        ctx.fill();
 
-        // Canopy tiers (triangles stacked, each smaller going up)
-        ctx.fillStyle = rgb(canopyColor);
+        // Bark lines
+        ctx.strokeStyle = rgb(barkDark);
+        ctx.lineWidth = 1;
+        for (let b = 0; b < 3; b++) {
+          const by = groundY - trunkH * (0.2 + b * 0.3);
+          const bw = trunkW * 0.4;
+          ctx.beginPath();
+          ctx.moveTo(x - bw, by);
+          ctx.lineTo(x + bw, by);
+          ctx.stroke();
+        }
+
+        // Branch stubs
+        ctx.strokeStyle = rgb(trunkColor);
+        ctx.lineWidth = 2;
         const tierH = (height - trunkH) / tiers;
+        for (let t = 0; t < Math.min(tiers - 1, 2); t++) {
+          const by = groundY - trunkH - t * tierH * 0.7 - 2;
+          const side = t % 2 === 0 ? -1 : 1;
+          ctx.beginPath();
+          ctx.moveTo(x, by);
+          ctx.lineTo(x + side * trunkW * 1.8, by + 4);
+          ctx.stroke();
+        }
+
+        // Canopy tiers — split-shaded
         for (let t = 0; t < tiers; t++) {
           const tierBottom = groundY - trunkH - t * tierH * 0.7;
           const tierTop = tierBottom - tierH;
-          const tierW = width * (1 - t * 0.2);
+          const tierW = width * (1 - t * 0.15);
 
+          // Shadow side (left)
+          ctx.fillStyle = rgb(shadowColor);
           ctx.beginPath();
           ctx.moveTo(x, tierTop);
           ctx.lineTo(x - tierW / 2, tierBottom);
+          ctx.lineTo(x, tierBottom);
+          ctx.closePath();
+          ctx.fill();
+
+          // Lit side (right)
+          ctx.fillStyle = rgb(canopyColor);
+          ctx.beginPath();
+          ctx.moveTo(x, tierTop);
+          ctx.lineTo(x, tierBottom);
           ctx.lineTo(x + tierW / 2, tierBottom);
           ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      function drawOak(ctx, x, groundY, tree, tod) {
+        const { height, width, crownBlobs } = tree;
+        const trunkW = width * 0.14;
+        const trunkH = height * 0.4;
+        const canopyColor = lerpColor(CANOPY_NIGHT, CANOPY_DAY, tod.skyBrightness);
+        const trunkColor = lerpColor(TRUNK_NIGHT, TRUNK_DAY, tod.skyBrightness);
+        const crownCenterY = groundY - trunkH - height * 0.2;
+
+        // Trunk with Y-fork
+        ctx.fillStyle = rgb(trunkColor);
+        ctx.beginPath();
+        ctx.moveTo(x - trunkW * 0.7, groundY);
+        ctx.lineTo(x - trunkW / 2, groundY - trunkH * 0.7);
+        ctx.lineTo(x - trunkW * 1.2, groundY - trunkH);
+        ctx.lineTo(x - trunkW * 0.3, groundY - trunkH * 0.85);
+        ctx.lineTo(x, groundY - trunkH);
+        ctx.lineTo(x + trunkW * 0.3, groundY - trunkH * 0.85);
+        ctx.lineTo(x + trunkW * 1.2, groundY - trunkH);
+        ctx.lineTo(x + trunkW / 2, groundY - trunkH * 0.7);
+        ctx.lineTo(x + trunkW * 0.7, groundY);
+        ctx.closePath();
+        ctx.fill();
+
+        // Crown blobs
+        for (const blob of crownBlobs) {
+          const gc = [
+            clamp(canopyColor[0] + blob.greenOff * 0.3, 0, 255),
+            clamp(canopyColor[1] + blob.greenOff, 0, 255),
+            clamp(canopyColor[2] + blob.greenOff * 0.2, 0, 255),
+          ];
+          ctx.fillStyle = rgb(gc);
+          ctx.beginPath();
+          ctx.arc(x + blob.ox, crownCenterY + blob.oy, blob.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Sun highlight
+        if (tod.skyBrightness > 0.2) {
+          const hl = lerpColor(canopyColor, [140, 200, 80], 0.35 * tod.skyBrightness);
+          ctx.fillStyle = rgb(hl, 0.6);
+          ctx.beginPath();
+          ctx.arc(x + width * 0.15, crownCenterY - height * 0.08, width * 0.18, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawBirch(ctx, x, groundY, tree, tod) {
+        const { height, width, leafClusters } = tree;
+        const trunkW = width * 0.07;
+        const trunkH = height * 0.5;
+        const canopyColor = lerpColor(CANOPY_NIGHT, CANOPY_DAY, tod.skyBrightness);
+        const barkColor = lerpColor([60, 60, 55], [200, 195, 185], tod.skyBrightness);
+        const barkMark = lerpColor([30, 30, 28], [80, 75, 70], tod.skyBrightness);
+
+        // Slim trunk
+        ctx.fillStyle = rgb(barkColor);
+        ctx.fillRect(x - trunkW / 2, groundY - trunkH, trunkW, trunkH);
+
+        // Birch bark marks
+        ctx.fillStyle = rgb(barkMark);
+        for (let m = 0; m < 5; m++) {
+          const my = groundY - trunkH * (0.1 + m * 0.18);
+          ctx.fillRect(x - trunkW * 0.4, my, trunkW * 0.5, 1.5);
+        }
+
+        // Leaf clusters — sparse scattered circles
+        for (const lc of leafClusters) {
+          const gc = [
+            clamp(canopyColor[0] + lc.greenOff * 0.2, 0, 255),
+            clamp(canopyColor[1] + lc.greenOff, 0, 255),
+            clamp(canopyColor[2] + lc.greenOff * 0.3, 0, 255),
+          ];
+          ctx.fillStyle = rgb(gc, 0.8);
+          ctx.beginPath();
+          ctx.arc(x + lc.ox, groundY - trunkH + lc.oy, lc.r, 0, Math.PI * 2);
           ctx.fill();
         }
       }
@@ -563,20 +852,32 @@
       function drawBush(ctx, x, groundY, bush, tod) {
         const bushDay = [30, 90, 22];
         const bushNight = [10, 24, 10];
-        const color = lerpColor(bushNight, bushDay, tod.skyBrightness);
-        ctx.fillStyle = rgb(color);
+        const baseColor = lerpColor(bushNight, bushDay, tod.skyBrightness);
 
-        // Two overlapping circles
-        ctx.beginPath();
-        ctx.arc(x - bush.width * 0.15, groundY - bush.height * 0.5, bush.height * 0.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(x + bush.width * 0.15, groundY - bush.height * 0.45, bush.height * 0.45, 0, Math.PI * 2);
-        ctx.fill();
+        // Multi-blob bush
+        for (const blob of bush.blobs) {
+          const gc = [
+            clamp(baseColor[0] + blob.greenOff * 0.3, 0, 255),
+            clamp(baseColor[1] + blob.greenOff, 0, 255),
+            clamp(baseColor[2] + blob.greenOff * 0.2, 0, 255),
+          ];
+          ctx.fillStyle = rgb(gc);
+          ctx.beginPath();
+          ctx.arc(x + blob.ox, groundY - bush.height * 0.4 + blob.oy, blob.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Highlight blob on top
+        if (tod.skyBrightness > 0.2) {
+          const hl = lerpColor(baseColor, [120, 200, 80], 0.2 * tod.skyBrightness);
+          ctx.fillStyle = rgb(hl, 0.5);
+          ctx.beginPath();
+          ctx.arc(x, groundY - bush.height * 0.6, bush.height * 0.22, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
-      function drawVegetation(ctx, w, h, tod) {
-        const groundY = h * GROUND_Y;
+      function drawVegetation(ctx, w, h, tod, time, windSpeed) {
         const startChunk = Math.floor((cameraX - 200) / CHUNK_SIZE);
         const endChunk = Math.floor((cameraX + w + 200) / CHUNK_SIZE);
 
@@ -586,13 +887,30 @@
 
           for (const bush of chunk.bushes) {
             const screenX = (chunkWorldX + bush.ox) - cameraX;
-            if (screenX < -50 || screenX > w + 50) continue;
-            drawBush(ctx, screenX, groundY, bush, tod);
+            if (screenX < -60 || screenX > w + 60) continue;
+            const gy = groundYAt(chunkWorldX + bush.ox, h);
+            const swayBase = Math.sin(time * 2.5 + bush.swayPhase) * 0.008;
+            const swayWind = baseWind * 0.15 + Math.max(0, windSpeed - baseWind) * 0.6;
+            const sway = swayBase * swayWind;
+            ctx.save();
+            ctx.translate(screenX, gy);
+            ctx.rotate(sway);
+            ctx.translate(-screenX, -gy);
+            drawBush(ctx, screenX, gy, bush, tod);
+            ctx.restore();
           }
           for (const tree of chunk.trees) {
             const screenX = (chunkWorldX + tree.ox) - cameraX;
-            if (screenX < -60 || screenX > w + 60) continue;
-            drawTree(ctx, screenX, groundY, tree, tod);
+            if (screenX < -120 || screenX > w + 120) continue;
+            const gy = groundYAt(chunkWorldX + tree.ox, h);
+            const swayWind = baseWind * 0.15 + Math.max(0, windSpeed - baseWind) * 0.6;
+            const sway = Math.sin(time * 1.5 + tree.swayPhase) * tree.swayAmount * swayWind;
+            ctx.save();
+            ctx.translate(screenX, gy);
+            ctx.rotate(sway);
+            ctx.translate(-screenX, -gy);
+            drawTree(ctx, screenX, gy, tree, tod);
+            ctx.restore();
           }
         }
 
@@ -600,6 +918,140 @@
         for (const [key] of chunkCache) {
           if (key < startChunk - 10) chunkCache.delete(key);
         }
+      }
+
+      // ─── Atmospheric Effects ──────────────────────────────
+      const fireflies = [];
+      const fallingLeaves = [];
+      let fireflyTimer = 0;
+      let leafTimer = 0;
+
+      function updateAndDrawFireflies(ctx, w, h, tod, time, dt) {
+        // Only active at night/twilight
+        if (tod.skyBrightness >= 0.15) {
+          fireflies.length = 0;
+          return;
+        }
+
+        // Spawn
+        fireflyTimer -= dt;
+        if (fireflyTimer <= 0 && fireflies.length < 25) {
+          fireflyTimer = 0.4 + Math.random() * 0.3;
+          const gy = groundYAt(cameraX + Math.random() * w, h);
+          fireflies.push({
+            worldX: cameraX + Math.random() * w,
+            y: gy - 10 - Math.random() * 60,
+            phase: Math.random() * Math.PI * 2,
+            speed: 0.8 + Math.random() * 1.5,
+            brightness: 0.5 + Math.random() * 0.5,
+            life: 3 + Math.random() * 5,
+            maxLife: 8,
+          });
+        }
+
+        // Update & draw
+        let len = fireflies.length;
+        for (let i = len - 1; i >= 0; i--) {
+          const f = fireflies[i];
+          f.life -= dt;
+          f.worldX += Math.cos(time * f.speed + f.phase) * 0.3;
+          f.y += Math.sin(time * f.speed * 0.7 + f.phase) * 0.2;
+
+          if (f.life <= 0) {
+            fireflies[i] = fireflies[len - 1]; len--;
+            continue;
+          }
+
+          const sx = f.worldX - cameraX;
+          if (sx < -20 || sx > w + 20) continue;
+
+          const fadeIn = clamp(1 - f.life / f.maxLife, 0, 1) * 3;
+          const fadeOut = clamp(f.life, 0, 1);
+          const pulse = 0.3 + 0.7 * Math.pow(Math.sin(time * 3 + f.phase), 2);
+          const alpha = Math.min(fadeIn, fadeOut) * f.brightness * pulse;
+
+          const glowR = 5;
+          const glow = ctx.createRadialGradient(sx, f.y, 0, sx, f.y, glowR);
+          glow.addColorStop(0, `rgba(180, 220, 60, ${alpha})`);
+          glow.addColorStop(0.5, `rgba(180, 220, 60, ${alpha * 0.4})`);
+          glow.addColorStop(1, 'rgba(180, 220, 60, 0)');
+          ctx.fillStyle = glow;
+          ctx.fillRect(sx - glowR, f.y - glowR, glowR * 2, glowR * 2);
+        }
+        fireflies.length = len;
+      }
+
+      function drawGroundFog(ctx, w, h, tod, time) {
+        // Active at dawn and dusk
+        let fogAlpha = 0;
+        if (cycleTime >= 0.06 && cycleTime < 0.22) {
+          fogAlpha = Math.sin((cycleTime - 0.06) / 0.16 * Math.PI) * 0.12;
+        } else if (cycleTime >= 0.43 && cycleTime < 0.62) {
+          fogAlpha = Math.sin((cycleTime - 0.43) / 0.19 * Math.PI) * 0.1;
+        }
+        if (fogAlpha < 0.01) return;
+
+        ctx.fillStyle = `rgba(200, 210, 225, ${fogAlpha})`;
+        for (let i = 0; i < 4; i++) {
+          const fx = ((i * 320 + time * 8) % (w + 500)) - 250;
+          const fy = h * GROUND_Y - 8 + Math.sin(i * 2.3) * 6;
+          ctx.beginPath();
+          ctx.ellipse(fx, fy, 180 + i * 40, 18 + i * 5, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function updateAndDrawLeaves(ctx, w, h, tod, time, dt, windSpeed) {
+        if (tod.skyBrightness < 0.3) {
+          fallingLeaves.length = 0;
+          return;
+        }
+
+        // Spawn
+        leafTimer -= dt;
+        if (leafTimer <= 0 && fallingLeaves.length < 15) {
+          leafTimer = 2 + Math.random() * 2;
+          const gy = groundYAt(cameraX + Math.random() * w, h);
+          fallingLeaves.push({
+            worldX: cameraX + Math.random() * w,
+            y: gy - 80 - Math.random() * 60,
+            vy: 0,
+            phase: Math.random() * Math.PI * 2,
+            rot: Math.random() * Math.PI * 2,
+            rotSpeed: 2 + Math.random() * 3,
+            size: 3 + Math.random() * 3,
+            color: Math.random() < 0.7 ? [80, 140, 30] : [180, 100, 20],
+          });
+        }
+
+        // Update & draw
+        let len = fallingLeaves.length;
+        for (let i = len - 1; i >= 0; i--) {
+          const l = fallingLeaves[i];
+          l.vy += 15 * dt;
+          l.y += l.vy * dt;
+          l.worldX += (windSpeed * 0.3 + Math.sin(time * 2 + l.phase) * 20) * dt;
+          l.rot += l.rotSpeed * dt;
+
+          const gy = groundYAt(l.worldX, h);
+          if (l.y > gy + 5) {
+            fallingLeaves[i] = fallingLeaves[len - 1]; len--;
+            continue;
+          }
+
+          const sx = l.worldX - cameraX;
+          if (sx < -20 || sx > w + 20) continue;
+
+          ctx.save();
+          ctx.translate(sx, l.y);
+          ctx.rotate(l.rot);
+          ctx.fillStyle = rgb(l.color, 0.8);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, l.size, l.size * 0.5, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        fallingLeaves.length = len;
       }
 
       // ─── createApp ─────────────────────────────────────────
@@ -661,7 +1113,11 @@
           drawWindParticles(ctx, w, h, tod);
           drawMountainRange(ctx, w, h, MOUNTAIN_RANGES[2], tod);
           drawGround(ctx, w, h, tod);
-          drawVegetation(ctx, w, h, tod);
+          drawGroundDetails(ctx, w, h, tod);
+          drawGroundFog(ctx, w, h, tod, t);
+          drawVegetation(ctx, w, h, tod, t, windSpeed);
+          updateAndDrawLeaves(ctx, w, h, tod, t, dt, windSpeed);
+          updateAndDrawFireflies(ctx, w, h, tod, t, dt);
         },
       });
 
