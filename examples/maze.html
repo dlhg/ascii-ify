@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Maze</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+
+      // ─── Maze Configuration ────────────────────────────────
+      const CELL_TARGET = 24;
+      const GEN_STEPS = 15;
+      const SOLVE_INTERVAL = 0.08; // seconds between solve steps
+      const PAUSE_GEN = 1.5;
+      const PAUSE_SOLVE = 3.0;
+
+      // ─── State ─────────────────────────────────────────────
+      let mazeCols, mazeRows, cellSize, wallThick;
+      let mazeOX, mazeOY;
+      let cells, genStack, genDone;
+      let solveOpen, solveVisited, solveCameFrom, solveGScore;
+      let solvePath, solveGoal, solveDone, pathSet;
+      let state, pauseTimer, solveTimer;
+
+      // ─── Initialize Maze ───────────────────────────────────
+      function initMaze(w, h) {
+        mazeCols = Math.max(10, Math.min(55, Math.floor((w * 0.88) / CELL_TARGET)));
+        mazeRows = Math.max(8, Math.min(35, Math.floor((h * 0.88) / CELL_TARGET)));
+
+        cellSize = Math.min(
+          Math.floor((w * 0.88) / mazeCols),
+          Math.floor((h * 0.88) / mazeRows),
+        );
+        wallThick = Math.max(2, Math.floor(cellSize * 0.15));
+
+        mazeOX = Math.floor((w - mazeCols * cellSize - wallThick) / 2);
+        mazeOY = Math.floor((h - mazeRows * cellSize - wallThick) / 2);
+
+        const total = mazeCols * mazeRows;
+        cells = new Array(total);
+        for (let i = 0; i < total; i++) {
+          cells[i] = { visited: false, walls: [true, true, true, true] }; // top, right, bottom, left
+        }
+
+        cells[0].visited = true;
+        genStack = [0];
+        genDone = false;
+        solvePath = [];
+        pathSet = null;
+        state = 'generating';
+        pauseTimer = 0;
+      }
+
+      // ─── Generator (Recursive Backtracker) ─────────────────
+      function genStep() {
+        if (genStack.length === 0) { genDone = true; return; }
+
+        const cur = genStack[genStack.length - 1];
+        const r = Math.floor(cur / mazeCols);
+        const c = cur % mazeCols;
+
+        // Collect unvisited neighbors: [index, wallDir, oppositeDir]
+        const neighbors = [];
+        if (r > 0 && !cells[cur - mazeCols].visited)
+          neighbors.push([cur - mazeCols, 0, 2]);
+        if (c < mazeCols - 1 && !cells[cur + 1].visited)
+          neighbors.push([cur + 1, 1, 3]);
+        if (r < mazeRows - 1 && !cells[cur + mazeCols].visited)
+          neighbors.push([cur + mazeCols, 2, 0]);
+        if (c > 0 && !cells[cur - 1].visited)
+          neighbors.push([cur - 1, 3, 1]);
+
+        if (neighbors.length > 0) {
+          const [next, wall, opp] = neighbors[Math.floor(Math.random() * neighbors.length)];
+          cells[cur].walls[wall] = false;
+          cells[next].walls[opp] = false;
+          cells[next].visited = true;
+          genStack.push(next);
+        } else {
+          genStack.pop();
+        }
+      }
+
+      // ─── Solver (A*) ───────────────────────────────────────
+      function initSolver() {
+        const total = mazeCols * mazeRows;
+        solveVisited = new Uint8Array(total);
+        solveCameFrom = new Int32Array(total).fill(-1);
+        solveGScore = new Float32Array(total).fill(Infinity);
+        solvePath = [];
+        pathSet = null;
+        solveDone = false;
+        solveGoal = total - 1;
+
+        solveGScore[0] = 0;
+        solveOpen = [{ idx: 0, f: heuristic(0) }];
+      }
+
+      function heuristic(i) {
+        const r1 = Math.floor(i / mazeCols), c1 = i % mazeCols;
+        const r2 = Math.floor(solveGoal / mazeCols), c2 = solveGoal % mazeCols;
+        return Math.abs(r1 - r2) + Math.abs(c1 - c2);
+      }
+
+      // Returns true if it expanded a new node (visible progress)
+      function solveStep() {
+        while (solveOpen.length > 0) {
+          // Find node with lowest f-score
+          let bestI = 0;
+          for (let i = 1; i < solveOpen.length; i++) {
+            if (solveOpen[i].f < solveOpen[bestI].f) bestI = i;
+          }
+          const node = solveOpen[bestI];
+          solveOpen[bestI] = solveOpen[solveOpen.length - 1];
+          solveOpen.pop();
+
+          const idx = node.idx;
+          if (idx === solveGoal) {
+            let p = idx;
+            while (p !== -1) { solvePath.push(p); p = solveCameFrom[p]; }
+            solvePath.reverse();
+            pathSet = new Set(solvePath);
+            solveDone = true;
+            return;
+          }
+
+          // Skip already-visited duplicates
+          if (solveVisited[idx]) continue;
+          solveVisited[idx] = 1;
+
+          const r = Math.floor(idx / mazeCols);
+          const c = idx % mazeCols;
+          const cell = cells[idx];
+          const deltas = [-mazeCols, 1, mazeCols, -1];
+          const bounds = [r > 0, c < mazeCols - 1, r < mazeRows - 1, c > 0];
+
+          for (let d = 0; d < 4; d++) {
+            if (cell.walls[d] || !bounds[d]) continue;
+            const ni = idx + deltas[d];
+            if (solveVisited[ni]) continue;
+            const tentG = solveGScore[idx] + 1;
+            if (tentG < solveGScore[ni]) {
+              solveGScore[ni] = tentG;
+              solveCameFrom[ni] = idx;
+              solveOpen.push({ idx: ni, f: tentG + heuristic(ni) });
+            }
+          }
+          return; // expanded one new node — stop and wait for next tick
+        }
+        solveDone = true;
+      }
+
+      // ─── Draw ──────────────────────────────────────────────
+      function draw(ctx, { dt, width: w, height: h }) {
+        // State machine
+        switch (state) {
+          case 'generating':
+            for (let i = 0; i < GEN_STEPS; i++) {
+              if (genDone) { state = 'pause_gen'; pauseTimer = PAUSE_GEN; break; }
+              genStep();
+            }
+            break;
+          case 'pause_gen':
+            pauseTimer -= dt;
+            if (pauseTimer <= 0) { initSolver(); solveTimer = 0; state = 'solving'; }
+            break;
+          case 'solving':
+            solveTimer += dt;
+            while (solveTimer >= SOLVE_INTERVAL) {
+              solveTimer -= SOLVE_INTERVAL;
+              if (solveDone) { state = 'pause_solve'; pauseTimer = PAUSE_SOLVE; break; }
+              solveStep();
+            }
+            break;
+          case 'pause_solve':
+            pauseTimer -= dt;
+            if (pauseTimer <= 0) initMaze(w, h);
+            break;
+        }
+
+        // Clear
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        const pass = cellSize - wallThick;
+
+        // Fill maze area with wall color
+        ctx.fillStyle = 'rgb(75, 80, 90)';
+        ctx.fillRect(mazeOX, mazeOY,
+          mazeCols * cellSize + wallThick,
+          mazeRows * cellSize + wallThick);
+
+        // Carve visited cells
+        for (let r = 0; r < mazeRows; r++) {
+          for (let c = 0; c < mazeCols; c++) {
+            const i = r * mazeCols + c;
+            const cell = cells[i];
+            if (!cell.visited) continue;
+
+            const x = mazeOX + c * cellSize + wallThick;
+            const y = mazeOY + r * cellSize + wallThick;
+
+            // Pick color based on state
+            let color;
+            if (pathSet && pathSet.has(i)) {
+              color = 'rgb(170, 240, 170)';
+            } else if (state === 'generating' && genStack.length > 0 && genStack[genStack.length - 1] === i) {
+              color = 'rgb(120, 160, 200)';
+            } else if (solveVisited && solveVisited[i]) {
+              color = 'rgb(25, 30, 42)';
+            } else {
+              color = 'rgb(10, 10, 15)';
+            }
+
+            // Cell interior
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, pass, pass);
+
+            // Carve passages to right and bottom neighbors
+            if (!cell.walls[1] && c < mazeCols - 1) {
+              ctx.fillRect(x + pass, y, wallThick, pass);
+            }
+            if (!cell.walls[2] && r < mazeRows - 1) {
+              ctx.fillRect(x, y + pass, pass, wallThick);
+            }
+          }
+        }
+
+        // Draw path connections through wall gaps
+        if (pathSet) {
+          ctx.fillStyle = 'rgb(170, 240, 170)';
+          for (let pi = 0; pi < solvePath.length - 1; pi++) {
+            const i = solvePath[pi];
+            const ni = solvePath[pi + 1];
+            const r = Math.floor(i / mazeCols);
+            const c = i % mazeCols;
+            const x = mazeOX + c * cellSize + wallThick;
+            const y = mazeOY + r * cellSize + wallThick;
+
+            if (ni === i + 1) ctx.fillRect(x + pass, y, wallThick, pass);
+            else if (ni === i - 1) ctx.fillRect(x - wallThick, y, wallThick, pass);
+            else if (ni === i + mazeCols) ctx.fillRect(x, y + pass, pass, wallThick);
+            else if (ni === i - mazeCols) ctx.fillRect(x, y - wallThick, pass, wallThick);
+          }
+        }
+
+        // Entrance (top of cell 0) and exit (bottom of last cell)
+        const entranceColor = pathSet ? 'rgb(170, 240, 170)' : 'rgb(80, 120, 160)';
+        ctx.fillStyle = entranceColor;
+        ctx.fillRect(mazeOX + wallThick, mazeOY, pass, wallThick);
+
+        const exitColor = pathSet ? 'rgb(170, 240, 170)' : 'rgb(60, 80, 100)';
+        ctx.fillStyle = exitColor;
+        const ec = mazeCols - 1, er = mazeRows - 1;
+        ctx.fillRect(
+          mazeOX + ec * cellSize + wallThick,
+          mazeOY + (er + 1) * cellSize,
+          pass, wallThick,
+        );
+
+        // HUD
+        const labels = {
+          generating: 'Generating...',
+          pause_gen: 'Ready to solve',
+          solving: 'Solving (A*)...',
+          pause_solve: 'Solved!',
+        };
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.fillText(`${labels[state]}  ${mazeCols}x${mazeRows}`, 10, 20);
+      }
+
+      // ─── App ───────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 10,
+          colorScheme: 'mono',
+          background: '#000',
+          sourceOpacity: 0,
+          edgeDetect: true,
+          edgeCharset: 'box-light',
+          edgeThreshold: 0.1,
+        },
+        layers: [
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'acid',
+            opacity: 0.85,
+            blendMode: 'add',
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) { initMaze(w, h); },
+      });
+
+      initMaze(app.width, app.height);
+    </script>
+  </body>
+</html>
