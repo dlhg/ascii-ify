@@ -284,10 +284,10 @@
             opacity: 0.25,
           },
         ],
-        onResize(w, h) {
+        onResize(ctx, w, h) {
           // Re-fill with dark background after resize to reset trails
-          app.ctx.fillStyle = 'rgba(5, 5, 10, 1)';
-          app.ctx.fillRect(0, 0, w, h);
+          ctx.fillStyle = 'rgba(5, 5, 10, 1)';
+          ctx.fillRect(0, 0, w, h);
         },
         onKeydown(e) {
           const key = e.key;

@@ -22,9 +22,9 @@
       const CELL = 8;
       let cols, rows, grid, nextGrid, age;
 
-      function rebuildGrid() {
-        cols = Math.floor(app.width / CELL);
-        rows = Math.floor(app.height / CELL);
+      function rebuildGrid(w, h) {
+        cols = Math.floor((w ?? app.width) / CELL);
+        rows = Math.floor((h ?? app.height) / CELL);
         const old = grid;
         const oldAge = age;
         const oldCols = old ? old[0]?.length : 0;
@@ -217,7 +217,7 @@
           colorCycleRate: 0.15,
         },
         draw,
-        onResize() { rebuildGrid(); },
+        onResize(ctx, w, h) { rebuildGrid(w, h); },
         onKeydown(e) {
           switch (e.key) {
             case ' ':

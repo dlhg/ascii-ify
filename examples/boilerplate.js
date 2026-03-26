@@ -17,7 +17,7 @@ export function createApp({
   function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    if (onResize) onResize(canvas.width, canvas.height);
+    if (onResize) onResize(ctx, canvas.width, canvas.height);
   }
   resize();
   window.addEventListener('resize', resize);
@@ -48,11 +48,13 @@ export function createApp({
   }
   requestAnimationFrame(loop);
 
-  return {
+  const app = {
     canvas,
     ctx,
     ascii,
     get width() { return canvas.width; },
     get height() { return canvas.height; },
   };
+
+  return app;
 }
