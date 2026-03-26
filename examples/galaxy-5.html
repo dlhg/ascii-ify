@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Galaxy 5</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+
+      // ─── Galaxy Parameters ────────────────────────────────
+      const NUM_STARS = 3000;
+      const NUM_ARMS = 3;
+      const ARM_SPREAD = 0.45;
+      const SPIRAL_TIGHTNESS = 0.3;
+      const GALAXY_RADIUS_FRAC = 0.35;
+      const ROTATION_SPEED = 0.015;
+      const CORE_RADIUS_FRAC = 0.06;
+
+      // ─── Star Generation ──────────────────────────────────
+      const stars = [];
+
+      function initStars() {
+        stars.length = 0;
+        for (let i = 0; i < NUM_STARS; i++) {
+          const arm = Math.floor(Math.random() * NUM_ARMS);
+          const armBaseAngle = (arm / NUM_ARMS) * Math.PI * 2;
+
+          const t = Math.random();
+          const dist = Math.pow(t, 0.6);
+
+          const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+          const scatter = (Math.random() - 0.5) * ARM_SPREAD * (0.3 + dist * 0.7);
+          const armAngle = armBaseAngle + spiralAngle + scatter;
+
+          const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+
+          const size = 0.5 + Math.random() * 2.5 * (1 - dist * 0.5);
+          const brightness = 0.3 + Math.random() * 0.7 * (1 - dist * 0.3);
+
+          let hue, sat, light;
+          if (dist < 0.2) {
+            hue = 30 + Math.random() * 40;
+            sat = 40 + Math.random() * 30;
+            light = 70 + Math.random() * 25;
+          } else if (dist < 0.5) {
+            hue = 40 + Math.random() * 60 + dist * 200;
+            sat = 50 + Math.random() * 30;
+            light = 50 + Math.random() * 30;
+          } else {
+            hue = 200 + Math.random() * 80;
+            sat = 50 + Math.random() * 40;
+            light = 35 + Math.random() * 35;
+          }
+
+          stars.push({
+            arm, armAngle, dist, orbitSpeed, size, brightness,
+            hue, sat, light,
+            dx: 0, dy: 0,
+            baseAngle: armAngle,
+          });
+        }
+      }
+      initStars();
+
+      // ─── Dust Lane Stars ──────────────────────────────────
+      const NUM_DUST = 1000;
+      const dustParticles = [];
+
+      function initDust() {
+        dustParticles.length = 0;
+        for (let i = 0; i < NUM_DUST; i++) {
+          const arm = Math.floor(Math.random() * NUM_ARMS);
+          const armBaseAngle = (arm / NUM_ARMS) * Math.PI * 2;
+          const t = Math.random();
+          const dist = Math.pow(t, 0.5);
+
+          const interArmOffset = Math.PI / NUM_ARMS;
+          const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+          const scatter = (Math.random() - 0.5) * ARM_SPREAD * 1.5;
+          const armAngle = armBaseAngle + spiralAngle + interArmOffset + scatter;
+
+          const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+
+          dustParticles.push({
+            armAngle, dist, orbitSpeed,
+            opacity: 0.05 + Math.random() * 0.12,
+            size: 3 + Math.random() * 8,
+            baseAngle: armAngle,
+            dx: 0, dy: 0,
+          });
+        }
+      }
+      initDust();
+
+      // ─── Emission Nebula Patches ──────────────────────────
+      const NUM_EMISSION = 12;
+      const emissionPatches = [];
+
+      function initEmission() {
+        emissionPatches.length = 0;
+        for (let i = 0; i < NUM_EMISSION; i++) {
+          const arm = Math.floor(Math.random() * NUM_ARMS);
+          const armBaseAngle = (arm / NUM_ARMS) * Math.PI * 2;
+          const t = 0.2 + Math.random() * 0.6;
+          const dist = t;
+          const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+          const scatter = (Math.random() - 0.5) * ARM_SPREAD * 0.8;
+          const angle = armBaseAngle + spiralAngle + scatter;
+
+          const isMagenta = Math.random() > 0.4;
+          emissionPatches.push({
+            angle,
+            dist,
+            orbitSpeed: 1 / Math.max(Math.pow(dist, 0.7), 0.08),
+            radius: 15 + Math.random() * 35,
+            hue: isMagenta ? 300 + Math.random() * 30 : 170 + Math.random() * 30,
+            opacity: 0.08 + Math.random() * 0.12,
+            pulsePhase: Math.random() * Math.PI * 2,
+            pulseSpeed: 0.3 + Math.random() * 0.6,
+          });
+        }
+      }
+      initEmission();
+
+      // ─── Nebula Cloud Blobs (for mask generation) ─────────
+      const NUM_NEBULA_BLOBS = 8;
+      const nebulaBlobs = [];
+
+      function initNebulaBlobs() {
+        nebulaBlobs.length = 0;
+        for (let i = 0; i < NUM_NEBULA_BLOBS; i++) {
+          nebulaBlobs.push({
+            // Position as fraction of canvas (roughly around center area)
+            x: 0.2 + Math.random() * 0.6,
+            y: 0.2 + Math.random() * 0.6,
+            baseRadius: 0.08 + Math.random() * 0.14,
+            driftSpeedX: (Math.random() - 0.5) * 0.008,
+            driftSpeedY: (Math.random() - 0.5) * 0.006,
+            morphPhase: Math.random() * Math.PI * 2,
+            morphSpeed: 0.15 + Math.random() * 0.25,
+            morphAmp: 0.3 + Math.random() * 0.4,
+            // Secondary morph for organic feel
+            morphPhase2: Math.random() * Math.PI * 2,
+            morphSpeed2: 0.08 + Math.random() * 0.15,
+            morphAmp2: 0.15 + Math.random() * 0.25,
+          });
+        }
+      }
+      initNebulaBlobs();
+
+      // Second set for mask 2 — complementary smaller blobs
+      const NUM_NEBULA_BLOBS_2 = 6;
+      const nebulaBlobs2 = [];
+
+      function initNebulaBlobs2() {
+        nebulaBlobs2.length = 0;
+        for (let i = 0; i < NUM_NEBULA_BLOBS_2; i++) {
+          nebulaBlobs2.push({
+            x: 0.15 + Math.random() * 0.7,
+            y: 0.15 + Math.random() * 0.7,
+            baseRadius: 0.05 + Math.random() * 0.1,
+            driftSpeedX: (Math.random() - 0.5) * 0.012,
+            driftSpeedY: (Math.random() - 0.5) * 0.009,
+            morphPhase: Math.random() * Math.PI * 2,
+            morphSpeed: 0.2 + Math.random() * 0.3,
+            morphAmp: 0.25 + Math.random() * 0.35,
+            morphPhase2: Math.random() * Math.PI * 2,
+            morphSpeed2: 0.1 + Math.random() * 0.2,
+            morphAmp2: 0.2 + Math.random() * 0.3,
+          });
+        }
+      }
+      initNebulaBlobs2();
+
+      // ─── Camera / Zoom ────────────────────────────────────
+      let zoom = 1.0;
+      const ZOOM_MIN = 0.5;
+      const ZOOM_MAX = 2.0;
+
+      // ─── Mouse Gravity Well ───────────────────────────────
+      let mouseDown = false;
+      let mouseX = 0;
+      let mouseY = 0;
+
+      // ─── Draw Galaxy ──────────────────────────────────────
+      let globalTime = 0;
+      let bgStars = null;
+
+      function drawGalaxy(ctx, dt, w, h) {
+        globalTime += dt;
+
+        const cx = w / 2;
+        const cy = h / 2;
+        const galaxyRadius = Math.min(w, h) * GALAXY_RADIUS_FRAC * zoom;
+        const coreRadius = Math.min(w, h) * CORE_RADIUS_FRAC * zoom;
+        const rotation = globalTime * ROTATION_SPEED;
+
+        // Clear
+        ctx.fillStyle = '#04040a';
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Background: faint distant stars ──
+        ctx.save();
+        if (!bgStars) {
+          bgStars = [];
+          for (let i = 0; i < 250; i++) {
+            bgStars.push({
+              x: Math.random(),
+              y: Math.random(),
+              r: 0.3 + Math.random() * 0.8,
+              b: 0.15 + Math.random() * 0.35,
+              twinkleSpeed: 0.5 + Math.random() * 2,
+              twinklePhase: Math.random() * Math.PI * 2,
+            });
+          }
+        }
+        for (const s of bgStars) {
+          const alpha = s.b * (0.6 + 0.4 * Math.sin(globalTime * s.twinkleSpeed + s.twinklePhase));
+          ctx.fillStyle = `rgba(200, 210, 255, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        // ── Dust lanes ──
+        for (const d of dustParticles) {
+          const angle = d.armAngle + rotation * d.orbitSpeed;
+          let sx = cx + Math.cos(angle) * d.dist * galaxyRadius + d.dx;
+          let sy = cy + Math.sin(angle) * d.dist * galaxyRadius * 0.55 + d.dy;
+
+          if (!mouseDown) {
+            d.dx *= 0.96;
+            d.dy *= 0.96;
+          } else {
+            const gdx = mouseX - sx;
+            const gdy = mouseY - sy;
+            const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+            const pullRadius = 250;
+            if (gDist < pullRadius) {
+              const force = (1 - gDist / pullRadius) * 2.5;
+              d.dx += gdx * force * dt * 0.3;
+              d.dy += gdy * force * dt * 0.3;
+            }
+            d.dx *= 0.99;
+            d.dy *= 0.99;
+          }
+
+          ctx.fillStyle = `rgba(4, 4, 15, ${d.opacity})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, d.size * zoom, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Core glow ──
+        const coreGlow1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 3);
+        coreGlow1.addColorStop(0, 'rgba(255, 240, 200, 0.45)');
+        coreGlow1.addColorStop(0.2, 'rgba(255, 220, 150, 0.25)');
+        coreGlow1.addColorStop(0.5, 'rgba(255, 180, 100, 0.08)');
+        coreGlow1.addColorStop(1, 'rgba(255, 150, 80, 0)');
+        ctx.fillStyle = coreGlow1;
+        ctx.fillRect(0, 0, w, h);
+
+        // Inner bright core
+        const coreGlow2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius);
+        coreGlow2.addColorStop(0, 'rgba(255, 255, 240, 0.9)');
+        coreGlow2.addColorStop(0.3, 'rgba(255, 240, 200, 0.5)');
+        coreGlow2.addColorStop(0.7, 'rgba(255, 200, 130, 0.15)');
+        coreGlow2.addColorStop(1, 'rgba(200, 150, 100, 0)');
+        ctx.fillStyle = coreGlow2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Pulsing core
+        const pulse = 0.8 + 0.2 * Math.sin(globalTime * 0.5);
+        const coreGlow3 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 0.5 * pulse);
+        coreGlow3.addColorStop(0, `rgba(255, 255, 250, ${0.8 * pulse})`);
+        coreGlow3.addColorStop(1, 'rgba(255, 230, 180, 0)');
+        ctx.fillStyle = coreGlow3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreRadius * 0.5 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        // ── Emission nebula patches ──
+        for (const e of emissionPatches) {
+          const angle = e.angle + rotation * e.orbitSpeed;
+          const ex = cx + Math.cos(angle) * e.dist * galaxyRadius;
+          const ey = cy + Math.sin(angle) * e.dist * galaxyRadius * 0.55;
+          const pulseFactor = 0.7 + 0.3 * Math.sin(globalTime * e.pulseSpeed + e.pulsePhase);
+          const r = e.radius * zoom * pulseFactor;
+
+          const grad = ctx.createRadialGradient(ex, ey, 0, ex, ey, r);
+          grad.addColorStop(0, `hsla(${e.hue}, 80%, 60%, ${e.opacity * pulseFactor})`);
+          grad.addColorStop(0.4, `hsla(${e.hue}, 70%, 45%, ${e.opacity * 0.5 * pulseFactor})`);
+          grad.addColorStop(1, `hsla(${e.hue}, 60%, 30%, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(ex, ey, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Stars (spiral arms) ──
+        for (const s of stars) {
+          const angle = s.armAngle + rotation * s.orbitSpeed;
+          let sx = cx + Math.cos(angle) * s.dist * galaxyRadius + s.dx;
+          let sy = cy + Math.sin(angle) * s.dist * galaxyRadius * 0.55 + s.dy;
+
+          if (!mouseDown) {
+            s.dx *= 0.96;
+            s.dy *= 0.96;
+          } else {
+            const gdx = mouseX - sx;
+            const gdy = mouseY - sy;
+            const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+            const pullRadius = 300;
+            if (gDist < pullRadius) {
+              const force = (1 - gDist / pullRadius) * 3;
+              s.dx += gdx * force * dt * 0.4;
+              s.dy += gdy * force * dt * 0.4;
+            }
+            s.dx *= 0.99;
+            s.dy *= 0.99;
+          }
+
+          const twinkle = 0.7 + 0.3 * Math.sin(globalTime * 3 + s.armAngle * 100 + s.dist * 50);
+          const alpha = s.brightness * twinkle;
+
+          if (s.size > 1.5 && s.brightness > 0.6) {
+            const glowRadius = s.size * zoom * 3;
+            const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowRadius);
+            glow.addColorStop(0, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha * 0.3})`);
+            glow.addColorStop(1, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, 0)`);
+            ctx.fillStyle = glow;
+            ctx.fillRect(sx - glowRadius, sy - glowRadius, glowRadius * 2, glowRadius * 2);
+          }
+
+          ctx.fillStyle = `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.size * zoom * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Outer halo ──
+        const halo = ctx.createRadialGradient(cx, cy, galaxyRadius * 0.3, cx, cy, galaxyRadius * 1.2);
+        halo.addColorStop(0, 'rgba(100, 80, 160, 0.02)');
+        halo.addColorStop(0.5, 'rgba(60, 50, 120, 0.015)');
+        halo.addColorStop(1, 'rgba(30, 20, 60, 0)');
+        ctx.fillStyle = halo;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── Draw Nebula Mask ─────────────────────────────────
+      // Draws organic nebula cloud shapes onto a mask canvas.
+      // White = visible through mask, black = blocked.
+      // We invert the mask on the content layers so dark nebula = occlusion.
+      function drawNebulaMask(maskCtx, w, h, blobs, time) {
+        // Start fully white (everything visible)
+        maskCtx.fillStyle = '#ffffff';
+        maskCtx.fillRect(0, 0, w, h);
+
+        // Draw dark nebula clouds (these will block content when invertMask is false)
+        // Since we want dark nebula regions to HIDE the galaxy, we draw black blobs
+        // on a white background. White = galaxy shows, black = galaxy hidden.
+        maskCtx.globalCompositeOperation = 'destination-out';
+
+        for (const blob of blobs) {
+          // Drifting position
+          const bx = (blob.x + Math.sin(time * blob.driftSpeedX * 10 + blob.morphPhase) * 0.05) * w;
+          const by = (blob.y + Math.cos(time * blob.driftSpeedY * 10 + blob.morphPhase2) * 0.04) * h;
+
+          // Morphing radius
+          const morph1 = 1 + blob.morphAmp * Math.sin(time * blob.morphSpeed + blob.morphPhase);
+          const morph2 = 1 + blob.morphAmp2 * Math.cos(time * blob.morphSpeed2 + blob.morphPhase2);
+          const r = blob.baseRadius * Math.min(w, h) * morph1 * morph2 * 0.5;
+
+          // Draw several overlapping ellipses for organic shape
+          for (let k = 0; k < 5; k++) {
+            const angleOff = (k / 5) * Math.PI * 2;
+            const ox = Math.cos(angleOff + time * blob.morphSpeed * 0.5) * r * 0.3;
+            const oy = Math.sin(angleOff + time * blob.morphSpeed2 * 0.7) * r * 0.25;
+            const subR = r * (0.6 + 0.4 * Math.sin(time * blob.morphSpeed + k * 1.3));
+
+            const grad = maskCtx.createRadialGradient(bx + ox, by + oy, 0, bx + ox, by + oy, subR);
+            grad.addColorStop(0, 'rgba(0, 0, 0, 0.85)');
+            grad.addColorStop(0.5, 'rgba(0, 0, 0, 0.5)');
+            grad.addColorStop(0.8, 'rgba(0, 0, 0, 0.15)');
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            maskCtx.fillStyle = grad;
+            maskCtx.beginPath();
+            maskCtx.ellipse(bx + ox, by + oy, subR, subR * 0.7, angleOff, 0, Math.PI * 2);
+            maskCtx.fill();
+          }
+        }
+
+        maskCtx.globalCompositeOperation = 'source-over';
+      }
+
+      // ─── Draw Nebula Edge Glow (emission edges) ───────────
+      // Draws faint reddish/magenta glow at the boundaries of nebula clouds
+      // onto the main source canvas for a visible emission effect.
+      function drawNebulaEdgeGlow(ctx, w, h, blobs, time) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        for (const blob of blobs) {
+          const bx = (blob.x + Math.sin(time * blob.driftSpeedX * 10 + blob.morphPhase) * 0.05) * w;
+          const by = (blob.y + Math.cos(time * blob.driftSpeedY * 10 + blob.morphPhase2) * 0.04) * h;
+
+          const morph1 = 1 + blob.morphAmp * Math.sin(time * blob.morphSpeed + blob.morphPhase);
+          const morph2 = 1 + blob.morphAmp2 * Math.cos(time * blob.morphSpeed2 + blob.morphPhase2);
+          const r = blob.baseRadius * Math.min(w, h) * morph1 * morph2 * 0.5;
+
+          // Draw a ring-like glow at the edge of each blob
+          for (let k = 0; k < 5; k++) {
+            const angleOff = (k / 5) * Math.PI * 2;
+            const ox = Math.cos(angleOff + time * blob.morphSpeed * 0.5) * r * 0.3;
+            const oy = Math.sin(angleOff + time * blob.morphSpeed2 * 0.7) * r * 0.25;
+            const subR = r * (0.6 + 0.4 * Math.sin(time * blob.morphSpeed + k * 1.3));
+
+            // Emission glow ring: transparent center, glowing edge, transparent outside
+            const grad = ctx.createRadialGradient(bx + ox, by + oy, subR * 0.6, bx + ox, by + oy, subR * 1.15);
+            const hue = 320 + Math.sin(time * 0.3 + k) * 30; // magenta-red shift
+            grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+            grad.addColorStop(0.4, `hsla(${hue}, 80%, 40%, 0.04)`);
+            grad.addColorStop(0.7, `hsla(${hue}, 90%, 50%, 0.07)`);
+            grad.addColorStop(0.9, `hsla(${hue}, 85%, 35%, 0.03)`);
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.ellipse(bx + ox, by + oy, subR * 1.15, subR * 0.8, angleOff, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        ctx.restore();
+      }
+
+      // ─── Draw Infrared Background (dimmer, redder galaxy behind nebula) ──
+      // This is drawn as the base scene so it shows through where masks hide the bright galaxy.
+      function drawInfraredLayer(ctx, w, h, time) {
+        const cx = w / 2;
+        const cy = h / 2;
+        const galaxyRadius = Math.min(w, h) * GALAXY_RADIUS_FRAC * zoom;
+        const coreRadius = Math.min(w, h) * CORE_RADIUS_FRAC * zoom;
+        const rotation = time * ROTATION_SPEED;
+
+        // Dim reddish core glow (infrared seeing through dust)
+        const coreGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 4);
+        coreGlow.addColorStop(0, 'rgba(120, 40, 30, 0.25)');
+        coreGlow.addColorStop(0.3, 'rgba(80, 25, 20, 0.12)');
+        coreGlow.addColorStop(0.6, 'rgba(50, 15, 15, 0.05)');
+        coreGlow.addColorStop(1, 'rgba(20, 5, 5, 0)');
+        ctx.fillStyle = coreGlow;
+        ctx.fillRect(0, 0, w, h);
+
+        // Dim reddish stars (infrared view — fewer, dimmer, redder)
+        for (let i = 0; i < stars.length; i += 4) {
+          const s = stars[i];
+          const angle = s.armAngle + rotation * s.orbitSpeed;
+          const sx = cx + Math.cos(angle) * s.dist * galaxyRadius + s.dx;
+          const sy = cy + Math.sin(angle) * s.dist * galaxyRadius * 0.55 + s.dy;
+
+          const twinkle = 0.5 + 0.5 * Math.sin(time * 2 + s.armAngle * 50);
+          const alpha = s.brightness * twinkle * 0.3;
+
+          // Infrared: everything shifts warm/red
+          const irHue = 0 + s.dist * 20;
+          ctx.fillStyle = `hsla(${irHue}, 60%, 30%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.size * zoom * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Faint warm diffuse glow
+        const diffuse = ctx.createRadialGradient(cx, cy, galaxyRadius * 0.1, cx, cy, galaxyRadius * 0.9);
+        diffuse.addColorStop(0, 'rgba(100, 30, 20, 0.06)');
+        diffuse.addColorStop(0.5, 'rgba(60, 20, 15, 0.03)');
+        diffuse.addColorStop(1, 'rgba(20, 8, 8, 0)');
+        ctx.fillStyle = diffuse;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 16,
+          colorScheme: 'rainbow',
+          background: '#04040a',
+          sourceOpacity: 0,
+        },
+        layers: [
+          // Layer 0: primary density layer
+          {
+            fontSize: 4,
+            charset: 'density',
+            colorScheme: 'vapor',
+            offsetX: -107,
+            offsetY: -2,
+            zIndex: 15,
+          },
+          // Layer 1: blocks layer
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            offsetX: -72,
+          },
+          // Layer 2: minimal overlay
+          {
+            fontSize: 14.5,
+            charset: 'minimal',
+            colorScheme: 'vapor',
+            patternMix: 0.58,
+            opacity: 0.6,
+            blendMode: 'add',
+          },
+          // Layer 3: braille edge detect
+          {
+            fontSize: 5.5,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'moiré',
+            patternMix: 0.5,
+            fade: 1,
+            blendMode: 'add',
+            offsetX: -72,
+            offsetY: 33,
+            edgeDetect: true,
+          },
+          // Layer 4: nebula mask 1 (invisible — used as mask source)
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+          // Layer 5: nebula mask 2 (invisible — used as mask source)
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+        ],
+        draw(ctx, { dt, width: w, height: h }) {
+          // Draw the infrared background first (shows through masked regions)
+          drawInfraredLayer(ctx, w, h, globalTime + dt);
+
+          // Draw the main bright galaxy on top
+          drawGalaxy(ctx, dt, w, h);
+
+          // Draw nebula edge emission glow on the source canvas
+          drawNebulaEdgeGlow(ctx, w, h, nebulaBlobs, globalTime);
+          drawNebulaEdgeGlow(ctx, w, h, nebulaBlobs2, globalTime);
+
+          // ── Update mask canvases ──
+          // Sync mask canvas sizes
+          if (maskCanvas1.width !== w || maskCanvas1.height !== h) {
+            maskCanvas1.width = w;
+            maskCanvas1.height = h;
+          }
+          if (maskCanvas2.width !== w || maskCanvas2.height !== h) {
+            maskCanvas2.width = w;
+            maskCanvas2.height = h;
+          }
+
+          // Draw nebula masks
+          drawNebulaMask(maskCtx1, w, h, nebulaBlobs, globalTime);
+          drawNebulaMask(maskCtx2, w, h, nebulaBlobs2, globalTime);
+
+          // Push mask sources to the mask layers each frame
+          layers[4].set('source', maskCanvas1);
+          layers[5].set('source', maskCanvas2);
+        },
+      });
+
+      // ─── Mask Canvas Setup ────────────────────────────────
+      const maskCanvas1 = document.createElement('canvas');
+      const maskCtx1 = maskCanvas1.getContext('2d');
+      const maskCanvas2 = document.createElement('canvas');
+      const maskCtx2 = maskCanvas2.getContext('2d');
+
+      // ─── Layer Masking Setup ──────────────────────────────
+      const layers = app.ascii.layers;
+
+      // Apply mask layer 1 (nebula clouds) to the main galaxy layers
+      // White in mask = galaxy visible, black = galaxy hidden (nebula occlusion)
+      layers[0].set('maskLayer', layers[4].id);
+      layers[1].set('maskLayer', layers[4].id);
+
+      // Apply mask layer 2 to the overlay layers for complementary occlusion
+      layers[2].set('maskLayer', layers[5].id);
+      layers[3].set('maskLayer', layers[5].id);
+
+      // ─── Canvas / Window Events ───────────────────────────
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        zoom -= e.deltaY * 0.001;
+        zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+      }, { passive: false });
+
+      window.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mouseup', () => {
+        mouseDown = false;
+      });
+
+      // Touch support
+      window.addEventListener('touchstart', (e) => {
+        mouseDown = true;
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      });
+      window.addEventListener('touchmove', (e) => {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      });
+      window.addEventListener('touchend', () => {
+        mouseDown = false;
+      });
+    </script>
+  </body>
+</html>

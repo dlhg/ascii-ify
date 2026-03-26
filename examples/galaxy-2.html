@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Galaxy 2</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+
+      // ─── Galactic Collision Parameters ───────────────────
+      const PRIMARY_STARS = 1800;
+      const SECONDARY_STARS = 1100;
+      const TIDAL_STARS = 600;
+      const NUM_BG_STARS = 300;
+      const PRIMARY_ARMS = 3;
+      const SECONDARY_ARMS = 2;
+      const ARM_SPREAD = 0.45;
+      const SPIRAL_TIGHTNESS = 0.3;
+      const GALAXY_RADIUS_FRAC = 0.30;
+      const ROTATION_SPEED = 0.015;
+      const CORE_RADIUS_FRAC = 0.06;
+
+      // Secondary galaxy is 60% the size
+      const SECONDARY_SCALE = 0.6;
+      const ORBIT_SPEED = 0.008;
+      const ORBIT_RADIUS_FRAC = 0.55;
+
+      // ─── Star Generation Helpers ─────────────────────────
+      function makeGalaxyStars(count, numArms, spread, tightness) {
+        const arr = [];
+        for (let i = 0; i < count; i++) {
+          const arm = Math.floor(Math.random() * numArms);
+          const armBaseAngle = (arm / numArms) * Math.PI * 2;
+          const t = Math.random();
+          const dist = Math.pow(t, 0.6);
+          const spiralAngle = Math.log(1 + dist * 10) * tightness * 6;
+          const scatter = (Math.random() - 0.5) * spread * (0.3 + dist * 0.7);
+          const armAngle = armBaseAngle + spiralAngle + scatter;
+          const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+          const size = 0.5 + Math.random() * 2.5 * (1 - dist * 0.5);
+          const brightness = 0.3 + Math.random() * 0.7 * (1 - dist * 0.3);
+
+          let hue, sat, light;
+          if (dist < 0.2) {
+            hue = 30 + Math.random() * 40;
+            sat = 40 + Math.random() * 30;
+            light = 70 + Math.random() * 25;
+          } else if (dist < 0.5) {
+            hue = 40 + Math.random() * 60 + dist * 200;
+            sat = 50 + Math.random() * 30;
+            light = 50 + Math.random() * 30;
+          } else {
+            hue = 200 + Math.random() * 80;
+            sat = 50 + Math.random() * 40;
+            light = 35 + Math.random() * 35;
+          }
+
+          arr.push({
+            arm, armAngle, dist, orbitSpeed, size, brightness,
+            hue, sat, light,
+            dx: 0, dy: 0,
+            baseAngle: armAngle,
+          });
+        }
+        return arr;
+      }
+
+      // Primary galaxy stars
+      const primaryStars = makeGalaxyStars(PRIMARY_STARS, PRIMARY_ARMS, ARM_SPREAD, SPIRAL_TIGHTNESS);
+
+      // Secondary galaxy stars - cooler colors
+      const secondaryStars = [];
+      for (let i = 0; i < SECONDARY_STARS; i++) {
+        const arm = Math.floor(Math.random() * SECONDARY_ARMS);
+        const armBaseAngle = (arm / SECONDARY_ARMS) * Math.PI * 2;
+        const t = Math.random();
+        const dist = Math.pow(t, 0.6);
+        const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+        const scatter = (Math.random() - 0.5) * ARM_SPREAD * (0.3 + dist * 0.7);
+        const armAngle = armBaseAngle + spiralAngle + scatter;
+        const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+        const size = 0.4 + Math.random() * 2.0 * (1 - dist * 0.5);
+        const brightness = 0.3 + Math.random() * 0.7 * (1 - dist * 0.3);
+
+        // Cooler blue-white palette for secondary
+        let hue, sat, light;
+        if (dist < 0.2) {
+          hue = 200 + Math.random() * 40;
+          sat = 30 + Math.random() * 30;
+          light = 75 + Math.random() * 20;
+        } else if (dist < 0.5) {
+          hue = 210 + Math.random() * 50;
+          sat = 45 + Math.random() * 30;
+          light = 50 + Math.random() * 30;
+        } else {
+          hue = 240 + Math.random() * 60;
+          sat = 40 + Math.random() * 40;
+          light = 35 + Math.random() * 30;
+        }
+
+        secondaryStars.push({
+          arm, armAngle, dist, orbitSpeed, size, brightness,
+          hue, sat, light,
+          dx: 0, dy: 0,
+          baseAngle: armAngle,
+        });
+      }
+
+      // Tidal bridge/tail stars
+      const tidalStars = [];
+      for (let i = 0; i < TIDAL_STARS; i++) {
+        const t = Math.random();
+        const stream = i % 3; // 0=bridge, 1=primary tail, 2=secondary tail
+        const size = 0.3 + Math.random() * 1.5;
+        const brightness = 0.2 + Math.random() * 0.5;
+        // Mixed warm/cool colors for tidal debris
+        const hue = 180 + Math.random() * 100;
+        const sat = 30 + Math.random() * 40;
+        const light = 40 + Math.random() * 35;
+
+        tidalStars.push({
+          t, stream, size, brightness, hue, sat, light,
+          spreadX: (Math.random() - 0.5) * 60,
+          spreadY: (Math.random() - 0.5) * 60,
+          driftPhase: Math.random() * Math.PI * 2,
+          driftSpeed: 0.3 + Math.random() * 0.7,
+        });
+      }
+
+      // Dust particles for both galaxies
+      const primaryDust = [];
+      const secondaryDust = [];
+
+      function makeDust(count, numArms) {
+        const arr = [];
+        for (let i = 0; i < count; i++) {
+          const arm = Math.floor(Math.random() * numArms);
+          const armBaseAngle = (arm / numArms) * Math.PI * 2;
+          const t = Math.random();
+          const dist = Math.pow(t, 0.5);
+          const interArmOffset = Math.PI / numArms;
+          const spiralAngle = Math.log(1 + dist * 10) * SPIRAL_TIGHTNESS * 6;
+          const scatter = (Math.random() - 0.5) * ARM_SPREAD * 1.5;
+          const armAngle = armBaseAngle + spiralAngle + interArmOffset + scatter;
+          const orbitSpeed = 1 / Math.max(Math.pow(dist, 0.7), 0.08);
+          arr.push({
+            armAngle, dist, orbitSpeed,
+            opacity: 0.05 + Math.random() * 0.12,
+            size: 3 + Math.random() * 8,
+            dx: 0, dy: 0,
+          });
+        }
+        return arr;
+      }
+      primaryDust.push(...makeDust(600, PRIMARY_ARMS));
+      secondaryDust.push(...makeDust(400, SECONDARY_ARMS));
+
+      // ─── Camera / Zoom ────────────────────────────────────
+      let zoom = 1.0;
+      const ZOOM_MIN = 0.5;
+      const ZOOM_MAX = 2.0;
+
+      // ─── Mouse Gravity Well ───────────────────────────────
+      let mouseDown = false;
+      let mouseX = 0;
+      let mouseY = 0;
+
+      // ─── Background Stars ────────────────────────────────
+      let bgStars = null;
+      let globalTime = 0;
+
+      function drawCollision(ctx, dt, w, h) {
+        globalTime += dt;
+
+        const cx = w / 2;
+        const cy = h / 2;
+        const minDim = Math.min(w, h);
+        const primaryRadius = minDim * GALAXY_RADIUS_FRAC * zoom;
+        const secondaryRadius = primaryRadius * SECONDARY_SCALE;
+        const coreRadius = minDim * CORE_RADIUS_FRAC * zoom;
+        const secondaryCoreRadius = coreRadius * SECONDARY_SCALE;
+        const rotation = globalTime * ROTATION_SPEED;
+
+        // Secondary orbits the primary
+        const orbitR = minDim * ORBIT_RADIUS_FRAC * zoom;
+        const orbitAngle = globalTime * ORBIT_SPEED;
+        const secCx = cx + Math.cos(orbitAngle) * orbitR * 0.6;
+        const secCy = cy + Math.sin(orbitAngle) * orbitR * 0.35 - minDim * 0.12;
+
+        // Clear
+        ctx.fillStyle = '#04040a';
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Background Stars ──
+        if (!bgStars) {
+          bgStars = [];
+          for (let i = 0; i < NUM_BG_STARS; i++) {
+            bgStars.push({
+              x: Math.random(), y: Math.random(),
+              r: 0.3 + Math.random() * 0.8,
+              b: 0.15 + Math.random() * 0.35,
+              twinkleSpeed: 0.5 + Math.random() * 2,
+              twinklePhase: Math.random() * Math.PI * 2,
+            });
+          }
+        }
+        for (const s of bgStars) {
+          const alpha = s.b * (0.6 + 0.4 * Math.sin(globalTime * s.twinkleSpeed + s.twinklePhase));
+          ctx.fillStyle = `rgba(200, 210, 255, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Dust lanes (primary) ──
+        for (const d of primaryDust) {
+          const angle = d.armAngle + rotation * d.orbitSpeed;
+          const sx = cx + Math.cos(angle) * d.dist * primaryRadius + d.dx;
+          const sy = cy + Math.sin(angle) * d.dist * primaryRadius * 0.55 + d.dy;
+          if (!mouseDown) { d.dx *= 0.96; d.dy *= 0.96; }
+          ctx.fillStyle = `rgba(4, 4, 15, ${d.opacity})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, d.size * zoom, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Dust lanes (secondary) ──
+        for (const d of secondaryDust) {
+          const angle = d.armAngle - rotation * d.orbitSpeed * 1.2;
+          const sx = secCx + Math.cos(angle) * d.dist * secondaryRadius + d.dx;
+          const sy = secCy + Math.sin(angle) * d.dist * secondaryRadius * 0.55 + d.dy;
+          if (!mouseDown) { d.dx *= 0.96; d.dy *= 0.96; }
+          ctx.fillStyle = `rgba(4, 4, 15, ${d.opacity * 0.8})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, d.size * zoom * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Primary Core Glow (warm yellow-white) ──
+        const coreGlow1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 3);
+        coreGlow1.addColorStop(0, 'rgba(255, 240, 200, 0.45)');
+        coreGlow1.addColorStop(0.2, 'rgba(255, 220, 150, 0.25)');
+        coreGlow1.addColorStop(0.5, 'rgba(255, 180, 100, 0.08)');
+        coreGlow1.addColorStop(1, 'rgba(255, 150, 80, 0)');
+        ctx.fillStyle = coreGlow1;
+        ctx.fillRect(0, 0, w, h);
+
+        const coreGlow2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius);
+        coreGlow2.addColorStop(0, 'rgba(255, 255, 240, 0.9)');
+        coreGlow2.addColorStop(0.3, 'rgba(255, 240, 200, 0.5)');
+        coreGlow2.addColorStop(0.7, 'rgba(255, 200, 130, 0.15)');
+        coreGlow2.addColorStop(1, 'rgba(200, 150, 100, 0)');
+        ctx.fillStyle = coreGlow2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        const pulse1 = 0.8 + 0.2 * Math.sin(globalTime * 0.5);
+        const coreGlow3 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 0.5 * pulse1);
+        coreGlow3.addColorStop(0, `rgba(255, 255, 250, ${0.8 * pulse1})`);
+        coreGlow3.addColorStop(1, 'rgba(255, 230, 180, 0)');
+        ctx.fillStyle = coreGlow3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreRadius * 0.5 * pulse1, 0, Math.PI * 2);
+        ctx.fill();
+
+        // ── Secondary Core Glow (cool blue-white) ──
+        const secGlow1 = ctx.createRadialGradient(secCx, secCy, 0, secCx, secCy, secondaryCoreRadius * 3);
+        secGlow1.addColorStop(0, 'rgba(200, 220, 255, 0.4)');
+        secGlow1.addColorStop(0.2, 'rgba(160, 190, 255, 0.2)');
+        secGlow1.addColorStop(0.5, 'rgba(120, 160, 255, 0.06)');
+        secGlow1.addColorStop(1, 'rgba(100, 140, 255, 0)');
+        ctx.fillStyle = secGlow1;
+        ctx.fillRect(0, 0, w, h);
+
+        const secGlow2 = ctx.createRadialGradient(secCx, secCy, 0, secCx, secCy, secondaryCoreRadius);
+        secGlow2.addColorStop(0, 'rgba(240, 245, 255, 0.85)');
+        secGlow2.addColorStop(0.3, 'rgba(200, 220, 255, 0.45)');
+        secGlow2.addColorStop(0.7, 'rgba(150, 180, 255, 0.12)');
+        secGlow2.addColorStop(1, 'rgba(120, 150, 220, 0)');
+        ctx.fillStyle = secGlow2;
+        ctx.beginPath();
+        ctx.arc(secCx, secCy, secondaryCoreRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        const pulse2 = 0.8 + 0.2 * Math.sin(globalTime * 0.6 + 1.5);
+        const secGlow3 = ctx.createRadialGradient(secCx, secCy, 0, secCx, secCy, secondaryCoreRadius * 0.5 * pulse2);
+        secGlow3.addColorStop(0, `rgba(230, 240, 255, ${0.75 * pulse2})`);
+        secGlow3.addColorStop(1, 'rgba(180, 210, 255, 0)');
+        ctx.fillStyle = secGlow3;
+        ctx.beginPath();
+        ctx.arc(secCx, secCy, secondaryCoreRadius * 0.5 * pulse2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // ── Interaction glow (purple, between galaxies) ──
+        const midX = (cx + secCx) / 2;
+        const midY = (cy + secCy) / 2;
+        const galaxyDist = Math.sqrt((secCx - cx) ** 2 + (secCy - cy) ** 2);
+        const proximity = Math.max(0, 1 - galaxyDist / (orbitR * 1.5));
+        if (proximity > 0.05) {
+          const intPulse = 1 + Math.sin(globalTime * 2) * 0.15;
+          const intRadius = 80 * proximity * intPulse * zoom;
+          const intAlpha = proximity * 0.1;
+          const intGlow = ctx.createRadialGradient(midX, midY, 0, midX, midY, intRadius);
+          intGlow.addColorStop(0, `rgba(200, 180, 255, ${intAlpha})`);
+          intGlow.addColorStop(0.5, `rgba(160, 140, 240, ${intAlpha * 0.3})`);
+          intGlow.addColorStop(1, 'rgba(140, 120, 220, 0)');
+          ctx.fillStyle = intGlow;
+          ctx.beginPath();
+          ctx.arc(midX, midY, intRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Primary Stars ──
+        for (const s of primaryStars) {
+          const angle = s.armAngle + rotation * s.orbitSpeed;
+          let sx = cx + Math.cos(angle) * s.dist * primaryRadius + s.dx;
+          let sy = cy + Math.sin(angle) * s.dist * primaryRadius * 0.55 + s.dy;
+
+          // Gravitational pull from secondary
+          const toSecDx = secCx - sx;
+          const toSecDy = secCy - sy;
+          const toSecDist = Math.sqrt(toSecDx ** 2 + toSecDy ** 2);
+          if (toSecDist < secondaryRadius * 2.5) {
+            const pull = (1 - toSecDist / (secondaryRadius * 2.5)) * 2;
+            s.dx += toSecDx * pull * dt * 0.15;
+            s.dy += toSecDy * pull * dt * 0.15;
+          }
+
+          // Mouse gravity
+          if (mouseDown) {
+            const gdx = mouseX - sx;
+            const gdy = mouseY - sy;
+            const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+            if (gDist < 300) {
+              const force = (1 - gDist / 300) * 3;
+              s.dx += gdx * force * dt * 0.4;
+              s.dy += gdy * force * dt * 0.4;
+            }
+            s.dx *= 0.99; s.dy *= 0.99;
+          } else {
+            s.dx *= 0.96; s.dy *= 0.96;
+          }
+
+          sx = cx + Math.cos(angle) * s.dist * primaryRadius + s.dx;
+          sy = cy + Math.sin(angle) * s.dist * primaryRadius * 0.55 + s.dy;
+
+          const twinkle = 0.7 + 0.3 * Math.sin(globalTime * 3 + s.armAngle * 100 + s.dist * 50);
+          const alpha = s.brightness * twinkle;
+
+          if (s.size > 1.5 && s.brightness > 0.6) {
+            const glowRadius = s.size * zoom * 3;
+            const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowRadius);
+            glow.addColorStop(0, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha * 0.3})`);
+            glow.addColorStop(1, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, 0)`);
+            ctx.fillStyle = glow;
+            ctx.fillRect(sx - glowRadius, sy - glowRadius, glowRadius * 2, glowRadius * 2);
+          }
+
+          ctx.fillStyle = `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.size * zoom * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Secondary Stars ──
+        for (const s of secondaryStars) {
+          const angle = s.armAngle - rotation * s.orbitSpeed * 1.2;
+          let sx = secCx + Math.cos(angle) * s.dist * secondaryRadius + s.dx;
+          let sy = secCy + Math.sin(angle) * s.dist * secondaryRadius * 0.55 + s.dy;
+
+          // Gravitational pull from primary
+          const toPrimDx = cx - sx;
+          const toPrimDy = cy - sy;
+          const toPrimDist = Math.sqrt(toPrimDx ** 2 + toPrimDy ** 2);
+          if (toPrimDist < primaryRadius * 2) {
+            const pull = (1 - toPrimDist / (primaryRadius * 2)) * 2.5;
+            s.dx += toPrimDx * pull * dt * 0.15;
+            s.dy += toPrimDy * pull * dt * 0.15;
+          }
+
+          if (mouseDown) {
+            const gdx = mouseX - sx;
+            const gdy = mouseY - sy;
+            const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+            if (gDist < 300) {
+              const force = (1 - gDist / 300) * 3;
+              s.dx += gdx * force * dt * 0.4;
+              s.dy += gdy * force * dt * 0.4;
+            }
+            s.dx *= 0.99; s.dy *= 0.99;
+          } else {
+            s.dx *= 0.96; s.dy *= 0.96;
+          }
+
+          sx = secCx + Math.cos(angle) * s.dist * secondaryRadius + s.dx;
+          sy = secCy + Math.sin(angle) * s.dist * secondaryRadius * 0.55 + s.dy;
+
+          const twinkle = 0.7 + 0.3 * Math.sin(globalTime * 3 + s.armAngle * 80 + s.dist * 40);
+          const alpha = s.brightness * twinkle;
+
+          if (s.size > 1.3 && s.brightness > 0.6) {
+            const glowRadius = s.size * zoom * 3;
+            const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowRadius);
+            glow.addColorStop(0, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha * 0.25})`);
+            glow.addColorStop(1, `hsla(${s.hue}, ${s.sat}%, ${s.light}%, 0)`);
+            ctx.fillStyle = glow;
+            ctx.fillRect(sx - glowRadius, sy - glowRadius, glowRadius * 2, glowRadius * 2);
+          }
+
+          ctx.fillStyle = `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.size * zoom * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Tidal Streams ──
+        const dirX = (secCx - cx) / (galaxyDist || 1);
+        const dirY = (secCy - cy) / (galaxyDist || 1);
+        const perpX = -dirY;
+        const perpY = dirX;
+
+        for (const s of tidalStars) {
+          let sx, sy;
+          const drift = Math.sin(globalTime * s.driftSpeed + s.driftPhase) * 15;
+
+          if (s.stream === 0) {
+            // Bridge between galaxies
+            const curve = Math.sin(s.t * Math.PI) * 50;
+            sx = cx + (secCx - cx) * s.t + perpX * (s.spreadX + curve) + drift * perpX;
+            sy = cy + (secCy - cy) * s.t + perpY * (s.spreadX + curve) + drift * perpY;
+          } else if (s.stream === 1) {
+            // Primary tidal tail (away from secondary)
+            const tailAngle = Math.atan2(-dirY, -dirX) + s.t * 1.5 + Math.sin(globalTime * 0.3) * 0.2;
+            const tailDist = primaryRadius * 0.4 + s.t * primaryRadius * 1.5;
+            sx = cx + Math.cos(tailAngle) * tailDist + s.spreadX * 0.5;
+            sy = cy + Math.sin(tailAngle) * tailDist * 0.55 + s.spreadY * 0.5 + drift;
+          } else {
+            // Secondary tidal tail (away from primary)
+            const tailAngle = Math.atan2(dirY, dirX) + s.t * 1.8 + Math.sin(globalTime * 0.25 + 1) * 0.2;
+            const tailDist = secondaryRadius * 0.3 + s.t * secondaryRadius * 1.3;
+            sx = secCx + Math.cos(tailAngle) * tailDist + s.spreadX * 0.4;
+            sy = secCy + Math.sin(tailAngle) * tailDist * 0.55 + s.spreadY * 0.4 + drift;
+          }
+
+          const twinkle = 0.6 + 0.4 * Math.sin(globalTime * 2.5 + s.driftPhase);
+          const alpha = s.brightness * twinkle;
+
+          ctx.fillStyle = `hsla(${s.hue}, ${s.sat}%, ${s.light}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.size * zoom * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Outer halos ──
+        const halo1 = ctx.createRadialGradient(cx, cy, primaryRadius * 0.3, cx, cy, primaryRadius * 1.2);
+        halo1.addColorStop(0, 'rgba(100, 80, 160, 0.02)');
+        halo1.addColorStop(0.5, 'rgba(60, 50, 120, 0.015)');
+        halo1.addColorStop(1, 'rgba(30, 20, 60, 0)');
+        ctx.fillStyle = halo1;
+        ctx.fillRect(0, 0, w, h);
+
+        const halo2 = ctx.createRadialGradient(secCx, secCy, secondaryRadius * 0.3, secCx, secCy, secondaryRadius * 1.2);
+        halo2.addColorStop(0, 'rgba(80, 90, 160, 0.015)');
+        halo2.addColorStop(0.5, 'rgba(50, 60, 130, 0.01)');
+        halo2.addColorStop(1, 'rgba(30, 30, 80, 0)');
+        ctx.fillStyle = halo2;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 16,
+          colorScheme: 'rainbow',
+          background: '#04040a',
+          sourceOpacity: 0,
+        },
+        layers: [
+          {
+            fontSize: 4,
+            charset: 'density',
+            colorScheme: 'vapor',
+            offsetX: -107,
+            offsetY: -2,
+            zIndex: 15,
+          },
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            offsetX: -72,
+          },
+          {
+            fontSize: 14.5,
+            charset: 'minimal',
+            colorScheme: 'vapor',
+            patternMix: 0.58,
+            opacity: 0.6,
+            blendMode: 'add',
+          },
+          {
+            fontSize: 5.5,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'moiré',
+            patternMix: 0.5,
+            fade: 1,
+            blendMode: 'add',
+            offsetX: -72,
+            offsetY: 33,
+            edgeDetect: true,
+          },
+        ],
+        draw(ctx, { dt, width: w, height: h }) {
+          drawCollision(ctx, dt, w, h);
+        },
+      });
+
+      // ─── Canvas / Window Events ───────────────────────────
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        zoom -= e.deltaY * 0.001;
+        zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+      }, { passive: false });
+
+      window.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mouseup', () => {
+        mouseDown = false;
+      });
+
+      window.addEventListener('touchstart', (e) => {
+        mouseDown = true;
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      });
+      window.addEventListener('touchmove', (e) => {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+      });
+      window.addEventListener('touchend', () => {
+        mouseDown = false;
+      });
+    </script>
+  </body>
+</html>
