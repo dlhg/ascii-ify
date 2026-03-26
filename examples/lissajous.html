@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Lissajous</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp } from './utils.js';
+
+      // ─── Presets ─────────────────────────────────────────────
+      const PRESETS = [
+        { name: 'Trefoil',  a: 3, b: 2, delta: Math.PI / 2 },
+        { name: 'Figure-8', a: 1, b: 2, delta: Math.PI / 4 },
+        { name: 'Flower',   a: 5, b: 4, delta: Math.PI / 3 },
+        { name: 'Pretzel',  a: 3, b: 4, delta: Math.PI / 6 },
+        { name: 'Star',     a: 7, b: 6, delta: Math.PI / 2 },
+        { name: 'Orbit',    a: 2, b: 3, delta: Math.PI / 4 },
+      ];
+
+      // ─── State ──────────────────────────────────────────────
+      let presetIndex = 0;
+      let currentA = PRESETS[0].a;
+      let currentB = PRESETS[0].b;
+      let currentDelta = PRESETS[0].delta;
+      let targetA = currentA;
+      let targetB = currentB;
+      let targetDelta = currentDelta;
+
+      let autoCycle = true;
+      let cycleTimer = 0;
+      const CYCLE_DURATION = 10; // seconds between auto-transitions
+      const MORPH_SPEED = 1.2;   // how fast ratios morph toward target
+
+      let curveT = 0;
+      const TRACE_SPEED = 2.8;   // how fast the point traces the curve (radians/s)
+      const POINTS_PER_SEGMENT = 300;
+
+      let mouseX = 0.5; // normalized 0..1
+      let mouseDeltaInfluence = 0; // subtle phase influence from mouse
+
+      let presetLabel = '';
+      let presetLabelAlpha = 0;
+
+      // ─── Multiple Curves ────────────────────────────────────
+      const PI = Math.PI;
+      const TAU = PI * 2;
+
+      const curves = [
+        { aOff: 0,     bOff: 0,     deltaOff: 0,         hueOff: 0,   scale: 1,    alpha: 1,    size: 2.2 },
+        { aOff: 0.08,  bOff: -0.08, deltaOff: PI / 3,    hueOff: 120, scale: 0.82, alpha: 0.55, size: 1.6 },
+        { aOff: -0.12, bOff: 0.12,  deltaOff: PI * 2/3,  hueOff: 240, scale: 0.66, alpha: 0.3,  size: 1.1 },
+        // Ghost curve: offset in time, very faint
+        { aOff: 0,     bOff: 0,     deltaOff: -0.3,      hueOff: 60,  scale: 0.95, alpha: 0.12, size: 1.8, timeOffset: -1.5 },
+      ];
+
+      // ─── Helpers ─────────────────────────────────────────────
+      function hslStr(h, s, l, a) {
+        return `hsla(${h | 0}, ${s | 0}%, ${l | 0}%, ${a})`;
+      }
+
+      function switchPreset(index) {
+        presetIndex = index % PRESETS.length;
+        const p = PRESETS[presetIndex];
+        targetA = p.a;
+        targetB = p.b;
+        targetDelta = p.delta;
+        cycleTimer = 0;
+        presetLabel = p.name;
+        presetLabelAlpha = 1;
+      }
+
+      function nextPreset() {
+        switchPreset(presetIndex + 1);
+      }
+
+      // ─── Draw ────────────────────────────────────────────────
+      let firstFrame = true;
+
+      function drawLissajous(ctx, dt, w, h) {
+        // ── Trail fade: semi-transparent dark overlay ──
+        if (firstFrame) {
+          ctx.fillStyle = '#06060f';
+          ctx.fillRect(0, 0, w, h);
+          firstFrame = false;
+        } else {
+          ctx.fillStyle = 'rgba(5, 5, 12, 0.04)';
+          ctx.fillRect(0, 0, w, h);
+        }
+
+        // ── Morph current parameters toward target ──
+        const morphT = 1 - Math.exp(-MORPH_SPEED * dt);
+        currentA = lerp(currentA, targetA, morphT);
+        currentB = lerp(currentB, targetB, morphT);
+        currentDelta = lerp(currentDelta, targetDelta, morphT);
+
+        // ── Mouse influence on delta ──
+        mouseDeltaInfluence = lerp(mouseDeltaInfluence, (mouseX - 0.5) * 0.4, 0.03);
+
+        // ── Auto-cycle ──
+        if (autoCycle) {
+          cycleTimer += dt;
+          if (cycleTimer >= CYCLE_DURATION) {
+            nextPreset();
+          }
+        }
+
+        // ── Advance curve parameter ──
+        curveT += dt * TRACE_SPEED;
+        const segmentLen = dt * TRACE_SPEED;
+
+        // ── Layout ──
+        const cx = w / 2;
+        const cy = h / 2;
+        const amp = Math.min(w, h) * 0.38;
+
+        // ── Draw each curve ──
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+
+        for (const curve of curves) {
+          const a = currentA + curve.aOff;
+          const b = currentB + curve.bOff;
+          const delta = currentDelta + curve.deltaOff + mouseDeltaInfluence;
+          const scl = amp * curve.scale;
+          const baseT = curveT + (curve.timeOffset || 0);
+
+          // Draw a segment of the curve from baseT to baseT + segmentLen
+          // But also overdraw a full loop for richness on each frame
+          // We draw recent history: a full cycle worth of points
+          const fullCycle = TAU;
+          const totalPoints = POINTS_PER_SEGMENT;
+          const startT = baseT - fullCycle;
+          const stepT = fullCycle / totalPoints;
+
+          for (let i = 0; i < totalPoints; i++) {
+            const t = startT + i * stepT;
+            const x = cx + scl * Math.sin(a * t + delta);
+            const y = cy + scl * Math.cos(b * t);
+
+            // Velocity for brightness modulation
+            const dxdt = scl * a * Math.cos(a * t + delta);
+            const dydt = -scl * b * Math.sin(b * t);
+            const speed = Math.sqrt(dxdt * dxdt + dydt * dydt);
+            const maxSpeed = scl * Math.max(Math.abs(a), Math.abs(b));
+            const speedNorm = clamp(speed / maxSpeed, 0, 1);
+
+            // Fade: points closer to baseT are brighter (recency)
+            const age = (baseT - t) / fullCycle; // 0 = newest, 1 = oldest
+            const recencyFade = Math.pow(1 - age, 2);
+
+            // Color: map t to hue
+            const hue = ((t * 60 + curve.hueOff) % 360 + 360) % 360;
+            const sat = 85 + speedNorm * 15;
+            const light = 35 + speedNorm * 30 + recencyFade * 15;
+            const alpha = curve.alpha * recencyFade * (0.5 + speedNorm * 0.5);
+
+            if (alpha < 0.01) continue;
+
+            const pointSize = curve.size * (0.6 + speedNorm * 0.4);
+
+            // Outer glow (larger, dimmer)
+            ctx.fillStyle = hslStr(hue, sat, light * 0.7, alpha * 0.3);
+            ctx.beginPath();
+            ctx.arc(x, y, pointSize * 2.5, 0, TAU);
+            ctx.fill();
+
+            // Core point (smaller, brighter)
+            ctx.fillStyle = hslStr(hue, sat, light, alpha);
+            ctx.beginPath();
+            ctx.arc(x, y, pointSize, 0, TAU);
+            ctx.fill();
+          }
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+
+        // ── Preset label (fade out) ──
+        if (presetLabelAlpha > 0.01) {
+          presetLabelAlpha -= dt * 0.4;
+          ctx.save();
+          ctx.globalAlpha = clamp(presetLabelAlpha, 0, 1);
+          ctx.font = 'bold 28px monospace';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.fillText(presetLabel, cx, h * 0.15);
+          ctx.restore();
+        }
+
+        // ── Instructions overlay ──
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#aabbcc';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          'click to change \u00b7 1-6 presets \u00b7 space auto-cycle \u00b7 P panel \u00b7 E toggle',
+          cx, h - 18
+        );
+        ctx.restore();
+      }
+
+      // ─── App ─────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#06060f',
+          sourceOpacity: 0,
+          speed: 1,
+          colorCycle: true,
+          colorCycleRate: 0.2,
+        },
+        layers: [
+          {
+            fontSize: 16,
+            charset: 'blocks',
+            colorScheme: 'rainbow',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 6,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.85,
+          },
+          {
+            fontSize: 4,
+            charset: 'braille',
+            colorScheme: 'acid',
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawLissajous(ctx, dt, w, h);
+        },
+        onResize(ctx, w, h) {
+          // Reset canvas on resize to avoid stale trails
+          ctx.fillStyle = '#06060f';
+          ctx.fillRect(0, 0, w, h);
+        },
+        onKeydown(e) {
+          const key = e.key;
+          if (key >= '1' && key <= '6') {
+            switchPreset(parseInt(key) - 1);
+          } else if (key === ' ') {
+            e.preventDefault();
+            autoCycle = !autoCycle;
+            cycleTimer = 0;
+            presetLabel = autoCycle ? 'Auto-cycle ON' : 'Auto-cycle OFF';
+            presetLabelAlpha = 1;
+          }
+        },
+        showPanel: true,
+      });
+
+      // ─── Mouse / Touch Events ───────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX / window.innerWidth;
+      });
+
+      window.addEventListener('click', () => {
+        nextPreset();
+      });
+
+      window.addEventListener('touchstart', (e) => {
+        mouseX = e.touches[0].clientX / window.innerWidth;
+        nextPreset();
+      });
+
+      window.addEventListener('touchmove', (e) => {
+        mouseX = e.touches[0].clientX / window.innerWidth;
+      });
+    </script>
+  </body>
+</html>

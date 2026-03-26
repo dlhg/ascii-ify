@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Aquarium</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep, dist } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────────
+      const TWO_PI = Math.PI * 2;
+      const SAND_Y_FRAC = 0.88;      // sand floor starts at 88% height
+      const SURFACE_Y_FRAC = 0.05;   // water surface band top 5%
+
+      // ─── Mouse State ───────────────────────────────────────
+      let mouseX = -9999;
+      let mouseY = -9999;
+      let mouseActive = false;
+
+      // ─── Entity Arrays ─────────────────────────────────────
+      let fish = [];
+      let seaweeds = [];
+      let bubbles = [];
+      let lightRays = [];
+      let pebbles = [];
+
+      // ─── Fish Types ────────────────────────────────────────
+      const FISH_TYPES = {
+        small:   { minSize: 4,  maxSize: 8,  speed: 60,  speedVar: 30,  bobAmp: 3,  bobFreq: 2.5, tailLen: 0.6, satRange: [50, 80], lightRange: [50, 70] },
+        medium:  { minSize: 10, maxSize: 18, speed: 35,  speedVar: 20,  bobAmp: 5,  bobFreq: 1.5, tailLen: 0.7, satRange: [60, 90], lightRange: [45, 65] },
+        large:   { minSize: 20, maxSize: 30, speed: 15,  speedVar: 10,  bobAmp: 8,  bobFreq: 0.8, tailLen: 0.8, satRange: [40, 70], lightRange: [40, 60] },
+        jelly:   { minSize: 12, maxSize: 20, speed: 10,  speedVar: 8,   bobAmp: 12, bobFreq: 0.5, tailLen: 0,   satRange: [30, 60], lightRange: [55, 75] },
+      };
+
+      // ─── Fish Schooling (small fish) ───────────────────────
+      const SCHOOL_RADIUS = 120;
+      const SCHOOL_ALIGNMENT = 0.03;
+      const SCHOOL_COHESION = 0.002;
+
+      // ─── Helper: random range ──────────────────────────────
+      function rand(lo, hi) {
+        return lo + Math.random() * (hi - lo);
+      }
+
+      // ─── Initialize / Regenerate Scene ─────────────────────
+      function initScene(w, h) {
+        const sandY = h * SAND_Y_FRAC;
+        const waterTop = h * SURFACE_Y_FRAC;
+        const swimZone = { top: waterTop + 20, bottom: sandY - 20 };
+
+        // --- Fish ---
+        fish.length = 0;
+        const area = w * h;
+        const scale = Math.sqrt(area) / 800;
+        const counts = {
+          large:  Math.round(clamp(5 * scale, 3, 10)),
+          medium: Math.round(clamp(12 * scale, 6, 20)),
+          small:  Math.round(clamp(25 * scale, 12, 40)),
+          jelly:  Math.round(clamp(3 * scale, 2, 6)),
+        };
+
+        for (const [type, count] of Object.entries(counts)) {
+          const cfg = FISH_TYPES[type];
+          for (let i = 0; i < count; i++) {
+            const size = rand(cfg.minSize, cfg.maxSize);
+            const dir = Math.random() < 0.5 ? 1 : -1;
+            const speed = (cfg.speed + rand(-cfg.speedVar, cfg.speedVar)) * dir;
+            fish.push({
+              x: rand(0, w),
+              y: rand(swimZone.top, swimZone.bottom),
+              vx: speed,
+              vy: 0,
+              type,
+              size,
+              hue: rand(0, 360),
+              sat: rand(cfg.satRange[0], cfg.satRange[1]),
+              light: rand(cfg.lightRange[0], cfg.lightRange[1]),
+              tailPhase: rand(0, TWO_PI),
+              bobPhase: rand(0, TWO_PI),
+              bobAmplitude: cfg.bobAmp * rand(0.7, 1.3),
+              bobFreq: cfg.bobFreq * rand(0.8, 1.2),
+              flipTimer: 0,
+              pulsePhase: rand(0, TWO_PI), // for jellyfish
+              swayPhase: rand(0, TWO_PI),  // for jellyfish tentacles
+            });
+          }
+        }
+
+        // --- Seaweed ---
+        seaweeds.length = 0;
+        const numWeeds = Math.round(clamp(10 * scale, 6, 18));
+        for (let i = 0; i < numWeeds; i++) {
+          const segments = 8 + Math.floor(Math.random() * 8);
+          const height = h * rand(0.15, 0.40);
+          seaweeds.push({
+            x: rand(20, w - 20),
+            baseY: sandY + rand(-5, 5),
+            segments,
+            segmentLen: height / segments,
+            hue: rand(90, 150),
+            swayPhase: rand(0, TWO_PI),
+            swaySpeed: rand(0.6, 1.4),
+            swayAmount: rand(8, 18),
+          });
+        }
+
+        // --- Light Rays ---
+        lightRays.length = 0;
+        const numRays = Math.round(clamp(4 * scale, 3, 7));
+        for (let i = 0; i < numRays; i++) {
+          lightRays.push({
+            x: rand(w * 0.05, w * 0.95),
+            topWidth: rand(20, 60),
+            bottomWidth: rand(60, 180),
+            swayPhase: rand(0, TWO_PI),
+            swaySpeed: rand(0.2, 0.5),
+            swayAmount: rand(30, 80),
+            opacity: rand(0.03, 0.07),
+          });
+        }
+
+        // --- Pebbles ---
+        pebbles.length = 0;
+        const numPebbles = Math.round(clamp(40 * scale, 20, 80));
+        for (let i = 0; i < numPebbles; i++) {
+          pebbles.push({
+            x: rand(0, w),
+            y: sandY + rand(2, h - sandY - 5),
+            radius: rand(1.5, 4),
+            hue: rand(25, 50),
+            light: rand(20, 40),
+          });
+        }
+
+        // --- Bubbles: start with a few ---
+        bubbles.length = 0;
+        for (let i = 0; i < 5; i++) {
+          spawnBubble(w, h, rand(0, w), rand(sandY * 0.3, sandY));
+        }
+      }
+
+      // ─── Bubble Spawning ───────────────────────────────────
+      function spawnBubble(w, h, x, y) {
+        bubbles.push({
+          x,
+          y,
+          radius: rand(1.5, 6),
+          wobblePhase: rand(0, TWO_PI),
+          wobbleFreq: rand(1.5, 3),
+          wobbleAmp: rand(2, 6),
+          speed: rand(25, 55),
+          opacity: rand(0.3, 0.7),
+          baseX: x,
+        });
+      }
+
+      function spawnBubbleBurst(w, h, bx, by, count) {
+        for (let i = 0; i < count; i++) {
+          spawnBubble(w, h, bx + rand(-20, 20), by + rand(-15, 15));
+        }
+      }
+
+      // ─── Update Fish ───────────────────────────────────────
+      function updateFish(dt, w, h) {
+        const sandY = h * SAND_Y_FRAC;
+        const waterTop = h * SURFACE_Y_FRAC;
+
+        for (const f of fish) {
+          const cfg = FISH_TYPES[f.type];
+
+          // Schooling for small fish
+          if (f.type === 'small') {
+            let avgVx = 0;
+            let avgX = 0;
+            let avgY = 0;
+            let neighbors = 0;
+
+            for (const other of fish) {
+              if (other === f || other.type !== 'small') continue;
+              const d = dist(f.x, f.y, other.x, other.y);
+              if (d < SCHOOL_RADIUS && d > 0) {
+                avgVx += other.vx;
+                avgX += other.x;
+                avgY += other.y;
+                neighbors++;
+              }
+            }
+
+            if (neighbors > 0) {
+              avgVx /= neighbors;
+              avgX /= neighbors;
+              avgY /= neighbors;
+              // Alignment: steer toward average direction
+              f.vx += (avgVx - f.vx) * SCHOOL_ALIGNMENT;
+              // Cohesion: steer toward average position
+              f.vx += (avgX - f.x) * SCHOOL_COHESION;
+              f.vy += (avgY - f.y) * SCHOOL_COHESION;
+            }
+          }
+
+          // Jellyfish pulse movement
+          if (f.type === 'jelly') {
+            f.pulsePhase += dt * 2.5;
+            const pulse = Math.sin(f.pulsePhase);
+            // Upward thrust on contraction
+            if (pulse > 0.7) {
+              f.vy -= 15 * dt;
+            }
+            // Gentle drift down otherwise
+            f.vy += 8 * dt;
+            f.vy = clamp(f.vy, -20, 15);
+          }
+
+          // Mouse repulsion
+          if (mouseActive) {
+            const d = dist(f.x, f.y, mouseX, mouseY);
+            const repelRadius = f.type === 'jelly' ? 100 : 150;
+            if (d < repelRadius && d > 1) {
+              const strength = (1 - d / repelRadius) * 80;
+              f.vx += ((f.x - mouseX) / d) * strength * dt;
+              f.vy += ((f.y - mouseY) / d) * strength * dt;
+            }
+          }
+
+          // Edge turning (horizontal)
+          const margin = f.size * 3;
+          if (f.x < margin) {
+            f.vx += 60 * dt;
+          } else if (f.x > w - margin) {
+            f.vx -= 60 * dt;
+          }
+
+          // Vertical bounds
+          if (f.y < waterTop + 30) {
+            f.vy += 40 * dt;
+          } else if (f.y > sandY - 30) {
+            f.vy -= 40 * dt;
+          }
+
+          // Dampen vertical velocity
+          f.vy *= (1 - 2.0 * dt);
+
+          // Clamp speed
+          const maxSpeed = cfg.speed + cfg.speedVar;
+          f.vx = clamp(f.vx, -maxSpeed, maxSpeed);
+          f.vy = clamp(f.vy, -30, 30);
+
+          // Move
+          f.x += f.vx * dt;
+          f.y += f.vy * dt + Math.sin(f.bobPhase) * f.bobAmplitude * dt;
+
+          // Update phases
+          f.tailPhase += dt * (6 + Math.abs(f.vx) * 0.1);
+          f.bobPhase += dt * f.bobFreq * TWO_PI;
+
+          // Keep within bounds
+          f.x = clamp(f.x, -f.size, w + f.size);
+          f.y = clamp(f.y, waterTop + 10, sandY - 10);
+
+          // Occasional bubble from fish
+          if (Math.random() < 0.002) {
+            const dir = f.vx > 0 ? 1 : -1;
+            spawnBubble(w, h, f.x + dir * f.size * 0.5, f.y - f.size * 0.2);
+          }
+        }
+      }
+
+      // ─── Update Bubbles ────────────────────────────────────
+      let bubbleTimer = 0;
+
+      function updateBubbles(dt, w, h) {
+        const surfaceY = h * SURFACE_Y_FRAC;
+        const sandY = h * SAND_Y_FRAC;
+
+        // Spawn new bubbles from bottom
+        bubbleTimer += dt;
+        const spawnInterval = rand(0.25, 0.5);
+        if (bubbleTimer > spawnInterval) {
+          bubbleTimer = 0;
+          const count = Math.random() < 0.3 ? 2 : 1;
+          for (let i = 0; i < count; i++) {
+            spawnBubble(w, h, rand(30, w - 30), sandY + rand(-10, 0));
+          }
+        }
+
+        // Update existing
+        let len = bubbles.length;
+        for (let i = len - 1; i >= 0; i--) {
+          const b = bubbles[i];
+          b.wobblePhase += dt * b.wobbleFreq * TWO_PI;
+          b.x = b.baseX + Math.sin(b.wobblePhase) * b.wobbleAmp;
+          b.y -= b.speed * dt;
+
+          // Fade as they approach surface
+          if (b.y < surfaceY + 20) {
+            b.opacity -= dt * 2;
+          }
+
+          // Remove at surface or if faded
+          if (b.y < surfaceY || b.opacity <= 0) {
+            bubbles[i] = bubbles[len - 1];
+            len--;
+          }
+        }
+        bubbles.length = len;
+      }
+
+      // ─── Draw Light Rays ───────────────────────────────────
+      function drawLightRays(ctx, w, h, time) {
+        const surfaceY = h * SURFACE_Y_FRAC;
+        const sandY = h * SAND_Y_FRAC;
+
+        ctx.save();
+        for (const ray of lightRays) {
+          const sway = Math.sin(time * ray.swaySpeed + ray.swayPhase) * ray.swayAmount;
+          const topX = ray.x + sway * 0.3;
+          const botX = ray.x + sway;
+          const topW = ray.topWidth;
+          const botW = ray.bottomWidth;
+
+          // Animated opacity
+          const opacityPulse = 0.7 + 0.3 * Math.sin(time * 0.4 + ray.swayPhase * 2);
+          const alpha = ray.opacity * opacityPulse;
+
+          // Draw as gradient trapezoid
+          const grad = ctx.createLinearGradient(0, surfaceY, 0, sandY);
+          grad.addColorStop(0, `rgba(180, 220, 255, ${alpha})`);
+          grad.addColorStop(0.3, `rgba(140, 200, 255, ${alpha * 0.6})`);
+          grad.addColorStop(0.7, `rgba(100, 180, 240, ${alpha * 0.2})`);
+          grad.addColorStop(1, `rgba(60, 140, 200, 0)`);
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(topX - topW / 2, surfaceY);
+          ctx.lineTo(topX + topW / 2, surfaceY);
+          ctx.lineTo(botX + botW / 2, sandY);
+          ctx.lineTo(botX - botW / 2, sandY);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // ─── Draw Water Background ─────────────────────────────
+      function drawWaterBackground(ctx, w, h, time) {
+        // Deep water gradient
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, '#0a2a3a');
+        grad.addColorStop(0.15, '#062038');
+        grad.addColorStop(0.5, '#041830');
+        grad.addColorStop(0.8, '#031228');
+        grad.addColorStop(1, '#020a1a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── Draw Water Surface ────────────────────────────────
+      function drawWaterSurface(ctx, w, h, time) {
+        const surfaceY = h * SURFACE_Y_FRAC;
+
+        // Darker band at top
+        const surfGrad = ctx.createLinearGradient(0, 0, 0, surfaceY + 15);
+        surfGrad.addColorStop(0, 'rgba(5, 15, 30, 0.8)');
+        surfGrad.addColorStop(0.5, 'rgba(10, 30, 60, 0.4)');
+        surfGrad.addColorStop(1, 'rgba(10, 30, 60, 0)');
+        ctx.fillStyle = surfGrad;
+        ctx.fillRect(0, 0, w, surfaceY + 15);
+
+        // Ripple highlights
+        ctx.save();
+        ctx.globalAlpha = 0.15;
+        ctx.strokeStyle = '#6ac0e0';
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 3; i++) {
+          const yOff = surfaceY - 5 + i * 5;
+          ctx.beginPath();
+          for (let x = 0; x <= w; x += 4) {
+            const y = yOff + Math.sin(x * 0.02 + time * 1.2 + i * 1.5) * 2
+                            + Math.sin(x * 0.035 + time * 0.8 - i * 0.7) * 1.5;
+            if (x === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ─── Draw Sand Floor ───────────────────────────────────
+      function drawSandFloor(ctx, w, h, time) {
+        const sandY = h * SAND_Y_FRAC;
+
+        // Wavy sand surface
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        for (let x = 0; x <= w; x += 3) {
+          const waveY = sandY
+            + Math.sin(x * 0.01 + time * 0.3) * 4
+            + Math.sin(x * 0.025 + time * 0.15) * 2;
+          if (x === 0) ctx.moveTo(x, waveY);
+          else ctx.lineTo(x, waveY);
+        }
+        ctx.lineTo(w, h);
+        ctx.lineTo(0, h);
+        ctx.closePath();
+
+        // Sand gradient
+        const sandGrad = ctx.createLinearGradient(0, sandY, 0, h);
+        sandGrad.addColorStop(0, '#5a4a2a');
+        sandGrad.addColorStop(0.3, '#4a3c22');
+        sandGrad.addColorStop(1, '#3a2e1a');
+        ctx.fillStyle = sandGrad;
+        ctx.fill();
+
+        // Caustic light patches on sand
+        ctx.save();
+        ctx.globalAlpha = 0.06;
+        for (let i = 0; i < 8; i++) {
+          const cx = (w * 0.1 + i * w * 0.12 + Math.sin(time * 0.25 + i * 1.7) * 40) % w;
+          const cy = sandY + 10 + Math.sin(time * 0.3 + i * 2.3) * 5;
+          const r = 20 + Math.sin(time * 0.4 + i) * 8;
+          const causticGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+          causticGrad.addColorStop(0, 'rgba(100, 200, 255, 1)');
+          causticGrad.addColorStop(1, 'rgba(100, 200, 255, 0)');
+          ctx.fillStyle = causticGrad;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, TWO_PI);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        // Pebbles
+        for (const p of pebbles) {
+          ctx.fillStyle = `hsl(${p.hue}, 20%, ${p.light}%)`;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, p.radius * 1.3, p.radius, 0, 0, TWO_PI);
+          ctx.fill();
+        }
+      }
+
+      // ─── Draw Seaweed ──────────────────────────────────────
+      function drawSeaweed(ctx, w, h, time) {
+        for (const sw of seaweeds) {
+          ctx.save();
+          ctx.lineCap = 'round';
+
+          let px = sw.x;
+          let py = sw.baseY;
+
+          for (let s = 0; s < sw.segments; s++) {
+            const t = s / sw.segments;  // 0 at root, 1 at tip
+            const sway = Math.sin(time * sw.swaySpeed + sw.swayPhase + s * 0.5) * sw.swayAmount * t * t;
+
+            const nx = px + sway * (sw.segmentLen / sw.segments);
+            const ny = py - sw.segmentLen;
+
+            // Color: dark green at root, bright green at tip
+            const hue = sw.hue;
+            const sat = lerp(40, 70, t);
+            const light = lerp(15, 45, t);
+            const thickness = lerp(5, 1.5, t);
+
+            ctx.strokeStyle = `hsl(${hue}, ${sat}%, ${light}%)`;
+            ctx.lineWidth = thickness;
+
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(nx + sway, ny);
+            ctx.stroke();
+
+            px = nx + sway;
+            py = ny;
+          }
+
+          ctx.restore();
+        }
+      }
+
+      // ─── Draw Fish ─────────────────────────────────────────
+      function drawFish(ctx, w, h, time) {
+        for (const f of fish) {
+          ctx.save();
+          ctx.translate(f.x, f.y);
+
+          const facingRight = f.vx > 0;
+          if (!facingRight) ctx.scale(-1, 1);
+
+          if (f.type === 'jelly') {
+            drawJellyfish(ctx, f, time);
+          } else {
+            drawNormalFish(ctx, f, time);
+          }
+
+          ctx.restore();
+        }
+      }
+
+      function drawNormalFish(ctx, f, time) {
+        const s = f.size;
+        const tailSwing = Math.sin(f.tailPhase) * 0.4;
+
+        // Tail
+        const tailLen = s * FISH_TYPES[f.type].tailLen;
+        ctx.fillStyle = `hsla(${f.hue}, ${f.sat}%, ${f.light - 10}%, 0.85)`;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.4, 0);
+        ctx.lineTo(-s * 0.4 - tailLen, -s * 0.35 + tailSwing * s * 0.3);
+        ctx.lineTo(-s * 0.4 - tailLen, s * 0.35 + tailSwing * s * 0.3);
+        ctx.closePath();
+        ctx.fill();
+
+        // Body (ellipse)
+        ctx.fillStyle = `hsl(${f.hue}, ${f.sat}%, ${f.light}%)`;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, s * 0.5, s * 0.3, 0, 0, TWO_PI);
+        ctx.fill();
+
+        // Dorsal stripe for medium/large
+        if (f.type !== 'small') {
+          ctx.fillStyle = `hsla(${(f.hue + 30) % 360}, ${f.sat + 10}%, ${f.light + 10}%, 0.6)`;
+          ctx.beginPath();
+          ctx.ellipse(0, -s * 0.05, s * 0.35, s * 0.1, 0, 0, TWO_PI);
+          ctx.fill();
+        }
+
+        // Eye
+        const eyeX = s * 0.2;
+        const eyeY = -s * 0.05;
+        const eyeR = Math.max(1, s * 0.07);
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(eyeX, eyeY, eyeR, 0, TWO_PI);
+        ctx.fill();
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(eyeX + eyeR * 0.3, eyeY, eyeR * 0.55, 0, TWO_PI);
+        ctx.fill();
+
+        // Fins for medium and large
+        if (f.type === 'medium' || f.type === 'large') {
+          const finAngle = Math.sin(f.tailPhase * 0.7) * 0.3;
+          ctx.fillStyle = `hsla(${f.hue}, ${f.sat - 10}%, ${f.light - 5}%, 0.5)`;
+          // Top fin
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.05, -s * 0.28);
+          ctx.lineTo(s * 0.05, -s * 0.28 - s * 0.2 + finAngle * s * 0.1);
+          ctx.lineTo(s * 0.15, -s * 0.28);
+          ctx.closePath();
+          ctx.fill();
+          // Bottom fin
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.05, s * 0.22);
+          ctx.lineTo(s * 0.0, s * 0.22 + s * 0.12 - finAngle * s * 0.05);
+          ctx.lineTo(s * 0.1, s * 0.22);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      function drawJellyfish(ctx, f, time) {
+        const s = f.size;
+        const pulse = Math.sin(f.pulsePhase);
+        const squish = 1 + pulse * 0.15; // vertical compression on pulse
+
+        // Bell (dome)
+        const bellW = s * 0.5 * (1 + pulse * 0.08);
+        const bellH = s * 0.35 / squish;
+
+        ctx.fillStyle = `hsla(${f.hue}, ${f.sat}%, ${f.light}%, 0.4)`;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, bellW, bellH, 0, Math.PI, TWO_PI);
+        ctx.fill();
+
+        // Inner glow
+        ctx.fillStyle = `hsla(${f.hue}, ${f.sat + 20}%, ${f.light + 15}%, 0.25)`;
+        ctx.beginPath();
+        ctx.ellipse(0, -bellH * 0.2, bellW * 0.6, bellH * 0.6, 0, Math.PI, TWO_PI);
+        ctx.fill();
+
+        // Tentacles
+        ctx.strokeStyle = `hsla(${f.hue}, ${f.sat}%, ${f.light + 10}%, 0.35)`;
+        ctx.lineWidth = 1;
+        const numTentacles = 5;
+        for (let i = 0; i < numTentacles; i++) {
+          const tx = (i / (numTentacles - 1) - 0.5) * bellW * 1.6;
+          ctx.beginPath();
+          ctx.moveTo(tx, 0);
+          const tentLen = s * (0.7 + 0.3 * Math.sin(i * 3.7));
+          const segments = 6;
+          let cx = tx;
+          let cy = 0;
+          for (let seg = 0; seg < segments; seg++) {
+            const segFrac = seg / segments;
+            const sway = Math.sin(time * 1.5 + f.swayPhase + seg * 0.8 + i * 0.6) * (4 + segFrac * 8);
+            cx += sway * 0.3;
+            cy += tentLen / segments;
+            ctx.lineTo(cx, cy);
+          }
+          ctx.stroke();
+        }
+
+        // Oral arms (thicker central tentacles)
+        ctx.strokeStyle = `hsla(${f.hue}, ${f.sat + 10}%, ${f.light}%, 0.3)`;
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 2; i++) {
+          const tx = (i - 0.5) * bellW * 0.5;
+          ctx.beginPath();
+          ctx.moveTo(tx, 2);
+          let cx = tx;
+          let cy = 2;
+          for (let seg = 0; seg < 8; seg++) {
+            const sway = Math.sin(time * 1.2 + f.pulsePhase + seg * 0.6 + i * 2) * 5;
+            cx += sway * 0.2;
+            cy += s * 0.08;
+            ctx.lineTo(cx, cy);
+          }
+          ctx.stroke();
+        }
+      }
+
+      // ─── Draw Bubbles ──────────────────────────────────────
+      function drawBubbles(ctx, w, h, time) {
+        for (const b of bubbles) {
+          ctx.save();
+          ctx.globalAlpha = b.opacity;
+
+          // Bubble outline
+          ctx.strokeStyle = 'rgba(150, 210, 255, 0.6)';
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.radius, 0, TWO_PI);
+          ctx.stroke();
+
+          // Inner fill
+          ctx.fillStyle = 'rgba(100, 190, 255, 0.08)';
+          ctx.fill();
+
+          // Highlight
+          ctx.fillStyle = 'rgba(220, 240, 255, 0.6)';
+          ctx.beginPath();
+          ctx.arc(
+            b.x - b.radius * 0.3,
+            b.y - b.radius * 0.3,
+            b.radius * 0.3,
+            0, TWO_PI
+          );
+          ctx.fill();
+
+          ctx.restore();
+        }
+      }
+
+      // ─── Draw Instructions ─────────────────────────────────
+      function drawInstructions(ctx, w, h) {
+        ctx.save();
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(120, 180, 220, 0.35)';
+        ctx.fillText('click for bubbles \u00B7 move to interact \u00B7 P panel \u00B7 E toggle', w / 2, h - 12);
+        ctx.restore();
+      }
+
+      // ─── Main Draw ─────────────────────────────────────────
+      function draw(ctx, { time, dt, width, height }) {
+        const t = time * 0.001;
+
+        drawWaterBackground(ctx, width, height, t);
+        drawLightRays(ctx, width, height, t);
+        drawSandFloor(ctx, width, height, t);
+        drawSeaweed(ctx, width, height, t);
+        updateFish(dt, width, height);
+        updateBubbles(dt, width, height);
+        drawFish(ctx, width, height, t);
+        drawBubbles(ctx, width, height, t);
+        drawWaterSurface(ctx, width, height, t);
+        drawInstructions(ctx, width, height);
+      }
+
+      // ─── App ────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#020810',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Deep water atmosphere
+          {
+            fontSize: 18,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            pattern: 'waves',
+            patternMix: 0.12,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Fish and detail
+          {
+            fontSize: 7,
+            charset: 'density',
+            colorScheme: 'rainbow',
+            blendMode: 'add',
+            opacity: 0.85,
+          },
+          // Fine texture (bubbles, light sparkle)
+          {
+            fontSize: 4,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) {
+          initScene(w, h);
+        },
+        showPanel: true,
+      });
+
+      // ─── Mouse / Touch Events ──────────────────────────────
+      function getPos(e) {
+        const rect = app.canvas.getBoundingClientRect();
+        const clientX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+        const clientY = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+        return {
+          x: (clientX - rect.left) * (app.canvas.width / rect.width),
+          y: (clientY - rect.top) * (app.canvas.height / rect.height),
+        };
+      }
+
+      window.addEventListener('mousemove', (e) => {
+        const pos = getPos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        mouseActive = true;
+      });
+
+      window.addEventListener('mouseleave', () => {
+        mouseActive = false;
+      });
+
+      window.addEventListener('click', (e) => {
+        const pos = getPos(e);
+        spawnBubbleBurst(app.canvas.width, app.canvas.height, pos.x, pos.y, 12 + Math.floor(Math.random() * 8));
+      });
+
+      window.addEventListener('touchstart', (e) => {
+        const pos = getPos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        mouseActive = true;
+        spawnBubbleBurst(app.canvas.width, app.canvas.height, pos.x, pos.y, 12 + Math.floor(Math.random() * 8));
+      });
+
+      window.addEventListener('touchmove', (e) => {
+        const pos = getPos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+      });
+
+      window.addEventListener('touchend', () => {
+        mouseActive = false;
+      });
+    </script>
+  </body>
+</html>
