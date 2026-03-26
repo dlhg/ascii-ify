@@ -150,13 +150,18 @@ export const PANEL_CSS = `
   gap: 6px;
 }
 
-.copy-btn {
+.action-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.action-row .ctrl-btn {
+  flex: 1;
   font: 600 9px/1 var(--ui-font);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 8px 12px;
-  margin-top: 10px;
-  width: 100%;
   background: var(--bg-raised);
   color: var(--text-3);
   border: 1px solid var(--border-2);
@@ -165,7 +170,7 @@ export const PANEL_CSS = `
   transition: all 0.15s;
 }
 
-.copy-btn:hover {
+.action-row .ctrl-btn:hover {
   color: var(--text-1);
   border-color: var(--border-3);
   background: var(--bg-track);

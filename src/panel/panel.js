@@ -253,11 +253,17 @@ export class ControlPanel {
       format: (v) => v.toFixed(1) + '/s',
     }), body);
 
-    // Copy button
-    const copyBtn = h('button', 'ctrl-btn copy-btn', 'Copy All Values');
+    // Action buttons
+    const actionRow = h('div', 'action-row');
+    const randomBtn = h('button', 'ctrl-btn randomize-btn', 'Randomize');
+    randomBtn.title = 'Randomize all parameters';
+    randomBtn.addEventListener('click', () => this._randomize());
+    actionRow.appendChild(randomBtn);
+    const copyBtn = h('button', 'ctrl-btn copy-btn', 'Copy');
     copyBtn.title = 'Copy all values as JSON';
     copyBtn.addEventListener('click', () => this._copySnapshot());
-    body.appendChild(copyBtn);
+    actionRow.appendChild(copyBtn);
+    body.appendChild(actionRow);
 
     section.appendChild(body);
     this._asciiSection = section;
@@ -472,6 +478,44 @@ export class ControlPanel {
     this._controls.push(ctrl);
     parent.appendChild(ctrl.el);
     return ctrl;
+  }
+
+  // ─── Randomize ────────────────────────────────────
+
+  _randomize() {
+    const ascii = this._ascii;
+    const r = PARAM_RANGES;
+    const rand = (min, max, step) => {
+      const steps = Math.round((max - min) / step);
+      return min + Math.round(Math.random() * steps) * step;
+    };
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+    ascii.set('fontSize', rand(r.fontSize.min, r.fontSize.max, r.fontSize.step));
+    ascii.set('density', rand(r.density.min, r.density.max, r.density.step));
+    ascii.set('charset', pick(CHARSET_NAMES));
+    ascii.set('colorScheme', pick(SCHEME_NAMES));
+    ascii.set('pattern', Math.random() < 0.3 ? null : pick(PATTERN_NAMES.slice(1)));
+    ascii.set('patternMix', rand(r.patternMix.min, r.patternMix.max, r.patternMix.step));
+    ascii.set('fade', rand(r.fade.min, r.fade.max, r.fade.step));
+    ascii.set('speed', rand(r.speed.min, r.speed.max, r.speed.step));
+    ascii.set('sourceOpacity', rand(r.sourceOpacity.min, r.sourceOpacity.max, r.sourceOpacity.step));
+    ascii.set('colorCycle', Math.random() < 0.3);
+    ascii.set('colorCycleRate', rand(r.colorCycleRate.min, r.colorCycleRate.max, r.colorCycleRate.step));
+
+    // Randomize layers too
+    for (const layer of ascii._layers) {
+      layer.set('fontSize', rand(r.fontSize.min, r.fontSize.max, r.fontSize.step));
+      layer.set('density', rand(r.density.min, r.density.max, r.density.step));
+      layer.set('charset', pick(CHARSET_NAMES));
+      layer.set('colorScheme', pick(SCHEME_NAMES));
+      layer.set('pattern', Math.random() < 0.3 ? null : pick(PATTERN_NAMES.slice(1)));
+      layer.set('patternMix', rand(r.patternMix.min, r.patternMix.max, r.patternMix.step));
+      layer.set('fade', rand(r.fade.min, r.fade.max, r.fade.step));
+      layer.set('opacity', rand(r.opacity.min, r.opacity.max, r.opacity.step));
+      layer.set('blendMode', pick(BLEND_MODES));
+    }
+
   }
 
   // ─── Snapshot ──────────────────────────────────────
