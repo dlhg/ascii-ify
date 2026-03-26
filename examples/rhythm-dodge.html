@@ -16,18 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resize();
-      window.addEventListener('resize', resize);
+      import { createApp } from './boilerplate.js';
 
       // ─── Constants ────────────────────────────────────────
       const PLAYER_RADIUS = 12;
@@ -49,27 +38,9 @@
       let comboPopScale = 0;
       let waves = [];
       let trail = [];
-      let lastTime = 0;
       let arenaRadius = 0;
 
       const keys = {};
-      document.addEventListener('keydown', e => {
-        keys[e.key] = true;
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-        if (e.key === ' ' || e.key.startsWith('Arrow')) {
-          e.preventDefault();
-        }
-        if (e.key === ' ') {
-          if (state === 'waiting') startGame();
-          else if (state === 'gameover') startGame();
-        }
-      });
-      document.addEventListener('keyup', e => { keys[e.key] = false; });
-      window.addEventListener('click', () => {
-        if (state === 'waiting') startGame();
-        else if (state === 'gameover') startGame();
-      });
 
       function startGame() {
         state = 'playing';
@@ -81,7 +52,7 @@
         shakeTimer = 0;
         hitFlash = 0;
         comboPopScale = 0;
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
         playerX = w / 2;
         playerY = h / 2;
         trail = [];
@@ -89,7 +60,7 @@
 
       // ─── Wave Spawning ────────────────────────────────────
       function spawnWave() {
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
         const maxR = Math.sqrt(w * w + h * h) / 2 + 60;
         // Gap shrinks with score: starts wide, narrows gradually
         const gapSize = Math.max(Math.PI / 6, Math.PI * 0.7 - score * 0.005);
@@ -108,7 +79,7 @@
 
       // ─── Collision Detection ──────────────────────────────
       function checkCollision(wave) {
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
         const cx = w / 2, cy = h / 2;
         const dx = playerX - cx, dy = playerY - cy;
         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -139,345 +110,351 @@
         return false;
       }
 
-      // ─── Draw ─────────────────────────────────────────────
-      function draw(time) {
-        const w = source.width, h = source.height;
-        const cx = w / 2, cy = h / 2;
-        const dt = Math.min((time - lastTime) / 1000, 0.05);
-        lastTime = time;
-        const t = time * 0.001;
-        arenaRadius = Math.min(w, h) * 0.4;
-
-        // ─── Update Beat ───
-        if (state === 'playing') {
-          beatTimer += dt;
-          if (beatTimer >= BEAT_INTERVAL) {
-            beatTimer -= BEAT_INTERVAL;
-            spawnWave();
+      // ─── createApp ────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Arena background — minimal charset, diamond pattern as visual heartbeat
+          {
+            fontSize: 14,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            pattern: 'diamond',
+            patternMix: 0.4,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Hazard waves — binary charset for digital feel
+          {
+            fontSize: 8,
+            charset: 'binary',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.7,
+          },
+          // Layer 3: Player and UI — density for smooth detail
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.85,
+          },
+        ],
+        onKeydown(e) {
+          keys[e.key] = true;
+          if (e.key === ' ' || e.key.startsWith('Arrow')) {
+            e.preventDefault();
           }
-        }
-        hitFlash = Math.max(0, hitFlash - dt * 4);
-        comboPopScale = Math.max(0, comboPopScale - dt * 5);
-        if (shakeTimer > 0) shakeTimer -= dt;
+          if (e.key === ' ') {
+            if (state === 'waiting') startGame();
+            else if (state === 'gameover') startGame();
+          }
+        },
+        draw(ctx, { time, dt, width, height }) {
+          const w = width, h = height;
+          const cx = w / 2, cy = h / 2;
+          const t = time * 0.001;
+          arenaRadius = Math.min(w, h) * 0.4;
 
-        // ─── Player Movement ───
-        if (state === 'playing' || state === 'waiting') {
-          let mx = 0, my = 0;
-          if (keys['w'] || keys['W'] || keys['ArrowUp']) my -= 1;
-          if (keys['s'] || keys['S'] || keys['ArrowDown']) my += 1;
-          if (keys['a'] || keys['A'] || keys['ArrowLeft']) mx -= 1;
-          if (keys['d'] || keys['D'] || keys['ArrowRight']) mx += 1;
-          if (mx !== 0 || my !== 0) {
-            const len = Math.sqrt(mx * mx + my * my);
-            mx /= len; my /= len;
-            playerX += mx * PLAYER_SPEED * dt;
-            playerY += my * PLAYER_SPEED * dt;
+          // ─── Update Beat ───
+          if (state === 'playing') {
+            beatTimer += dt;
+            if (beatTimer >= BEAT_INTERVAL) {
+              beatTimer -= BEAT_INTERVAL;
+              spawnWave();
+            }
+          }
+          hitFlash = Math.max(0, hitFlash - dt * 4);
+          comboPopScale = Math.max(0, comboPopScale - dt * 5);
+          if (shakeTimer > 0) shakeTimer -= dt;
+
+          // ─── Player Movement ───
+          if (state === 'playing' || state === 'waiting') {
+            let mx = 0, my = 0;
+            if (keys['w'] || keys['W'] || keys['ArrowUp']) my -= 1;
+            if (keys['s'] || keys['S'] || keys['ArrowDown']) my += 1;
+            if (keys['a'] || keys['A'] || keys['ArrowLeft']) mx -= 1;
+            if (keys['d'] || keys['D'] || keys['ArrowRight']) mx += 1;
+            if (mx !== 0 || my !== 0) {
+              const len = Math.sqrt(mx * mx + my * my);
+              mx /= len; my /= len;
+              playerX += mx * PLAYER_SPEED * dt;
+              playerY += my * PLAYER_SPEED * dt;
+            }
+
+            // Clamp to arena
+            const pdx = playerX - cx, pdy = playerY - cy;
+            const pDist = Math.sqrt(pdx * pdx + pdy * pdy);
+            if (pDist > arenaRadius - PLAYER_RADIUS) {
+              const clampDist = arenaRadius - PLAYER_RADIUS;
+              playerX = cx + (pdx / pDist) * clampDist;
+              playerY = cy + (pdy / pDist) * clampDist;
+            }
+
+            // Trail
+            trail.push({ x: playerX, y: playerY });
+            if (trail.length > TRAIL_LENGTH) trail.shift();
           }
 
-          // Clamp to arena
-          const pdx = playerX - cx, pdy = playerY - cy;
-          const pDist = Math.sqrt(pdx * pdx + pdy * pdy);
-          if (pDist > arenaRadius - PLAYER_RADIUS) {
-            const clampDist = arenaRadius - PLAYER_RADIUS;
-            playerX = cx + (pdx / pDist) * clampDist;
-            playerY = cy + (pdy / pDist) * clampDist;
-          }
+          // ─── Update Waves ───
+          if (state === 'playing') {
+            let len = waves.length;
+            for (let i = len - 1; i >= 0; i--) {
+              const wave = waves[i];
+              wave.radius -= wave.speed * dt;
 
-          // Trail
-          trail.push({ x: playerX, y: playerY });
-          if (trail.length > TRAIL_LENGTH) trail.shift();
-        }
+              // Check collision (only once per wave)
+              if (!wave.hit && checkCollision(wave)) {
+                wave.hit = true;
+                shakeTimer = SHAKE_DURATION;
+                hitFlash = 1;
+                combo = 0;
+                comboPopScale = 0;
+                lives--;
+                if (lives <= 0) {
+                  state = 'gameover';
+                  break;
+                }
+              }
 
-        // ─── Update Waves ───
-        if (state === 'playing') {
-          for (let i = waves.length - 1; i >= 0; i--) {
-            const wave = waves[i];
-            wave.radius -= wave.speed * dt;
+              // Wave passed center — score if dodged successfully
+              if (!wave.scored && !wave.hit && wave.radius < PLAYER_RADIUS + 5) {
+                wave.scored = true;
+                score++;
+                combo++;
+                if (combo > bestCombo) bestCombo = combo;
+                if (combo > 1) comboPopScale = 1;
+              }
 
-            // Check collision (only once per wave)
-            if (!wave.hit && checkCollision(wave)) {
-              wave.hit = true;
-              shakeTimer = SHAKE_DURATION;
-              hitFlash = 1;
-              combo = 0;
-              comboPopScale = 0;
-              lives--;
-              if (lives <= 0) {
-                state = 'gameover';
-                break;
+              // Remove expired waves
+              if (wave.radius < -20) {
+                waves[i] = waves[len - 1];
+                len--;
               }
             }
-
-            // Wave passed center — score if dodged successfully
-            if (!wave.scored && !wave.hit && wave.radius < PLAYER_RADIUS + 5) {
-              wave.scored = true;
-              score++;
-              combo++;
-              if (combo > bestCombo) bestCombo = combo;
-              if (combo > 1) comboPopScale = 1;
-            }
-
-            // Remove expired waves
-            if (wave.radius < -20) {
-              waves.splice(i, 1);
-            }
+            waves.length = len;
           }
-        }
 
-        // ─── Screen Shake Offset ───
-        let shakeX = 0, shakeY = 0;
-        if (shakeTimer > 0) {
-          shakeX = (Math.random() - 0.5) * SHAKE_INTENSITY * 2;
-          shakeY = (Math.random() - 0.5) * SHAKE_INTENSITY * 2;
-        }
+          // ─── Screen Shake Offset ───
+          let shakeX = 0, shakeY = 0;
+          if (shakeTimer > 0) {
+            shakeX = (Math.random() - 0.5) * SHAKE_INTENSITY * 2;
+            shakeY = (Math.random() - 0.5) * SHAKE_INTENSITY * 2;
+          }
 
-        // ─── Render ─────────────────────────────────────────
-        ctx.save();
-        ctx.translate(shakeX, shakeY);
+          // ─── Render ─────────────────────────────────────────
+          ctx.save();
+          ctx.translate(shakeX, shakeY);
 
-        // Background
-        ctx.fillStyle = 'rgb(8, 8, 16)';
-        ctx.fillRect(-10, -10, w + 20, h + 20);
+          // Background
+          ctx.fillStyle = 'rgb(8, 8, 16)';
+          ctx.fillRect(-10, -10, w + 20, h + 20);
 
-        // Arena circle (subtle border)
-        ctx.beginPath();
-        ctx.arc(cx, cy, arenaRadius, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(60, 80, 120, 0.2)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Arena inner glow on hit only
-        if (hitFlash > 0) {
-          const aGrad = ctx.createRadialGradient(cx, cy, arenaRadius * 0.7, cx, cy, arenaRadius);
-          aGrad.addColorStop(0, 'rgba(255, 60, 60, 0)');
-          aGrad.addColorStop(1, `rgba(255, 40, 40, ${hitFlash * 0.25})`);
-          ctx.fillStyle = aGrad;
+          // Arena circle (subtle border)
           ctx.beginPath();
           ctx.arc(cx, cy, arenaRadius, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // ─── Draw Waves ───
-        for (const wave of waves) {
-          const innerR = Math.max(0, wave.radius - WAVE_THICKNESS);
-          const outerR = wave.radius;
-          if (outerR < 0) continue;
-
-          ctx.save();
-          ctx.translate(cx, cy);
-
-          // Draw ring with gap
-          const gapStart = wave.gapAngle - wave.gapSize / 2;
-          const gapEnd = wave.gapAngle + wave.gapSize / 2;
-
-          // Calculate opacity based on distance (fade in at edges, fade out near center)
-          const maxR = Math.sqrt(w * w + h * h) / 2;
-          let alpha = 1;
-          if (outerR > maxR * 0.8) alpha = (maxR - outerR) / (maxR * 0.2);
-          if (outerR < 60) alpha = outerR / 60;
-          alpha = Math.max(0, Math.min(1, alpha));
-
-          // Draw the ring arc (the solid part, excluding the gap)
-          ctx.beginPath();
-          ctx.arc(0, 0, outerR, gapEnd, gapStart + Math.PI * 2);
-          ctx.arc(0, 0, innerR, gapStart + Math.PI * 2, gapEnd, true);
-          ctx.closePath();
-
-          // Gradient from orange at outer to red at inner
-          const grad = ctx.createRadialGradient(0, 0, innerR, 0, 0, outerR);
-          grad.addColorStop(0, `rgba(255, 60, 20, ${alpha * 0.9})`);
-          grad.addColorStop(0.5, `rgba(255, 120, 30, ${alpha * 0.8})`);
-          grad.addColorStop(1, `rgba(255, 80, 10, ${alpha * 0.6})`);
-          ctx.fillStyle = grad;
-          ctx.fill();
-
-          // Bright edge on outer ring
-          ctx.beginPath();
-          ctx.arc(0, 0, outerR, gapEnd, gapStart + Math.PI * 2);
-          ctx.strokeStyle = `rgba(255, 160, 60, ${alpha * 0.5})`;
+          ctx.strokeStyle = 'rgba(60, 80, 120, 0.2)';
           ctx.lineWidth = 2;
           ctx.stroke();
 
-          // Draw gap markers (small bright dots at gap edges)
-          for (const edgeAngle of [gapStart, gapEnd]) {
-            const ex = Math.cos(edgeAngle) * (innerR + WAVE_THICKNESS / 2);
-            const ey = Math.sin(edgeAngle) * (innerR + WAVE_THICKNESS / 2);
+          // Arena inner glow on hit only
+          if (hitFlash > 0) {
+            const aGrad = ctx.createRadialGradient(cx, cy, arenaRadius * 0.7, cx, cy, arenaRadius);
+            aGrad.addColorStop(0, 'rgba(255, 60, 60, 0)');
+            aGrad.addColorStop(1, `rgba(255, 40, 40, ${hitFlash * 0.25})`);
+            ctx.fillStyle = aGrad;
             ctx.beginPath();
-            ctx.arc(ex, ey, 4, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(100, 255, 100, ${alpha * 0.7})`;
+            ctx.arc(cx, cy, arenaRadius, 0, Math.PI * 2);
             ctx.fill();
           }
 
-          ctx.restore();
-        }
+          // ─── Draw Waves ───
+          for (const wave of waves) {
+            const innerR = Math.max(0, wave.radius - WAVE_THICKNESS);
+            const outerR = wave.radius;
+            if (outerR < 0) continue;
 
-        // ─── Draw Player Trail ───
-        for (let i = 0; i < trail.length - 1; i++) {
-          const p = trail[i];
-          const alpha = (i / trail.length) * 0.35;
-          const radius = PLAYER_RADIUS * (0.4 + 0.6 * (i / trail.length));
+            ctx.save();
+            ctx.translate(cx, cy);
+
+            // Draw ring with gap
+            const gapStart = wave.gapAngle - wave.gapSize / 2;
+            const gapEnd = wave.gapAngle + wave.gapSize / 2;
+
+            // Calculate opacity based on distance (fade in at edges, fade out near center)
+            const maxR = Math.sqrt(w * w + h * h) / 2;
+            let alpha = 1;
+            if (outerR > maxR * 0.8) alpha = (maxR - outerR) / (maxR * 0.2);
+            if (outerR < 60) alpha = outerR / 60;
+            alpha = Math.max(0, Math.min(1, alpha));
+
+            // Draw the ring arc (the solid part, excluding the gap)
+            ctx.beginPath();
+            ctx.arc(0, 0, outerR, gapEnd, gapStart + Math.PI * 2);
+            ctx.arc(0, 0, innerR, gapStart + Math.PI * 2, gapEnd, true);
+            ctx.closePath();
+
+            // Gradient from orange at outer to red at inner
+            const grad = ctx.createRadialGradient(0, 0, innerR, 0, 0, outerR);
+            grad.addColorStop(0, `rgba(255, 60, 20, ${alpha * 0.9})`);
+            grad.addColorStop(0.5, `rgba(255, 120, 30, ${alpha * 0.8})`);
+            grad.addColorStop(1, `rgba(255, 80, 10, ${alpha * 0.6})`);
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Bright edge on outer ring
+            ctx.beginPath();
+            ctx.arc(0, 0, outerR, gapEnd, gapStart + Math.PI * 2);
+            ctx.strokeStyle = `rgba(255, 160, 60, ${alpha * 0.5})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Draw gap markers (small bright dots at gap edges)
+            for (const edgeAngle of [gapStart, gapEnd]) {
+              const ex = Math.cos(edgeAngle) * (innerR + WAVE_THICKNESS / 2);
+              const ey = Math.sin(edgeAngle) * (innerR + WAVE_THICKNESS / 2);
+              ctx.beginPath();
+              ctx.arc(ex, ey, 4, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(100, 255, 100, ${alpha * 0.7})`;
+              ctx.fill();
+            }
+
+            ctx.restore();
+          }
+
+          // ─── Draw Player Trail ───
+          for (let i = 0; i < trail.length - 1; i++) {
+            const p = trail[i];
+            const alpha = (i / trail.length) * 0.35;
+            const radius = PLAYER_RADIUS * (0.4 + 0.6 * (i / trail.length));
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(100, 220, 255, ${alpha})`;
+            ctx.fill();
+          }
+
+          // ─── Draw Player ───
+          const playerAlpha = hitFlash > 0 ? (Math.sin(hitFlash * 30) > 0 ? 1 : 0.2) : 1;
+          const playerColor = hitFlash > 0 ? 'rgba(255, 60, 60,' : 'rgba(180, 240, 255,';
+
+          // Outer glow
+          const pGlow = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, PLAYER_RADIUS * 3);
+          pGlow.addColorStop(0, `${playerColor} ${playerAlpha * 0.3})`);
+          pGlow.addColorStop(1, `${playerColor} 0)`);
+          ctx.fillStyle = pGlow;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(100, 220, 255, ${alpha})`;
+          ctx.arc(playerX, playerY, PLAYER_RADIUS * 3, 0, Math.PI * 2);
           ctx.fill();
-        }
 
-        // ─── Draw Player ───
-        const playerAlpha = hitFlash > 0 ? (Math.sin(hitFlash * 30) > 0 ? 1 : 0.2) : 1;
-        const playerColor = hitFlash > 0 ? 'rgba(255, 60, 60,' : 'rgba(180, 240, 255,';
+          // Core
+          ctx.beginPath();
+          ctx.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
+          const coreGrad = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, PLAYER_RADIUS);
+          if (hitFlash > 0) {
+            coreGrad.addColorStop(0, `rgba(255, 255, 255, ${playerAlpha})`);
+            coreGrad.addColorStop(1, `rgba(255, 40, 40, ${playerAlpha})`);
+          } else {
+            coreGrad.addColorStop(0, `rgba(255, 255, 255, ${playerAlpha})`);
+            coreGrad.addColorStop(1, `rgba(100, 200, 255, ${playerAlpha})`);
+          }
+          ctx.fillStyle = coreGrad;
+          ctx.fill();
 
-        // Outer glow
-        const pGlow = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, PLAYER_RADIUS * 3);
-        pGlow.addColorStop(0, `${playerColor} ${playerAlpha * 0.3})`);
-        pGlow.addColorStop(1, `${playerColor} 0)`);
-        ctx.fillStyle = pGlow;
-        ctx.beginPath();
-        ctx.arc(playerX, playerY, PLAYER_RADIUS * 3, 0, Math.PI * 2);
-        ctx.fill();
+          // ─── HUD ───
+          ctx.textAlign = 'center';
 
-        // Core
-        ctx.beginPath();
-        ctx.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
-        const coreGrad = ctx.createRadialGradient(playerX, playerY, 0, playerX, playerY, PLAYER_RADIUS);
-        if (hitFlash > 0) {
-          coreGrad.addColorStop(0, `rgba(255, 255, 255, ${playerAlpha})`);
-          coreGrad.addColorStop(1, `rgba(255, 40, 40, ${playerAlpha})`);
-        } else {
-          coreGrad.addColorStop(0, `rgba(255, 255, 255, ${playerAlpha})`);
-          coreGrad.addColorStop(1, `rgba(100, 200, 255, ${playerAlpha})`);
-        }
-        ctx.fillStyle = coreGrad;
-        ctx.fill();
+          if (state === 'playing') {
+            // Score
+            ctx.font = `bold ${Math.min(w * 0.12, 108)}px monospace`;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.fillText(`${score}`, cx, 100);
 
-        // ─── HUD ───
-        ctx.textAlign = 'center';
+            // Lives — top-left, big hearts
+            ctx.save();
+            ctx.textAlign = 'left';
+            ctx.font = `${Math.min(w * 0.06, 56)}px monospace`;
+            ctx.fillStyle = `rgba(255, 100, 80, ${0.6 + hitFlash * 0.4})`;
+            const livesStr = '\u2665'.repeat(lives) + '\u2661'.repeat(MAX_LIVES - lives);
+            ctx.fillText(livesStr, 20, 60);
+            ctx.restore();
 
-        if (state === 'playing') {
-          // Score
-          ctx.font = `bold ${Math.min(w * 0.12, 108)}px monospace`;
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-          ctx.fillText(`${score}`, cx, 100);
+            // Combo
+            if (combo > 1) {
+              const popScale = 1 + comboPopScale * 0.4;
+              const comboSize = Math.min(w * 0.075, 66) * popScale;
+              ctx.font = `bold ${comboSize}px monospace`;
+              ctx.fillStyle = `rgba(255, 200, 50, ${0.5 + comboPopScale * 0.4})`;
+              ctx.fillText(`${combo}x combo`, cx, 170);
+            }
 
-          // Lives — top-left, big hearts
-          ctx.save();
-          ctx.textAlign = 'left';
-          ctx.font = `${Math.min(w * 0.06, 56)}px monospace`;
-          ctx.fillStyle = `rgba(255, 100, 80, ${0.6 + hitFlash * 0.4})`;
-          const livesStr = '\u2665'.repeat(lives) + '\u2661'.repeat(MAX_LIVES - lives);
-          ctx.fillText(livesStr, 20, 60);
-          ctx.restore();
-
-          // Combo
-          if (combo > 1) {
-            const popScale = 1 + comboPopScale * 0.4;
-            const comboSize = Math.min(w * 0.075, 66) * popScale;
-            ctx.font = `bold ${comboSize}px monospace`;
-            ctx.fillStyle = `rgba(255, 200, 50, ${0.5 + comboPopScale * 0.4})`;
-            ctx.fillText(`${combo}x combo`, cx, 170);
+            // Best combo
+            if (bestCombo > 1) {
+              ctx.font = '36px monospace';
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+              ctx.fillText(`best: ${bestCombo}x`, cx, h - 40);
+            }
           }
 
-          // Best combo
-          if (bestCombo > 1) {
+          if (state === 'waiting') {
+            // Title
+            const pulse = 0.5 + Math.sin(t * 2) * 0.2;
+            ctx.font = `bold ${Math.min(w * 0.18, 156)}px monospace`;
+            ctx.fillStyle = `rgba(180, 240, 255, ${pulse})`;
+            ctx.fillText('DODGE', cx, cy - 40);
+
+            ctx.font = `${Math.min(w * 0.06, 54)}px monospace`;
+            ctx.fillStyle = `rgba(255, 255, 255, ${pulse * 0.5})`;
+            ctx.fillText('click or space to start', cx, cy + 50);
+
+            // Instructions
             ctx.font = '36px monospace';
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-            ctx.fillText(`best: ${bestCombo}x`, cx, h - 40);
-          }
-        }
-
-        if (state === 'waiting') {
-          // Title
-          const pulse = 0.5 + Math.sin(t * 2) * 0.2;
-          ctx.font = `bold ${Math.min(w * 0.18, 156)}px monospace`;
-          ctx.fillStyle = `rgba(180, 240, 255, ${pulse})`;
-          ctx.fillText('DODGE', cx, cy - 40);
-
-          ctx.font = `${Math.min(w * 0.06, 54)}px monospace`;
-          ctx.fillStyle = `rgba(255, 255, 255, ${pulse * 0.5})`;
-          ctx.fillText('click or space to start', cx, cy + 50);
-
-          // Instructions
-          ctx.font = '36px monospace';
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-          ctx.fillText('arrows / WASD \u00b7 avoid waves \u00b7 P panel \u00b7 E toggle', cx, h - 50);
-        }
-
-        if (state === 'gameover') {
-          // Darken
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-          ctx.fillRect(-10, -10, w + 20, h + 20);
-
-          ctx.font = `bold ${Math.min(w * 0.18, 156)}px monospace`;
-          ctx.fillStyle = 'rgba(255, 80, 60, 0.8)';
-          ctx.fillText('GAME OVER', cx, cy - 60);
-
-          ctx.font = `${Math.min(w * 0.09, 84)}px monospace`;
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-          ctx.fillText(`score: ${score}`, cx, cy + 40);
-
-          if (bestCombo > 1) {
-            ctx.fillStyle = 'rgba(255, 200, 50, 0.5)';
-            ctx.fillText(`best combo: ${bestCombo}x`, cx, cy + 130);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+            ctx.fillText('arrows / WASD \u00b7 avoid waves \u00b7 P panel \u00b7 E toggle', cx, h - 50);
           }
 
-          const restartPulse = 0.3 + Math.sin(t * 3) * 0.15;
-          ctx.font = `${Math.min(w * 0.06, 54)}px monospace`;
-          ctx.fillStyle = `rgba(255, 255, 255, ${restartPulse})`;
-          ctx.fillText('click or space to restart', cx, cy + 200);
-        }
+          if (state === 'gameover') {
+            // Darken
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.fillRect(-10, -10, w + 20, h + 20);
 
-        ctx.restore();
-      }
+            ctx.font = `bold ${Math.min(w * 0.18, 156)}px monospace`;
+            ctx.fillStyle = 'rgba(255, 80, 60, 0.8)';
+            ctx.fillText('GAME OVER', cx, cy - 60);
 
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
+            ctx.font = `${Math.min(w * 0.09, 84)}px monospace`;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.fillText(`score: ${score}`, cx, cy + 40);
+
+            if (bestCombo > 1) {
+              ctx.fillStyle = 'rgba(255, 200, 50, 0.5)';
+              ctx.fillText(`best combo: ${bestCombo}x`, cx, cy + 130);
+            }
+
+            const restartPulse = 0.3 + Math.sin(t * 3) * 0.15;
+            ctx.font = `${Math.min(w * 0.06, 54)}px monospace`;
+            ctx.fillStyle = `rgba(255, 255, 255, ${restartPulse})`;
+            ctx.fillText('click or space to restart', cx, cy + 200);
+          }
+
+          ctx.restore();
+        },
       });
 
-      // Layer 1: Arena background — minimal charset, diamond pattern as visual heartbeat
-      ascii.addLayer({
-        source: source,
-        fontSize: 14,
-        charset: 'minimal',
-        colorScheme: 'mono',
-        pattern: 'diamond',
-        patternMix: 0.4,
-        blendMode: 'replace',
-        opacity: 1,
+      // ─── Additional Input ─────────────────────────────────
+      document.addEventListener('keyup', e => { keys[e.key] = false; });
+      window.addEventListener('click', () => {
+        if (state === 'waiting') startGame();
+        else if (state === 'gameover') startGame();
       });
 
-      // Layer 2: Hazard waves — binary charset for digital feel
-      ascii.addLayer({
-        source: source,
-        fontSize: 8,
-        charset: 'binary',
-        colorScheme: 'fire',
-        blendMode: 'add',
-        opacity: 0.7,
-      });
-
-      // Layer 3: Player and UI — density for smooth detail
-      ascii.addLayer({
-        source: source,
-        fontSize: 10,
-        charset: 'density',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.85,
-      });
-
-      // ─── Main Loop ────────────────────────────────────────
       // Center player on load
-      playerX = source.width / 2;
-      playerY = source.height / 2;
-
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
+      playerX = app.width / 2;
+      playerY = app.height / 2;
     </script>
   </body>
 </html>

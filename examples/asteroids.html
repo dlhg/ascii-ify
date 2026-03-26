@@ -16,17 +16,8 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resize();
-      window.addEventListener('resize', resize);
+      import { createApp } from './boilerplate.js';
+      import { dist, wrap } from './utils.js';
 
       // ─── Constants ─────────────────────────────────────
       const SHIP_SIZE = 48;
@@ -64,7 +55,7 @@
       const keys = {};
 
       function initGame() {
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
         ship = {
           x: w / 2, y: h / 2,
           vx: 0, vy: 0,
@@ -100,7 +91,6 @@
       }
 
       function spawnAsteroid(x, y, size) {
-        const w = source.width, h = source.height;
         const radius = ASTEROID_SIZES[size];
         const speed = size === 'large' ? 0.8 + Math.random() * 0.8 :
                       size === 'medium' ? 1.2 + Math.random() * 1.0 :
@@ -120,7 +110,7 @@
 
       function spawnWave() {
         wave++;
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
         const count = 3 + wave;
         for (let i = 0; i < count; i++) {
           let x, y;
@@ -150,31 +140,9 @@
         }
       }
 
-      // ─── Utility ───────────────────────────────────────
-      function dist(x1, y1, x2, y2) {
-        const dx = x1 - x2, dy = y1 - y2;
-        return Math.sqrt(dx * dx + dy * dy);
-      }
-
-      function wrap(obj, w, h) {
-        if (obj.x > w) obj.x -= w;
-        if (obj.x < 0) obj.x += w;
-        if (obj.y > h) obj.y -= h;
-        if (obj.y < 0) obj.y += h;
-      }
-
-      // ─── Input ─────────────────────────────────────────
-      document.addEventListener('keydown', e => {
-        keys[e.code] = true;
-        if (e.code === 'Space') e.preventDefault();
-      });
-      document.addEventListener('keyup', e => {
-        keys[e.code] = false;
-      });
-
       // ─── Update ────────────────────────────────────────
       function update() {
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
 
         // Game over restart
         if (gameOver) {
@@ -215,7 +183,8 @@
         }
 
         // Update thrust particles
-        for (let i = thrustParticles.length - 1; i >= 0; i--) {
+        let tpLen = thrustParticles.length;
+        for (let i = tpLen - 1; i >= 0; i--) {
           const p = thrustParticles[i];
           p.x += p.vx;
           p.y += p.vy;
@@ -223,8 +192,12 @@
           p.vy *= 0.96;
           p.size *= 0.97;
           p.life--;
-          if (p.life <= 0) thrustParticles.splice(i, 1);
+          if (p.life <= 0) {
+            thrustParticles[i] = thrustParticles[tpLen - 1];
+            tpLen--;
+          }
         }
+        thrustParticles.length = tpLen;
 
         // Ship drag
         ship.vx *= DRAG;
@@ -258,14 +231,19 @@
         }
 
         // Update bullets
-        for (let i = bullets.length - 1; i >= 0; i--) {
+        let bLen = bullets.length;
+        for (let i = bLen - 1; i >= 0; i--) {
           const b = bullets[i];
           b.x += b.vx;
           b.y += b.vy;
           b.life--;
           wrap(b, w, h);
-          if (b.life <= 0) bullets.splice(i, 1);
+          if (b.life <= 0) {
+            bullets[i] = bullets[bLen - 1];
+            bLen--;
+          }
         }
+        bullets.length = bLen;
 
         // Update asteroids
         for (const a of asteroids) {
@@ -326,15 +304,20 @@
         }
 
         // Update explosions
-        for (let i = explosions.length - 1; i >= 0; i--) {
+        let eLen = explosions.length;
+        for (let i = eLen - 1; i >= 0; i--) {
           const e = explosions[i];
           e.x += e.vx;
           e.y += e.vy;
           e.vx *= 0.97;
           e.vy *= 0.97;
           e.life--;
-          if (e.life <= 0) explosions.splice(i, 1);
+          if (e.life <= 0) {
+            explosions[i] = explosions[eLen - 1];
+            eLen--;
+          }
         }
+        explosions.length = eLen;
 
         // Wave management
         if (asteroids.length === 0 && !gameOver) {
@@ -346,54 +329,70 @@
         }
       }
 
-      // ─── Draw ──────────────────────────────────────────
-      function draw(time) {
-        const w = source.width, h = source.height;
-        const t = time * 0.001;
+      // ─── createApp ────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Space background — binary charset for data-rain feel
+          {
+            fontSize: 6,
+            charset: 'binary',
+            colorScheme: 'mono',
+            pattern: 'diamond',
+            patternMix: 0.3,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Ships, asteroids, bullets — main action layer
+          {
+            fontSize: 14,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.9,
+          },
+          // Layer 3: Thrust and explosions — subtle fire glow
+          {
+            fontSize: 10,
+            charset: 'braille',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.3,
+          },
+        ],
+        onKeydown(e) {
+          keys[e.code] = true;
+          if (e.code === 'Space') e.preventDefault();
+        },
+        draw(ctx, { time, dt, width, height }) {
+          const w = width, h = height;
+          const t = time * 0.001;
 
-        update();
+          update();
 
-        // Background
-        ctx.fillStyle = '#060610';
-        ctx.fillRect(0, 0, w, h);
+          // Background
+          ctx.fillStyle = '#060610';
+          ctx.fillRect(0, 0, w, h);
 
-        // Background stars
-        for (const s of bgStars) {
-          const twinkle = 0.5 + 0.5 * Math.sin(t * 1.5 + s.x * 100 + s.y * 77);
-          ctx.fillStyle = `rgba(200, 210, 240, ${s.b * twinkle})`;
-          ctx.beginPath();
-          ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Asteroids
-        ctx.strokeStyle = '#b0b0b8';
-        ctx.lineWidth = 1.5;
-        for (const a of asteroids) {
-          ctx.save();
-          ctx.translate(a.x, a.y);
-          ctx.rotate(a.rotAngle);
-          ctx.beginPath();
-          for (let i = 0; i < a.vertices.length; i++) {
-            const v = a.vertices[i];
-            const x = Math.cos(v.angle) * v.r;
-            const y = Math.sin(v.angle) * v.r;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
+          // Background stars
+          for (const s of bgStars) {
+            const twinkle = 0.5 + 0.5 * Math.sin(t * 1.5 + s.x * 100 + s.y * 77);
+            ctx.fillStyle = `rgba(200, 210, 240, ${s.b * twinkle})`;
+            ctx.beginPath();
+            ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+            ctx.fill();
           }
-          ctx.closePath();
-          ctx.stroke();
-          ctx.restore();
 
-          // Draw wrapped copies if near edge
-          const copies = [];
-          if (a.x - a.radius < 0) copies.push([w, 0]);
-          if (a.x + a.radius > w) copies.push([-w, 0]);
-          if (a.y - a.radius < 0) copies.push([0, h]);
-          if (a.y + a.radius > h) copies.push([0, -h]);
-          for (const [ox, oy] of copies) {
+          // Asteroids
+          ctx.strokeStyle = '#b0b0b8';
+          ctx.lineWidth = 1.5;
+          for (const a of asteroids) {
             ctx.save();
-            ctx.translate(a.x + ox, a.y + oy);
+            ctx.translate(a.x, a.y);
             ctx.rotate(a.rotAngle);
             ctx.beginPath();
             for (let i = 0; i < a.vertices.length; i++) {
@@ -406,250 +405,226 @@
             ctx.closePath();
             ctx.stroke();
             ctx.restore();
+
+            // Draw wrapped copies if near edge
+            const copies = [];
+            if (a.x - a.radius < 0) copies.push([w, 0]);
+            if (a.x + a.radius > w) copies.push([-w, 0]);
+            if (a.y - a.radius < 0) copies.push([0, h]);
+            if (a.y + a.radius > h) copies.push([0, -h]);
+            for (const [ox, oy] of copies) {
+              ctx.save();
+              ctx.translate(a.x + ox, a.y + oy);
+              ctx.rotate(a.rotAngle);
+              ctx.beginPath();
+              for (let i = 0; i < a.vertices.length; i++) {
+                const v = a.vertices[i];
+                const x = Math.cos(v.angle) * v.r;
+                const y = Math.sin(v.angle) * v.r;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              ctx.closePath();
+              ctx.stroke();
+              ctx.restore();
+            }
           }
-        }
 
-        // Bullets
-        for (const b of bullets) {
-          const alpha = Math.min(1, b.life / 20);
-          ctx.fillStyle = `rgba(180, 255, 255, ${alpha})`;
-          ctx.shadowColor = 'rgba(100, 220, 255, 0.6)';
-          ctx.shadowBlur = 6;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.shadowBlur = 0;
-        }
-
-        // Explosions
-        for (const e of explosions) {
-          const alpha = e.life / e.maxLife;
-          const r = 255;
-          const g = 100 + Math.floor(alpha * 155);
-          const b = Math.floor(alpha * 80);
-          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          const ex1 = e.x - Math.cos(e.angle) * e.len * 0.5;
-          const ey1 = e.y - Math.sin(e.angle) * e.len * 0.5;
-          const ex2 = e.x + Math.cos(e.angle) * e.len * 0.5;
-          const ey2 = e.y + Math.sin(e.angle) * e.len * 0.5;
-          ctx.moveTo(ex1, ey1);
-          ctx.lineTo(ex2, ey2);
-          ctx.stroke();
-        }
-
-        // Ship (skip if game over)
-        if (!gameOver) {
-          // Blink when invincible
-          const visible = !ship.invincible || Math.sin(ship.invincibleTimer * 0.4) > 0;
-          if (visible) {
-            const cos = Math.cos(ship.angle);
-            const sin = Math.sin(ship.angle);
-
-            // Ship triangle vertices
-            const nose = { x: ship.x + cos * SHIP_SIZE, y: ship.y + sin * SHIP_SIZE };
-            const leftWing = {
-              x: ship.x + Math.cos(ship.angle + 2.4) * SHIP_SIZE * 0.8,
-              y: ship.y + Math.sin(ship.angle + 2.4) * SHIP_SIZE * 0.8,
-            };
-            const rightWing = {
-              x: ship.x + Math.cos(ship.angle - 2.4) * SHIP_SIZE * 0.8,
-              y: ship.y + Math.sin(ship.angle - 2.4) * SHIP_SIZE * 0.8,
-            };
-
-            // Ship outline
-            ctx.strokeStyle = '#a0f0ff';
-            ctx.lineWidth = 3;
+          // Bullets
+          for (const b of bullets) {
+            const alpha = Math.min(1, b.life / 20);
+            ctx.fillStyle = `rgba(180, 255, 255, ${alpha})`;
+            ctx.shadowColor = 'rgba(100, 220, 255, 0.6)';
+            ctx.shadowBlur = 6;
             ctx.beginPath();
-            ctx.moveTo(nose.x, nose.y);
-            ctx.lineTo(leftWing.x, leftWing.y);
-            ctx.lineTo(rightWing.x, rightWing.y);
-            ctx.closePath();
+            ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+          }
+
+          // Explosions
+          for (const e of explosions) {
+            const alpha = e.life / e.maxLife;
+            const r = 255;
+            const g = 100 + Math.floor(alpha * 155);
+            const b = Math.floor(alpha * 80);
+            ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            const ex1 = e.x - Math.cos(e.angle) * e.len * 0.5;
+            const ey1 = e.y - Math.sin(e.angle) * e.len * 0.5;
+            const ex2 = e.x + Math.cos(e.angle) * e.len * 0.5;
+            const ey2 = e.y + Math.sin(e.angle) * e.len * 0.5;
+            ctx.moveTo(ex1, ey1);
+            ctx.lineTo(ex2, ey2);
             ctx.stroke();
+          }
 
-            // Thrust flame + rocket trail
-            if (ship.thrusting) {
-              const flicker = 0.6 + Math.random() * 0.4;
-              const flameLen = SHIP_SIZE * (0.7 + Math.random() * 0.5) * flicker;
-              const base1 = {
-                x: ship.x + Math.cos(ship.angle + 2.8) * SHIP_SIZE * 0.4,
-                y: ship.y + Math.sin(ship.angle + 2.8) * SHIP_SIZE * 0.4,
+          // Ship (skip if game over)
+          if (!gameOver) {
+            // Blink when invincible
+            const visible = !ship.invincible || Math.sin(ship.invincibleTimer * 0.4) > 0;
+            if (visible) {
+              const cos = Math.cos(ship.angle);
+              const sin = Math.sin(ship.angle);
+
+              // Ship triangle vertices
+              const nose = { x: ship.x + cos * SHIP_SIZE, y: ship.y + sin * SHIP_SIZE };
+              const leftWing = {
+                x: ship.x + Math.cos(ship.angle + 2.4) * SHIP_SIZE * 0.8,
+                y: ship.y + Math.sin(ship.angle + 2.4) * SHIP_SIZE * 0.8,
               };
-              const base2 = {
-                x: ship.x + Math.cos(ship.angle - 2.8) * SHIP_SIZE * 0.4,
-                y: ship.y + Math.sin(ship.angle - 2.8) * SHIP_SIZE * 0.4,
-              };
-              const tip = {
-                x: ship.x - cos * flameLen,
-                y: ship.y - sin * flameLen,
+              const rightWing = {
+                x: ship.x + Math.cos(ship.angle - 2.4) * SHIP_SIZE * 0.8,
+                y: ship.y + Math.sin(ship.angle - 2.4) * SHIP_SIZE * 0.8,
               };
 
-              // Outer flame glow
-              ctx.shadowColor = 'rgba(255, 120, 20, 0.5)';
-              ctx.shadowBlur = 18;
-              ctx.fillStyle = `rgba(255, ${100 + Math.floor(Math.random() * 80)}, 20, ${0.5 + Math.random() * 0.3})`;
+              // Ship outline
+              ctx.strokeStyle = '#a0f0ff';
+              ctx.lineWidth = 3;
               ctx.beginPath();
-              ctx.moveTo(base1.x, base1.y);
-              ctx.lineTo(tip.x, tip.y);
-              ctx.lineTo(base2.x, base2.y);
+              ctx.moveTo(nose.x, nose.y);
+              ctx.lineTo(leftWing.x, leftWing.y);
+              ctx.lineTo(rightWing.x, rightWing.y);
               ctx.closePath();
-              ctx.fill();
-              ctx.shadowBlur = 0;
+              ctx.stroke();
 
-              // Mid flame
-              const midLen = flameLen * 0.65;
-              const midTip = {
-                x: ship.x - cos * midLen,
-                y: ship.y - sin * midLen,
-              };
-              ctx.fillStyle = `rgba(255, ${180 + Math.floor(Math.random() * 75)}, 50, ${0.6 + Math.random() * 0.3})`;
-              ctx.beginPath();
-              ctx.moveTo(base1.x, base1.y);
-              ctx.lineTo(midTip.x, midTip.y);
-              ctx.lineTo(base2.x, base2.y);
-              ctx.closePath();
-              ctx.fill();
+              // Thrust flame + rocket trail
+              if (ship.thrusting) {
+                const flicker = 0.6 + Math.random() * 0.4;
+                const flameLen = SHIP_SIZE * (0.7 + Math.random() * 0.5) * flicker;
+                const base1 = {
+                  x: ship.x + Math.cos(ship.angle + 2.8) * SHIP_SIZE * 0.4,
+                  y: ship.y + Math.sin(ship.angle + 2.8) * SHIP_SIZE * 0.4,
+                };
+                const base2 = {
+                  x: ship.x + Math.cos(ship.angle - 2.8) * SHIP_SIZE * 0.4,
+                  y: ship.y + Math.sin(ship.angle - 2.8) * SHIP_SIZE * 0.4,
+                };
+                const tip = {
+                  x: ship.x - cos * flameLen,
+                  y: ship.y - sin * flameLen,
+                };
 
-              // Inner hot core
-              const innerLen = flameLen * 0.35;
-              const innerTip = {
-                x: ship.x - cos * innerLen,
-                y: ship.y - sin * innerLen,
-              };
-              ctx.fillStyle = `rgba(255, 255, 200, ${0.5 + Math.random() * 0.3})`;
-              ctx.beginPath();
-              ctx.moveTo(base1.x, base1.y);
-              ctx.lineTo(innerTip.x, innerTip.y);
-              ctx.lineTo(base2.x, base2.y);
-              ctx.closePath();
-              ctx.fill();
+                // Outer flame glow
+                ctx.shadowColor = 'rgba(255, 120, 20, 0.5)';
+                ctx.shadowBlur = 18;
+                ctx.fillStyle = `rgba(255, ${100 + Math.floor(Math.random() * 80)}, 20, ${0.5 + Math.random() * 0.3})`;
+                ctx.beginPath();
+                ctx.moveTo(base1.x, base1.y);
+                ctx.lineTo(tip.x, tip.y);
+                ctx.lineTo(base2.x, base2.y);
+                ctx.closePath();
+                ctx.fill();
+                ctx.shadowBlur = 0;
+
+                // Mid flame
+                const midLen = flameLen * 0.65;
+                const midTip = {
+                  x: ship.x - cos * midLen,
+                  y: ship.y - sin * midLen,
+                };
+                ctx.fillStyle = `rgba(255, ${180 + Math.floor(Math.random() * 75)}, 50, ${0.6 + Math.random() * 0.3})`;
+                ctx.beginPath();
+                ctx.moveTo(base1.x, base1.y);
+                ctx.lineTo(midTip.x, midTip.y);
+                ctx.lineTo(base2.x, base2.y);
+                ctx.closePath();
+                ctx.fill();
+
+                // Inner hot core
+                const innerLen = flameLen * 0.35;
+                const innerTip = {
+                  x: ship.x - cos * innerLen,
+                  y: ship.y - sin * innerLen,
+                };
+                ctx.fillStyle = `rgba(255, 255, 200, ${0.5 + Math.random() * 0.3})`;
+                ctx.beginPath();
+                ctx.moveTo(base1.x, base1.y);
+                ctx.lineTo(innerTip.x, innerTip.y);
+                ctx.lineTo(base2.x, base2.y);
+                ctx.closePath();
+                ctx.fill();
+              }
+
             }
 
+            // Draw thrust trail particles (always visible, even during blink)
+            for (const p of thrustParticles) {
+              const alpha = (p.life / p.maxLife);
+              const r = 255;
+              const g = Math.floor(120 + 135 * alpha);
+              const b = Math.floor(40 * alpha);
+              ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.7})`;
+              ctx.shadowColor = `rgba(255, 150, 30, ${alpha * 0.4})`;
+              ctx.shadowBlur = 8;
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            ctx.shadowBlur = 0;
           }
 
-          // Draw thrust trail particles (always visible, even during blink)
-          for (const p of thrustParticles) {
-            const alpha = (p.life / p.maxLife);
-            const r = 255;
-            const g = Math.floor(120 + 135 * alpha);
-            const b = Math.floor(40 * alpha);
-            ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.7})`;
-            ctx.shadowColor = `rgba(255, 150, 30, ${alpha * 0.4})`;
-            ctx.shadowBlur = 8;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-            ctx.fill();
-          }
-          ctx.shadowBlur = 0;
-        }
+          // ─── HUD ───
+          // Score (top-left)
+          ctx.font = 'bold 66px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+          ctx.fillText(String(score).padStart(6, '0'), 20, 76);
 
-        // ─── HUD ───
-        // Score (top-left)
-        ctx.font = 'bold 66px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-        ctx.fillText(String(score).padStart(6, '0'), 20, 76);
-
-        // Wave (top-center)
-        ctx.font = '42px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.fillText(`wave ${wave}`, w / 2, 60);
-
-        // Lives (top-right) — small ship icons
-        for (let i = 0; i < lives; i++) {
-          const lx = w - 50 - i * 60;
-          const ly = 55;
-          ctx.strokeStyle = 'rgba(160, 240, 255, 0.6)';
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          ctx.moveTo(lx, ly - 20);
-          ctx.lineTo(lx - 15, ly + 15);
-          ctx.lineTo(lx + 15, ly + 15);
-          ctx.closePath();
-          ctx.stroke();
-        }
-
-        // Instructions
-        if (showInstructions) {
-          ctx.font = '39px monospace';
-          ctx.textAlign = 'center';
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-          ctx.fillText('arrows to move \u00b7 space to shoot \u00b7 P panel \u00b7 E toggle', w / 2, h - 40);
-        }
-
-        // Game Over
-        if (gameOver) {
-          ctx.font = `bold ${Math.min(w * 0.14, 192)}px monospace`;
-          ctx.textAlign = 'center';
-          ctx.fillStyle = 'rgba(255, 80, 80, 0.8)';
-          ctx.fillText('GAME OVER', w / 2, h / 2 - 40);
-
-          ctx.font = 'bold 72px monospace';
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-          ctx.fillText(`score: ${score}`, w / 2, h / 2 + 50);
-
+          // Wave (top-center)
           ctx.font = '42px monospace';
-          ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + 0.15 * Math.sin(t * 4)})`;
-          ctx.fillText('press space to restart', w / 2, h / 2 + 120);
-        }
-      }
+          ctx.textAlign = 'center';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+          ctx.fillText(`wave ${wave}`, w / 2, 60);
 
-      // ─── ASCII-ify with Layers ─────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
+          // Lives (top-right) — small ship icons
+          for (let i = 0; i < lives; i++) {
+            const lx = w - 50 - i * 60;
+            const ly = 55;
+            ctx.strokeStyle = 'rgba(160, 240, 255, 0.6)';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(lx, ly - 20);
+            ctx.lineTo(lx - 15, ly + 15);
+            ctx.lineTo(lx + 15, ly + 15);
+            ctx.closePath();
+            ctx.stroke();
+          }
+
+          // Instructions
+          if (showInstructions) {
+            ctx.font = '39px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+            ctx.fillText('arrows to move \u00b7 space to shoot \u00b7 P panel \u00b7 E toggle', w / 2, h - 40);
+          }
+
+          // Game Over
+          if (gameOver) {
+            ctx.font = `bold ${Math.min(w * 0.14, 192)}px monospace`;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = 'rgba(255, 80, 80, 0.8)';
+            ctx.fillText('GAME OVER', w / 2, h / 2 - 40);
+
+            ctx.font = 'bold 72px monospace';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.fillText(`score: ${score}`, w / 2, h / 2 + 50);
+
+            ctx.font = '42px monospace';
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + 0.15 * Math.sin(t * 4)})`;
+            ctx.fillText('press space to restart', w / 2, h / 2 + 120);
+          }
+        },
       });
 
-      // Layer 1: Space background — binary charset for data-rain feel
-      ascii.addLayer({
-        source: source,
-        fontSize: 6,
-        charset: 'binary',
-        colorScheme: 'mono',
-        pattern: 'diamond',
-        patternMix: 0.3,
-        blendMode: 'replace',
-        opacity: 1,
+      // ─── Additional Input ─────────────────────────────
+      document.addEventListener('keyup', e => {
+        keys[e.code] = false;
       });
 
-      // Layer 2: Ships, asteroids, bullets — main action layer
-      ascii.addLayer({
-        source: source,
-        fontSize: 14,
-        charset: 'density',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.9,
-      });
-
-      // Layer 3: Thrust and explosions — subtle fire glow
-      ascii.addLayer({
-        source: source,
-        fontSize: 10,
-        charset: 'braille',
-        colorScheme: 'fire',
-        blendMode: 'add',
-        opacity: 0.3,
-      });
-
-      // ─── Keyboard Controls (panel/toggle) ──────────────
-      document.addEventListener('keydown', e => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      // ─── Initialize & Main Loop ────────────────────────
+      // ─── Initialize ───────────────────────────────────
       initGame();
-
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

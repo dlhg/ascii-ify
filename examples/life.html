@@ -16,25 +16,15 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resize();
-      window.addEventListener('resize', () => { resize(); rebuildGrid(); });
+      import { createApp } from './boilerplate.js';
 
       // ─── Grid ────────────────────────────────────────────
       const CELL = 8;
       let cols, rows, grid, nextGrid, age;
 
       function rebuildGrid() {
-        cols = Math.floor(source.width / CELL);
-        rows = Math.floor(source.height / CELL);
+        cols = Math.floor(app.width / CELL);
+        rows = Math.floor(app.height / CELL);
         const old = grid;
         const oldAge = age;
         const oldCols = old ? old[0]?.length : 0;
@@ -51,7 +41,6 @@
         );
         nextGrid = Array.from({ length: rows }, () => new Array(cols).fill(0));
       }
-      rebuildGrid();
 
       // Seed with some random life
       function seedRandom(density = 0.3) {
@@ -102,8 +91,6 @@
           }
       }
 
-      seedInteresting();
-
       // ─── Simulation ──────────────────────────────────────
       let running = true;
       let simTimer = 0;
@@ -147,7 +134,7 @@
       let drawValue = 1;
 
       function cellAt(e) {
-        const rect = source.getBoundingClientRect();
+        const rect = app.canvas.getBoundingClientRect();
         const x = Math.floor((e.clientX - rect.left) / CELL);
         const y = Math.floor((e.clientY - rect.top) / CELL);
         return { x: Math.max(0, Math.min(cols - 1, x)), y: Math.max(0, Math.min(rows - 1, y)) };
@@ -167,46 +154,8 @@
         }
       }
 
-      source.addEventListener('mousedown', e => {
-        drawing = true;
-        const { x, y } = cellAt(e);
-        drawValue = grid[y][x] ? 0 : 1;
-        paint(e);
-      });
-      source.addEventListener('mousemove', e => { if (drawing) paint(e); });
-      window.addEventListener('mouseup', () => { drawing = false; });
-
-      // ─── Keyboard ─────────────────────────────────────────
-      document.addEventListener('keydown', e => {
-        switch (e.key) {
-          case ' ':
-            e.preventDefault();
-            running = !running;
-            break;
-          case 'c':
-          case 'C':
-            clearGrid();
-            generation = 0;
-            break;
-          case 'r':
-          case 'R':
-            seedInteresting();
-            generation = 0;
-            break;
-          case 'n':
-          case 'N':
-            if (!running) step();
-            break;
-        }
-      });
-
       // ─── Draw ────────────────────────────────────────────
-      let lastTime = 0;
-
-      function draw(time) {
-        const w = source.width, h = source.height;
-        const dt = Math.min((time - lastTime) / 1000, 0.05);
-        lastTime = time;
+      function draw(ctx, { time, dt, width: w, height: h }) {
         const t = time * 0.001;
 
         if (running) {
@@ -258,26 +207,54 @@
       }
 
       // ─── ASCII-ify ────────────────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        fontSize: 8,
-        charset: 'braille',
-        colorScheme: 'fire',
-        sourceOpacity: 0,
-        colorCycle: true,
-        colorCycleRate: 0.15,
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'braille',
+          colorScheme: 'fire',
+          sourceOpacity: 0,
+          colorCycle: true,
+          colorCycleRate: 0.15,
+        },
+        draw,
+        onResize() { rebuildGrid(); },
+        onKeydown(e) {
+          switch (e.key) {
+            case ' ':
+              e.preventDefault();
+              running = !running;
+              break;
+            case 'c':
+            case 'C':
+              clearGrid();
+              generation = 0;
+              break;
+            case 'r':
+            case 'R':
+              seedInteresting();
+              generation = 0;
+              break;
+            case 'n':
+            case 'N':
+              if (!running) step();
+              break;
+          }
+        },
       });
 
-      document.addEventListener('keydown', e => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      // ─── Canvas Events ────────────────────────────────────
+      app.canvas.addEventListener('mousedown', e => {
+        drawing = true;
+        const { x, y } = cellAt(e);
+        drawValue = grid[y][x] ? 0 : 1;
+        paint(e);
       });
+      app.canvas.addEventListener('mousemove', e => { if (drawing) paint(e); });
+      window.addEventListener('mouseup', () => { drawing = false; });
 
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
+      // ─── Initial Setup ────────────────────────────────────
+      rebuildGrid();
+      seedInteresting();
     </script>
   </body>
 </html>

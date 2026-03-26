@@ -16,21 +16,8 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const sCtx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-        // Re-fill with dark background after resize to reset trails
-        sCtx.fillStyle = 'rgba(5, 5, 10, 1)';
-        sCtx.fillRect(0, 0, source.width, source.height);
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
+      import { getCanvasPos } from './utils.js';
 
       // ─── State ──────────────────────────────────────────
       const particles = [];
@@ -112,9 +99,9 @@
       function emitOrbit() {
         for (let i = 0; i < 4; i++) {
           const angle = Math.random() * Math.PI * 2;
-          const dist = brushSize * 0.5 + Math.random() * brushSize * 0.5;
-          const x = mouseX + Math.cos(angle) * dist;
-          const y = mouseY + Math.sin(angle) * dist;
+          const d = brushSize * 0.5 + Math.random() * brushSize * 0.5;
+          const x = mouseX + Math.cos(angle) * d;
+          const y = mouseY + Math.sin(angle) * d;
           // Tangential velocity (perpendicular to radius)
           const tangentAngle = angle + Math.PI * 0.5;
           const speed = 2 + Math.random() * 2;
@@ -127,11 +114,9 @@
       }
 
       // ─── Physics Update ──────────────────────────────────
-      function updateParticles() {
-        const w = source.width;
-        const h = source.height;
-
-        for (let i = particles.length - 1; i >= 0; i--) {
+      function updateParticles(w, h) {
+        let len = particles.length;
+        for (let i = len - 1; i >= 0; i--) {
           const p = particles[i];
 
           // Attractor / repulsor forces
@@ -186,105 +171,235 @@
           // Life
           p.life--;
           if (p.life <= 0) {
-            particles.splice(i, 1);
+            particles[i] = particles[len - 1];
+            len--;
           }
         }
+        particles.length = len;
       }
 
-      // ─── Draw Source ─────────────────────────────────────
-      function drawSource(time) {
-        const w = source.width;
-        const h = source.height;
-
-        // Semi-transparent overlay for trail effect (never fully clear)
-        sCtx.fillStyle = 'rgba(5, 5, 10, 0.03)';
-        sCtx.fillRect(0, 0, w, h);
-
-        // Hue cycles continuously
-        hue = (time * 0.03) % 360;
-
-        // Emit particles based on brush mode
-        if (mouseDown) {
-          if (brushMode === 1) emitSpray();
-          if (brushMode === 2) emitFountain();
-          // Firework emits on click only, handled in mousedown
-          if (brushMode === 4) emitOrbit();
-        }
-
-        // Update physics
-        updateParticles();
-
-        // Draw particles
-        for (const p of particles) {
-          const alpha = (p.life / p.maxLife);
-          const h = ((p.hue % 360) + 360) % 360;
-          const lightness = 50 + alpha * 30;
-          sCtx.fillStyle = `hsla(${h}, 90%, ${lightness}%, ${alpha})`;
-          sCtx.beginPath();
-          sCtx.arc(p.x, p.y, p.size * alpha + 0.5, 0, Math.PI * 2);
-          sCtx.fill();
-
-          // Glow for brighter particles
-          if (alpha > 0.6) {
-            const glowAlpha = (alpha - 0.6) * 0.4;
-            sCtx.fillStyle = `hsla(${h}, 80%, 70%, ${glowAlpha})`;
-            sCtx.beginPath();
-            sCtx.arc(p.x, p.y, p.size * 3, 0, Math.PI * 2);
-            sCtx.fill();
+      // ─── HUD Overlay ────────────────────────────────────
+      function drawHUD(ctx, time, w, h) {
+        // Animated "Click" prompt — fades out after first interaction
+        if (clickPromptAlpha > 0.001) {
+          if (hasClicked) {
+            clickPromptAlpha *= 0.93; // smooth fade out
           }
+          const pulse = 0.7 + 0.3 * Math.sin(time * 0.003);
+          const scale = 1 + 0.05 * Math.sin(time * 0.002);
+          const alpha = clickPromptAlpha * pulse;
+
+          ctx.save();
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.translate(w / 2, h / 2);
+          ctx.scale(scale, scale);
+
+          // Draw each character with wave offset
+          const glowHue = (time * 0.04) % 360;
+          ctx.font = 'bold 300px monospace';
+          const word = 'Click';
+          const charWidths = word.split('').map(c => ctx.measureText(c).width);
+          const totalWidth = charWidths.reduce((a, b) => a + b, 0);
+          let xOff = -totalWidth / 2;
+
+          for (let i = 0; i < word.length; i++) {
+            const waveY = Math.sin(time * 0.003 + i * 0.7) * 20;
+            ctx.save();
+            ctx.translate(xOff + charWidths[i] / 2, waveY);
+            ctx.textAlign = 'center';
+
+            // Glow layer
+            ctx.shadowColor = `hsla(${glowHue}, 80%, 60%, ${alpha * 0.6})`;
+            ctx.shadowBlur = 40;
+            ctx.fillStyle = `hsla(${glowHue}, 70%, 75%, ${alpha * 0.8})`;
+            ctx.fillText(word[i], 0, 0);
+
+            // Sharper inner text
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.9})`;
+            ctx.fillText(word[i], 0, 0);
+
+            ctx.restore();
+            xOff += charWidths[i];
+          }
+
+          ctx.restore();
         }
 
-        // Draw attractors as pulsing rings
-        const pulse = 0.7 + 0.3 * Math.sin(time * 0.005);
-        for (const a of attractors) {
-          const radius = 15 + pulse * 10;
-          const isRepulsor = a.strength < 0;
-          const ringColor = isRepulsor
-            ? `rgba(255, 80, 80, ${0.3 + pulse * 0.2})`
-            : `rgba(80, 180, 255, ${0.3 + pulse * 0.2})`;
-          const glowColor = isRepulsor
-            ? `rgba(255, 40, 40, ${0.05 + pulse * 0.05})`
-            : `rgba(40, 120, 255, ${0.05 + pulse * 0.05})`;
+        // Brush mode name (top-left)
+        ctx.save();
+        ctx.font = '14px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.fillText(`[${brushMode}] ${BRUSH_NAMES[brushMode]}`, 14, 24);
+        ctx.restore();
 
-          // Outer glow
-          const grad = sCtx.createRadialGradient(a.x, a.y, 0, a.x, a.y, radius * 2.5);
-          grad.addColorStop(0, glowColor);
-          grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-          sCtx.fillStyle = grad;
-          sCtx.fillRect(a.x - radius * 2.5, a.y - radius * 2.5, radius * 5, radius * 5);
-
-          // Ring
-          sCtx.strokeStyle = ringColor;
-          sCtx.lineWidth = 1.5;
-          sCtx.beginPath();
-          sCtx.arc(a.x, a.y, radius, 0, Math.PI * 2);
-          sCtx.stroke();
-
-          // Inner ring
-          sCtx.strokeStyle = ringColor;
-          sCtx.lineWidth = 1;
-          sCtx.beginPath();
-          sCtx.arc(a.x, a.y, radius * 0.5 * pulse, 0, Math.PI * 2);
-          sCtx.stroke();
-
-          // Center dot
-          sCtx.fillStyle = ringColor;
-          sCtx.beginPath();
-          sCtx.arc(a.x, a.y, 2, 0, Math.PI * 2);
-          sCtx.fill();
-        }
-
-        // Brush size indicator (fades out)
-        if (sizeIndicatorTimer > 0) {
-          sizeIndicatorTimer--;
-          const indicatorAlpha = Math.min(sizeIndicatorTimer / 30, 1) * 0.5;
-          sCtx.strokeStyle = `rgba(255, 255, 255, ${indicatorAlpha})`;
-          sCtx.lineWidth = 1;
-          sCtx.beginPath();
-          sCtx.arc(mouseX, mouseY, brushSize, 0, Math.PI * 2);
-          sCtx.stroke();
-        }
+        // Instructions (bottom)
+        ctx.save();
+        ctx.font = '11px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          'click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 E toggle',
+          w / 2,
+          h - 14,
+        );
+        ctx.restore();
       }
+
+      // ─── createApp ────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Trails — braille as BASE (inverted from usual)
+          {
+            fontSize: 14,
+            charset: 'braille',
+            colorScheme: 'vapor',
+            pattern: 'spiral',
+            patternMix: 0.2,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Active particles — dense detail
+          {
+            fontSize: 6,
+            charset: 'density',
+            colorScheme: 'rainbow',
+            blendMode: 'add',
+            opacity: 0.9,
+          },
+          // Layer 3: Attractor glow — large blocks as GLOW (inverted from usual)
+          {
+            fontSize: 20,
+            charset: 'blocks',
+            colorScheme: 'fire',
+            pattern: 'breathing',
+            patternMix: 0.5,
+            blendMode: 'add',
+            opacity: 0.25,
+          },
+        ],
+        onResize(w, h) {
+          // Re-fill with dark background after resize to reset trails
+          app.ctx.fillStyle = 'rgba(5, 5, 10, 1)';
+          app.ctx.fillRect(0, 0, w, h);
+        },
+        onKeydown(e) {
+          const key = e.key;
+          if (key === '1') brushMode = 1;
+          if (key === '2') brushMode = 2;
+          if (key === '3') brushMode = 3;
+          if (key === '4') brushMode = 4;
+          if (key === 'c' || key === 'C') {
+            particles.length = 0;
+            attractors.length = 0;
+            // Clear trails by filling canvas
+            app.ctx.fillStyle = 'rgba(5, 5, 10, 1)';
+            app.ctx.fillRect(0, 0, app.width, app.height);
+          }
+        },
+        draw(ctx, { time, dt, width, height }) {
+          const w = width;
+          const h = height;
+
+          // Semi-transparent overlay for trail effect (never fully clear)
+          ctx.fillStyle = 'rgba(5, 5, 10, 0.03)';
+          ctx.fillRect(0, 0, w, h);
+
+          // Hue cycles continuously
+          hue = (time * 0.03) % 360;
+
+          // Emit particles based on brush mode
+          if (mouseDown) {
+            if (brushMode === 1) emitSpray();
+            if (brushMode === 2) emitFountain();
+            // Firework emits on click only, handled in mousedown
+            if (brushMode === 4) emitOrbit();
+          }
+
+          // Update physics
+          updateParticles(w, h);
+
+          // Draw particles
+          for (const p of particles) {
+            const alpha = (p.life / p.maxLife);
+            const h = ((p.hue % 360) + 360) % 360;
+            const lightness = 50 + alpha * 30;
+            ctx.fillStyle = `hsla(${h}, 90%, ${lightness}%, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * alpha + 0.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Glow for brighter particles
+            if (alpha > 0.6) {
+              const glowAlpha = (alpha - 0.6) * 0.4;
+              ctx.fillStyle = `hsla(${h}, 80%, 70%, ${glowAlpha})`;
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, p.size * 3, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+
+          // Draw attractors as pulsing rings
+          const pulse = 0.7 + 0.3 * Math.sin(time * 0.005);
+          for (const a of attractors) {
+            const radius = 15 + pulse * 10;
+            const isRepulsor = a.strength < 0;
+            const ringColor = isRepulsor
+              ? `rgba(255, 80, 80, ${0.3 + pulse * 0.2})`
+              : `rgba(80, 180, 255, ${0.3 + pulse * 0.2})`;
+            const glowColor = isRepulsor
+              ? `rgba(255, 40, 40, ${0.05 + pulse * 0.05})`
+              : `rgba(40, 120, 255, ${0.05 + pulse * 0.05})`;
+
+            // Outer glow
+            const grad = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, radius * 2.5);
+            grad.addColorStop(0, glowColor);
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(a.x - radius * 2.5, a.y - radius * 2.5, radius * 5, radius * 5);
+
+            // Ring
+            ctx.strokeStyle = ringColor;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, radius, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Inner ring
+            ctx.strokeStyle = ringColor;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, radius * 0.5 * pulse, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Center dot
+            ctx.fillStyle = ringColor;
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Brush size indicator (fades out)
+          if (sizeIndicatorTimer > 0) {
+            sizeIndicatorTimer--;
+            const indicatorAlpha = Math.min(sizeIndicatorTimer / 30, 1) * 0.5;
+            ctx.strokeStyle = `rgba(255, 255, 255, ${indicatorAlpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(mouseX, mouseY, brushSize, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          // Draw HUD
+          drawHUD(ctx, time, w, h);
+        },
+      });
 
       // ─── Mouse & Keyboard Input ──────────────────────────
       window.addEventListener('mousemove', (e) => {
@@ -322,30 +437,12 @@
       });
 
       // Scroll wheel: brush size
-      source.addEventListener('wheel', (e) => {
+      app.canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
         brushSize -= e.deltaY * 0.05;
         brushSize = Math.max(5, Math.min(50, brushSize));
         sizeIndicatorTimer = 45;
       }, { passive: false });
-
-      // Keyboard controls
-      document.addEventListener('keydown', (e) => {
-        const key = e.key;
-        if (key === '1') brushMode = 1;
-        if (key === '2') brushMode = 2;
-        if (key === '3') brushMode = 3;
-        if (key === '4') brushMode = 4;
-        if (key === 'c' || key === 'C') {
-          particles.length = 0;
-          attractors.length = 0;
-          // Clear trails by filling canvas
-          sCtx.fillStyle = 'rgba(5, 5, 10, 1)';
-          sCtx.fillRect(0, 0, source.width, source.height);
-        }
-        if (key === 'p' || key === 'P') ascii.togglePanel();
-        if (key === 'e' || key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
 
       // Touch support
       window.addEventListener('touchstart', (e) => {
@@ -366,128 +463,6 @@
       window.addEventListener('touchend', () => {
         mouseDown = false;
       });
-
-      // ─── HUD Overlay ────────────────────────────────────
-      function drawHUD(time) {
-        const w = source.width;
-        const h = source.height;
-
-        // Animated "Click" prompt — fades out after first interaction
-        if (clickPromptAlpha > 0.001) {
-          if (hasClicked) {
-            clickPromptAlpha *= 0.93; // smooth fade out
-          }
-          const pulse = 0.7 + 0.3 * Math.sin(time * 0.003);
-          const scale = 1 + 0.05 * Math.sin(time * 0.002);
-          const alpha = clickPromptAlpha * pulse;
-
-          sCtx.save();
-          sCtx.textAlign = 'center';
-          sCtx.textBaseline = 'middle';
-          sCtx.translate(w / 2, h / 2);
-          sCtx.scale(scale, scale);
-
-          // Draw each character with wave offset
-          const glowHue = (time * 0.04) % 360;
-          sCtx.font = 'bold 300px monospace';
-          const word = 'Click';
-          const charWidths = word.split('').map(c => sCtx.measureText(c).width);
-          const totalWidth = charWidths.reduce((a, b) => a + b, 0);
-          let xOff = -totalWidth / 2;
-
-          for (let i = 0; i < word.length; i++) {
-            const waveY = Math.sin(time * 0.003 + i * 0.7) * 20;
-            sCtx.save();
-            sCtx.translate(xOff + charWidths[i] / 2, waveY);
-            sCtx.textAlign = 'center';
-
-            // Glow layer
-            sCtx.shadowColor = `hsla(${glowHue}, 80%, 60%, ${alpha * 0.6})`;
-            sCtx.shadowBlur = 40;
-            sCtx.fillStyle = `hsla(${glowHue}, 70%, 75%, ${alpha * 0.8})`;
-            sCtx.fillText(word[i], 0, 0);
-
-            // Sharper inner text
-            sCtx.shadowBlur = 0;
-            sCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.9})`;
-            sCtx.fillText(word[i], 0, 0);
-
-            sCtx.restore();
-            xOff += charWidths[i];
-          }
-
-          sCtx.restore();
-        }
-
-        // Brush mode name (top-left)
-        sCtx.save();
-        sCtx.font = '14px monospace';
-        sCtx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-        sCtx.fillText(`[${brushMode}] ${BRUSH_NAMES[brushMode]}`, 14, 24);
-        sCtx.restore();
-
-        // Instructions (bottom)
-        sCtx.save();
-        sCtx.font = '11px monospace';
-        sCtx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-        sCtx.textAlign = 'center';
-        sCtx.fillText(
-          'click+drag to paint \u00B7 right-click for attractor \u00B7 scroll for size \u00B7 1-4 brush mode \u00B7 C clear \u00B7 P panel \u00B7 E toggle',
-          w / 2,
-          h - 14,
-        );
-        sCtx.restore();
-      }
-
-      // ─── ASCII-ify with Layers ──────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
-      });
-
-      // Layer 1: Trails — braille as BASE (inverted from usual)
-      ascii.addLayer({
-        source: source,
-        fontSize: 14,
-        charset: 'braille',
-        colorScheme: 'vapor',
-        pattern: 'spiral',
-        patternMix: 0.2,
-        blendMode: 'replace',
-        opacity: 1,
-      });
-
-      // Layer 2: Active particles — dense detail
-      ascii.addLayer({
-        source: source,
-        fontSize: 6,
-        charset: 'density',
-        colorScheme: 'rainbow',
-        blendMode: 'add',
-        opacity: 0.9,
-      });
-
-      // Layer 3: Attractor glow — large blocks as GLOW (inverted from usual)
-      ascii.addLayer({
-        source: source,
-        fontSize: 20,
-        charset: 'blocks',
-        colorScheme: 'fire',
-        pattern: 'breathing',
-        patternMix: 0.5,
-        blendMode: 'add',
-        opacity: 0.25,
-      });
-
-      // ─── Animation Loop ─────────────────────────────────
-      function loop(time) {
-        drawSource(time);
-        drawHUD(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

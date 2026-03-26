@@ -16,18 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const sCtx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
 
       // ─── Starfield State ──────────────────────────────────
       const NUM_STARS = 800;
@@ -86,46 +75,24 @@
         stars.push(new Star());
       }
 
-      // ─── Mouse / Input ────────────────────────────────────
-      window.addEventListener('mousemove', (e) => {
-        mouseX = e.clientX / window.innerWidth;
-        mouseY = e.clientY / window.innerHeight;
-      });
-
-      source.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        speed += e.deltaY * -0.002;
-        speed = Math.max(0.2, Math.min(5.0, speed));
-      }, { passive: false });
-
-      // Touch support for mobile
-      window.addEventListener('touchmove', (e) => {
-        const touch = e.touches[0];
-        mouseX = touch.clientX / window.innerWidth;
-        mouseY = touch.clientY / window.innerHeight;
-      });
-
       // ─── Draw Starfield ───────────────────────────────────
-      function drawStarfield(dt) {
-        const w = source.width;
-        const h = source.height;
-
+      function drawStarfield(ctx, dt, w, h) {
         // Vanishing point follows mouse
         const cx = w * mouseX;
         const cy = h * mouseY;
 
         // Clear to deep space
-        sCtx.fillStyle = '#02020a';
-        sCtx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#02020a';
+        ctx.fillRect(0, 0, w, h);
 
         // Subtle radial glow at vanishing point for warp effect
         const glowRadius = Math.min(w, h) * (0.3 + speed * 0.15);
-        const glow = sCtx.createRadialGradient(cx, cy, 0, cx, cy, glowRadius);
+        const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowRadius);
         glow.addColorStop(0, `rgba(40, 60, 120, ${0.03 * speed})`);
         glow.addColorStop(0.5, `rgba(20, 30, 80, ${0.015 * speed})`);
         glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        sCtx.fillStyle = glow;
-        sCtx.fillRect(0, 0, w, h);
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, w, h);
 
         // Move & draw stars
         const moveSpeed = 400 * speed * dt;
@@ -165,97 +132,95 @@
           // Draw streak/trail line (warp effect)
           if (prevScreenX !== null && prevZ > 1) {
             const streakAlpha = brightness * 0.6;
-            sCtx.strokeStyle = star.color.replace(')', ` / ${streakAlpha})`).replace('hsl(', 'hsl(');
+            ctx.strokeStyle = star.color.replace(')', ` / ${streakAlpha})`).replace('hsl(', 'hsl(');
 
             // Streak length scales with speed and proximity
             const streakFactor = speed * depthFactor;
             const trailX = prevScreenX + (prevScreenX - screenX) * streakFactor * 0.5;
             const trailY = prevScreenY + (prevScreenY - screenY) * streakFactor * 0.5;
 
-            sCtx.lineWidth = Math.max(0.5, size * 0.6);
-            sCtx.beginPath();
-            sCtx.moveTo(trailX, trailY);
-            sCtx.lineTo(screenX, screenY);
-            sCtx.stroke();
+            ctx.lineWidth = Math.max(0.5, size * 0.6);
+            ctx.beginPath();
+            ctx.moveTo(trailX, trailY);
+            ctx.lineTo(screenX, screenY);
+            ctx.stroke();
           }
 
           // Draw star point
           const alpha = brightness;
-          sCtx.globalAlpha = alpha;
-          sCtx.fillStyle = star.color;
-          sCtx.beginPath();
-          sCtx.arc(screenX, screenY, size, 0, Math.PI * 2);
-          sCtx.fill();
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = star.color;
+          ctx.beginPath();
+          ctx.arc(screenX, screenY, size, 0, Math.PI * 2);
+          ctx.fill();
 
           // Bright glow for close stars
           if (depthFactor > 0.7) {
             const glowAlpha = (depthFactor - 0.7) * 2.5;
-            sCtx.globalAlpha = glowAlpha * 0.3;
-            sCtx.beginPath();
-            sCtx.arc(screenX, screenY, size * 3, 0, Math.PI * 2);
-            sCtx.fill();
+            ctx.globalAlpha = glowAlpha * 0.3;
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, size * 3, 0, Math.PI * 2);
+            ctx.fill();
           }
 
-          sCtx.globalAlpha = 1;
+          ctx.globalAlpha = 1;
         }
       }
 
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#02020a',
-        sourceOpacity: 0,
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#02020a', sourceOpacity: 0 },
+        layers: [
+          // Layer 1: Distant stars — large, sparse, monochrome
+          {
+            fontSize: 16,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Close stars / streaks — small, dense, neon glow
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.7,
+          },
+          // Layer 3: Warp glow — braille tunnel overlay
+          {
+            fontSize: 10,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'tunnel',
+            patternMix: 0.3,
+            blendMode: 'add',
+            opacity: 0.15,
+          },
+        ],
+        draw(ctx, { dt, width: w, height: h }) {
+          drawStarfield(ctx, dt, w, h);
+        },
       });
 
-      // Layer 1: Distant stars — large, sparse, monochrome
-      const distantLayer = ascii.addLayer({
-        source: source,
-        fontSize: 16,
-        charset: 'minimal',
-        colorScheme: 'mono',
-        blendMode: 'replace',
-        opacity: 1,
+      // ─── Mouse / Input ────────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = e.clientY / window.innerHeight;
       });
 
-      // Layer 2: Close stars / streaks — small, dense, neon glow
-      const streakLayer = ascii.addLayer({
-        source: source,
-        fontSize: 8,
-        charset: 'density',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.7,
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        speed += e.deltaY * -0.002;
+        speed = Math.max(0.2, Math.min(5.0, speed));
+      }, { passive: false });
+
+      // Touch support for mobile
+      window.addEventListener('touchmove', (e) => {
+        const touch = e.touches[0];
+        mouseX = touch.clientX / window.innerWidth;
+        mouseY = touch.clientY / window.innerHeight;
       });
-
-      // Layer 3: Warp glow — braille tunnel overlay
-      const warpLayer = ascii.addLayer({
-        source: source,
-        fontSize: 10,
-        charset: 'braille',
-        colorScheme: 'ocean',
-        pattern: 'tunnel',
-        patternMix: 0.3,
-        blendMode: 'add',
-        opacity: 0.15,
-      });
-
-      // ─── Controls ─────────────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      // ─── Main Loop ────────────────────────────────────────
-      let lastTime = 0;
-
-      function loop(time) {
-        const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
-        lastTime = time;
-
-        drawStarfield(dt);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

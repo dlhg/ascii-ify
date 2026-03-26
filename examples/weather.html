@@ -16,19 +16,8 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const sCtx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-        generateClouds();
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
+      import { lerpColor, rgb } from './utils.js';
 
       // ─── Season State ─────────────────────────────────────
       // 0 = Rain, 1 = Snow, 2 = Sun, 3 = Storm → wraps to 0
@@ -47,18 +36,6 @@
         storm: { skyTop: [55, 45, 75],   skyBot: [85, 70, 110],  ridges: [[45, 40, 65],  [65, 55, 90],  [90, 75, 115]] },
       };
       const PALETTES = [SEASON_COLORS.rain, SEASON_COLORS.snow, SEASON_COLORS.sun, SEASON_COLORS.storm];
-
-      function lerpColor(a, b, t) {
-        return [
-          a[0] + (b[0] - a[0]) * t,
-          a[1] + (b[1] - a[1]) * t,
-          a[2] + (b[2] - a[2]) * t,
-        ];
-      }
-
-      function rgbStr(c) {
-        return `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
-      }
 
       function getSeasonPalette(phase) {
         const i = Math.floor(phase) % 4;
@@ -94,28 +71,25 @@
           + Math.sin(nx * 13.1 + o * 0.5 + t * 0.01) * amp * 0.15;
       }
 
-      function drawTerrain(pal) {
-        const w = source.width;
-        const h = source.height;
-
+      function drawTerrain(ctx, w, h, pal) {
         // Sky gradient
-        const grad = sCtx.createLinearGradient(0, 0, 0, h * 0.6);
-        grad.addColorStop(0, rgbStr(pal.skyTop));
-        grad.addColorStop(1, rgbStr(pal.skyBot));
-        sCtx.fillStyle = grad;
-        sCtx.fillRect(0, 0, w, h);
+        const grad = ctx.createLinearGradient(0, 0, 0, h * 0.6);
+        grad.addColorStop(0, rgb(pal.skyTop));
+        grad.addColorStop(1, rgb(pal.skyBot));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
 
         // Draw 3 ridges back to front
         for (let r = 0; r < 3; r++) {
-          sCtx.fillStyle = rgbStr(pal.ridges[r]);
-          sCtx.beginPath();
-          sCtx.moveTo(0, h);
+          ctx.fillStyle = rgb(pal.ridges[r]);
+          ctx.beginPath();
+          ctx.moveTo(0, h);
           for (let x = 0; x <= w; x += 3) {
-            sCtx.lineTo(x, ridgeY(x, w, h, r, time));
+            ctx.lineTo(x, ridgeY(x, w, h, r, time));
           }
-          sCtx.lineTo(w, h);
-          sCtx.closePath();
-          sCtx.fill();
+          ctx.lineTo(w, h);
+          ctx.closePath();
+          ctx.fill();
         }
       }
 
@@ -135,8 +109,8 @@
       }
 
       function spawnParticle() {
-        const w = source.width;
-        const h = source.height;
+        const w = app.canvas.width;
+        const h = app.canvas.height;
         const weights = getSeasonWeights(seasonPhase);
 
         // Determine particle type by weighted random
@@ -212,8 +186,8 @@
       let lightningAlpha = 0;
 
       function updateParticles(dt) {
-        const w = source.width;
-        const h = source.height;
+        const w = app.canvas.width;
+        const h = app.canvas.height;
         const target = Math.min(getTargetParticleCount(seasonPhase), MAX_PARTICLES);
 
         // Spawn to meet target
@@ -221,8 +195,9 @@
           particles.push(spawnParticle());
         }
 
-        // Update existing
-        for (let i = particles.length - 1; i >= 0; i--) {
+        // Update existing (swap-and-pop)
+        let len = particles.length;
+        for (let i = len - 1; i >= 0; i--) {
           const p = particles[i];
           p.life--;
 
@@ -237,9 +212,10 @@
 
           // Remove dead or off-screen
           if (p.life <= 0 || p.y > h + 20 || p.x < -40 || p.x > w + 40) {
-            particles.splice(i, 1);
+            particles[i] = particles[len - 1]; len--;
           }
         }
+        particles.length = len;
 
         // Lightning (storm season)
         const weights = getSeasonWeights(seasonPhase);
@@ -256,55 +232,52 @@
         lightningAlpha *= 0.85; // decay
       }
 
-      function drawParticles() {
-        const w = source.width;
-        const h = source.height;
-
+      function drawParticles(ctx, w, h) {
         for (const p of particles) {
           const lifeRatio = p.life / p.maxLife;
           const alpha = p.alpha * lifeRatio;
 
           if (p.type === 0) {
             // Rain — bright streaks with glow
-            sCtx.strokeStyle = `rgba(200, 220, 255, ${alpha})`;
-            sCtx.lineWidth = p.size;
-            sCtx.beginPath();
-            sCtx.moveTo(p.x, p.y);
-            sCtx.lineTo(p.x + p.vx * 3, p.y + p.vy * 3);
-            sCtx.stroke();
+            ctx.strokeStyle = `rgba(200, 220, 255, ${alpha})`;
+            ctx.lineWidth = p.size;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x + p.vx * 3, p.y + p.vy * 3);
+            ctx.stroke();
           } else if (p.type === 1) {
             // Snow — large bright glowing dots
             const r = p.size * 3;
-            const gradient = sCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+            const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
             gradient.addColorStop(0, `rgba(240, 245, 255, ${alpha})`);
             gradient.addColorStop(0.5, `rgba(220, 230, 250, ${alpha * 0.5})`);
             gradient.addColorStop(1, `rgba(200, 210, 240, 0)`);
-            sCtx.fillStyle = gradient;
-            sCtx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+            ctx.fillStyle = gradient;
+            ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
           } else if (p.type === 2) {
             // Sun — large warm golden glows
             const r = p.size * 4;
-            const gradient = sCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+            const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
             gradient.addColorStop(0, `rgba(255, 240, 160, ${alpha})`);
             gradient.addColorStop(0.4, `rgba(255, 210, 100, ${alpha * 0.5})`);
             gradient.addColorStop(1, `rgba(255, 180, 60, 0)`);
-            sCtx.fillStyle = gradient;
-            sCtx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+            ctx.fillStyle = gradient;
+            ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
           } else {
             // Storm — fast bright streaks
-            sCtx.strokeStyle = `rgba(210, 220, 255, ${alpha})`;
-            sCtx.lineWidth = p.size;
-            sCtx.beginPath();
-            sCtx.moveTo(p.x, p.y);
-            sCtx.lineTo(p.x + p.vx * 3, p.y + p.vy * 3);
-            sCtx.stroke();
+            ctx.strokeStyle = `rgba(210, 220, 255, ${alpha})`;
+            ctx.lineWidth = p.size;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x + p.vx * 3, p.y + p.vy * 3);
+            ctx.stroke();
           }
         }
 
         // Lightning flash overlay
         if (lightningAlpha > 0.01) {
-          sCtx.fillStyle = `rgba(230, 230, 255, ${lightningAlpha * 0.6})`;
-          sCtx.fillRect(0, 0, w, h);
+          ctx.fillStyle = `rgba(230, 230, 255, ${lightningAlpha * 0.6})`;
+          ctx.fillRect(0, 0, w, h);
         }
       }
 
@@ -313,8 +286,8 @@
 
       function generateClouds() {
         clouds = [];
-        const w = source.width;
-        const h = source.height;
+        const w = app.canvas.width;
+        const h = app.canvas.height;
         const count = 8 + Math.floor(Math.random() * 5);
         for (let i = 0; i < count; i++) {
           clouds.push({
@@ -328,7 +301,6 @@
           });
         }
       }
-      generateClouds();
 
       // Season fog settings: [cloudAlpha multiplier, ground fog height, ground fog alpha]
       const SEASON_FOG = [
@@ -349,9 +321,7 @@
         return out;
       }
 
-      function drawClouds(dt) {
-        const w = source.width;
-        const h = source.height;
+      function drawClouds(ctx, w, h, dt) {
         const fog = getFogSettings(seasonPhase);
 
         // Drifting cloud blobs
@@ -362,133 +332,72 @@
           const alpha = c.baseAlpha * fog.cloudMul;
           if (alpha < 0.01) continue;
 
-          const gradient = sCtx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.rx);
+          const gradient = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.rx);
           gradient.addColorStop(0, `rgba(220, 225, 240, ${alpha})`);
           gradient.addColorStop(0.6, `rgba(200, 205, 220, ${alpha * 0.6})`);
           gradient.addColorStop(1, `rgba(180, 185, 200, 0)`);
-          sCtx.fillStyle = gradient;
+          ctx.fillStyle = gradient;
 
-          sCtx.save();
-          sCtx.translate(c.x, c.y);
-          sCtx.scale(1, c.ry / c.rx);
-          sCtx.beginPath();
-          sCtx.arc(0, 0, c.rx, 0, Math.PI * 2);
-          sCtx.fill();
-          sCtx.restore();
+          ctx.save();
+          ctx.translate(c.x, c.y);
+          ctx.scale(1, c.ry / c.rx);
+          ctx.beginPath();
+          ctx.arc(0, 0, c.rx, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
         }
 
         // Ground fog
         if (fog.groundA > 0.01) {
           const fogH = h * fog.groundH;
-          const fogGrad = sCtx.createLinearGradient(0, h - fogH, 0, h);
+          const fogGrad = ctx.createLinearGradient(0, h - fogH, 0, h);
           fogGrad.addColorStop(0, `rgba(200, 210, 225, 0)`);
           fogGrad.addColorStop(0.4, `rgba(200, 210, 225, ${fog.groundA * 0.6})`);
           fogGrad.addColorStop(1, `rgba(200, 210, 225, ${fog.groundA})`);
-          sCtx.fillStyle = fogGrad;
-          sCtx.fillRect(0, h - fogH, w, fogH);
+          ctx.fillStyle = fogGrad;
+          ctx.fillRect(0, h - fogH, w, fogH);
         }
       }
 
       // ─── HUD ──────────────────────────────────────────────
-      function drawHUD() {
-        const w = source.width;
-        const h = source.height;
+      function drawHUD(ctx, w, h) {
         const i = Math.floor(seasonPhase) % 4;
         const j = (i + 1) % 4;
         const t = seasonPhase - Math.floor(seasonPhase);
 
         // Season name — crossfade
-        sCtx.save();
-        sCtx.font = 'bold 28px monospace';
-        sCtx.textBaseline = 'top';
+        ctx.save();
+        ctx.font = 'bold 28px monospace';
+        ctx.textBaseline = 'top';
 
         const label1 = `${SEASON_ICONS[i]} ${SEASON_NAMES[i]} ${SEASON_ICONS[i]}`;
         const label2 = `${SEASON_ICONS[j]} ${SEASON_NAMES[j]} ${SEASON_ICONS[j]}`;
 
-        sCtx.fillStyle = `rgba(220, 220, 230, ${0.7 * (1 - t)})`;
-        sCtx.fillText(label1, 24, 24);
+        ctx.fillStyle = `rgba(220, 220, 230, ${0.7 * (1 - t)})`;
+        ctx.fillText(label1, 24, 24);
         if (t > 0.05) {
-          sCtx.fillStyle = `rgba(220, 220, 230, ${0.7 * t})`;
-          sCtx.fillText(label2, 24, 24);
+          ctx.fillStyle = `rgba(220, 220, 230, ${0.7 * t})`;
+          ctx.fillText(label2, 24, 24);
         }
 
         // Controls
-        sCtx.font = '13px monospace';
-        sCtx.fillStyle = 'rgba(180, 180, 190, 0.45)';
+        ctx.font = '13px monospace';
+        ctx.fillStyle = 'rgba(180, 180, 190, 0.45)';
         const lines = [
           `Scroll: cycle seasons`,
           `A: auto-advance ${autoAdvance ? 'ON' : 'OFF'}`,
           `P: panel  E: toggle`,
         ];
         for (let k = 0; k < lines.length; k++) {
-          sCtx.fillText(lines[k], 24, h - 60 + k * 18);
+          ctx.fillText(lines[k], 24, h - 60 + k * 18);
         }
 
-        sCtx.restore();
+        ctx.restore();
       }
 
-      // ─── ascii-ify Setup ──────────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        fontSize: 14,
-        charset: 'blocks',
-        colorScheme: 'mono',
-        background: '#06060a',
-        speed: 0.6,
-      });
-
-      // Layer 1 — Terrain: blocks + mono (base, via parent config)
-      // (Implicit — the parent AsciiIfy instance IS the terrain layer when no layers override it)
-
-      // Layer 2 — Precipitation: braille + ocean
-      const precipLayer = ascii.addLayer({
-        fontSize: 8,
-        charset: 'braille',
-        colorScheme: 'ocean',
-        blendMode: 'add',
-        opacity: 0.75,
-      });
-
-      // Layer 3 — Atmosphere: density + vapor
-      const fogLayer = ascii.addLayer({
-        fontSize: 18,
-        charset: 'density',
-        colorScheme: 'vapor',
-        blendMode: 'add',
-        opacity: 0.35,
-        pattern: 'breathing',
-        patternMix: 0.15,
-      });
-
-      // ─── Input ─────────────────────────────────────────────
-      window.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        seasonPhase += e.deltaY * 0.002;
-        if (seasonPhase < 0) seasonPhase += 4;
-        seasonPhase = seasonPhase % 4;
-      }, { passive: false });
-
-      document.addEventListener('keydown', (e) => {
-        const key = e.key.toLowerCase();
-        if (key === 'p') ascii.togglePanel();
-        if (key === 'e') ascii.set('enabled', !ascii.get('enabled'));
-        if (key === 'a') autoAdvance = !autoAdvance;
-      });
-
-      // Touch: swipe up/down to change season
-      let touchStartY = 0;
-      window.addEventListener('touchstart', (e) => {
-        touchStartY = e.touches[0].clientY;
-      }, { passive: true });
-      window.addEventListener('touchmove', (e) => {
-        e.preventDefault();
-        const dy = touchStartY - e.touches[0].clientY;
-        touchStartY = e.touches[0].clientY;
-        seasonPhase += dy * 0.004;
-        if (seasonPhase < 0) seasonPhase += 4;
-        seasonPhase = seasonPhase % 4;
-      }, { passive: false });
-
       // ─── Dynamic Layer Tuning ──────────────────────────────
+      let precipLayer, fogLayer;
+
       function updateLayerParams() {
         const weights = getSeasonWeights(seasonPhase);
         // rain=0, snow=1, sun=2, storm=3
@@ -512,42 +421,94 @@
         fogLayer.set('opacity', 0.2 + fogSettings.cloudMul * 0.15);
       }
 
-      // ─── Render Loop ──────────────────────────────────────
-      let prevTime = performance.now();
+      // ─── createApp ─────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 14,
+          charset: 'blocks',
+          colorScheme: 'mono',
+          background: '#06060a',
+          speed: 0.6,
+        },
+        layers: [],
+        onResize() {
+          generateClouds();
+        },
+        onKeydown(e) {
+          if (e.key.toLowerCase() === 'a') autoAdvance = !autoAdvance;
+        },
+        draw(ctx, { dt, width, height }) {
+          time += dt;
 
-      function frame(now) {
-        const dt = Math.min((now - prevTime) / 1000, 0.05);
-        prevTime = now;
-        time += dt;
+          // Auto-advance seasons
+          if (autoAdvance) {
+            seasonPhase = (seasonPhase + dt * 0.06) % 4;
+          }
 
-        // Auto-advance seasons
-        if (autoAdvance) {
-          seasonPhase = (seasonPhase + dt * 0.06) % 4;
-        }
+          const pal = getSeasonPalette(seasonPhase);
 
-        const pal = getSeasonPalette(seasonPhase);
+          // 1. Terrain
+          drawTerrain(ctx, width, height, pal);
 
-        // 1. Terrain
-        drawTerrain(pal);
+          // 2. Precipitation
+          updateParticles(dt);
+          drawParticles(ctx, width, height);
 
-        // 2. Precipitation
-        updateParticles(dt);
-        drawParticles();
+          // 3. Clouds / fog
+          drawClouds(ctx, width, height, dt);
 
-        // 3. Clouds / fog
-        drawClouds(dt);
+          // 4. HUD
+          drawHUD(ctx, width, height);
 
-        // 4. HUD
-        drawHUD();
+          // 5. Update ascii-ify layer params
+          updateLayerParams();
+        },
+      });
 
-        // 5. Update ascii-ify layer params & render
-        updateLayerParams();
-        ascii.render();
+      // Add named layers after createApp
+      precipLayer = app.ascii.addLayer({
+        source: app.canvas,
+        fontSize: 8,
+        charset: 'braille',
+        colorScheme: 'ocean',
+        blendMode: 'add',
+        opacity: 0.75,
+      });
 
-        requestAnimationFrame(frame);
-      }
+      fogLayer = app.ascii.addLayer({
+        source: app.canvas,
+        fontSize: 18,
+        charset: 'density',
+        colorScheme: 'vapor',
+        blendMode: 'add',
+        opacity: 0.35,
+        pattern: 'breathing',
+        patternMix: 0.15,
+      });
 
-      requestAnimationFrame(frame);
+      generateClouds();
+
+      // ─── Input ─────────────────────────────────────────────
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        seasonPhase += e.deltaY * 0.002;
+        if (seasonPhase < 0) seasonPhase += 4;
+        seasonPhase = seasonPhase % 4;
+      }, { passive: false });
+
+      // Touch: swipe up/down to change season
+      let touchStartY = 0;
+      window.addEventListener('touchstart', (e) => {
+        touchStartY = e.touches[0].clientY;
+      }, { passive: true });
+      window.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        const dy = touchStartY - e.touches[0].clientY;
+        touchStartY = e.touches[0].clientY;
+        seasonPhase += dy * 0.004;
+        if (seasonPhase < 0) seasonPhase += 4;
+        seasonPhase = seasonPhase % 4;
+      }, { passive: false });
     </script>
   </body>
 </html>

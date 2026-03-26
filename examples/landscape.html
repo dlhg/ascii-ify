@@ -16,50 +16,8 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const sCtx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
-
-      // ─── Utilities ────────────────────────────────────────
-      function lerp(a, b, t) { return a + (b - a) * t; }
-      function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-      function lerpColor(c1, c2, t) {
-        return [
-          lerp(c1[0], c2[0], t),
-          lerp(c1[1], c2[1], t),
-          lerp(c1[2], c2[2], t),
-        ];
-      }
-
-      function rgb(c, a) {
-        if (a !== undefined) return `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
-        return `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
-      }
-
-      function smoothstep(lo, hi, x) {
-        const t = clamp((x - lo) / (hi - lo), 0, 1);
-        return t * t * (3 - 2 * t);
-      }
-
-      // Mulberry32 PRNG
-      function mulberry32(seed) {
-        return function () {
-          let t = (seed += 0x6d2b79f5);
-          t = Math.imul(t ^ (t >>> 15), t | 1);
-          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-        };
-      }
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep, mulberry32, lerpColor, rgb } from './utils.js';
 
       // ─── Time System ──────────────────────────────────────
       const CYCLE_DURATION = 120;
@@ -198,17 +156,14 @@
           });
         }
         return {
-          x: randomX ? Math.random() * (source.width + 200) - 100 : -cw,
-          y: 30 + Math.random() * (source.height * 0.32),
+          x: randomX ? Math.random() * (app.canvas.width + 200) - 100 : -cw,
+          y: 30 + Math.random() * (app.canvas.height * 0.32),
           baseSpeed: 10 + Math.random() * 20,
           width: cw,
           height: ch,
           blobs,
         };
       }
-
-      // Initialize clouds spread across the sky
-      for (let i = 0; i < 6; i++) clouds.push(spawnCloud(true));
 
       // ─── Wind System ──────────────────────────────────────
       let baseWind = 10;
@@ -259,7 +214,7 @@
         if (currentGust > 10 && windParticles.length < 40) {
           windParticles.push({
             x: -10,
-            y: 50 + Math.random() * (source.height * 0.7),
+            y: 50 + Math.random() * (app.canvas.height * 0.7),
             len: 8 + Math.random() * 20,
             speed: windSpeed * (1.5 + Math.random()),
             life: 0.5 + Math.random() * 1,
@@ -267,15 +222,17 @@
           });
         }
 
-        // Update particles
-        for (let i = windParticles.length - 1; i >= 0; i--) {
+        // Update particles (swap-and-pop)
+        let len = windParticles.length;
+        for (let i = len - 1; i >= 0; i--) {
           const p = windParticles[i];
           p.x += p.speed * dt;
           p.life -= dt;
-          if (p.life <= 0 || p.x > source.width + 50) {
-            windParticles.splice(i, 1);
+          if (p.life <= 0 || p.x > app.canvas.width + 50) {
+            windParticles[i] = windParticles[len - 1]; len--;
           }
         }
+        windParticles.length = len;
 
         return windSpeed;
       }
@@ -298,7 +255,7 @@
         }
         return {
           x: -40,
-          y: 40 + Math.random() * (source.height * 0.3),
+          y: 40 + Math.random() * (app.canvas.height * 0.3),
           speed: 40 + Math.random() * 40,
           wingPhase: Math.random() * Math.PI * 2,
           birds,
@@ -363,15 +320,15 @@
       }
 
       // ─── Drawing Functions ────────────────────────────────
-      function drawSky(w, h, tod) {
-        const grad = sCtx.createLinearGradient(0, 0, 0, h * 0.7);
+      function drawSky(ctx, w, h, tod) {
+        const grad = ctx.createLinearGradient(0, 0, 0, h * 0.7);
         grad.addColorStop(0, rgb(tod.sky.zenith));
         grad.addColorStop(1, rgb(tod.sky.horizon));
-        sCtx.fillStyle = grad;
-        sCtx.fillRect(0, 0, w, h);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
       }
 
-      function drawHorizonGlow(w, h, tod) {
+      function drawHorizonGlow(ctx, w, h, tod) {
         if (tod.glowIntensity <= 0) return;
         // Glow near sun/moon at horizon
         let glowX;
@@ -382,15 +339,15 @@
         }
         const glowY = h * GROUND_Y;
         const radius = Math.min(w, h) * 0.4;
-        const glow = sCtx.createRadialGradient(glowX, glowY, 0, glowX, glowY, radius);
+        const glow = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, radius);
         glow.addColorStop(0, `rgba(255, 180, 80, ${tod.glowIntensity * 0.5})`);
         glow.addColorStop(0.4, `rgba(255, 120, 50, ${tod.glowIntensity * 0.25})`);
         glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        sCtx.fillStyle = glow;
-        sCtx.fillRect(0, 0, w, h);
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, w, h);
       }
 
-      function drawStars(w, h, tod, time) {
+      function drawStars(ctx, w, h, tod, time) {
         if (tod.starVisibility <= 0.01) return;
         for (const star of stars) {
           const twinkle = 0.5 + 0.5 * Math.sin(time * star.twinkleSpeed + star.twinklePhase);
@@ -399,12 +356,12 @@
           const sx = star.nx * w;
           const sy = star.ny * h;
           const sz = star.size;
-          sCtx.fillStyle = `rgba(220, 225, 255, ${alpha})`;
-          sCtx.fillRect(sx - sz * 0.5, sy - sz * 0.5, sz, sz);
+          ctx.fillStyle = `rgba(220, 225, 255, ${alpha})`;
+          ctx.fillRect(sx - sz * 0.5, sy - sz * 0.5, sz, sz);
         }
       }
 
-      function drawSun(w, h, tod) {
+      function drawSun(ctx, w, h, tod) {
         if (!tod.sunVisible) return;
         const p = tod.sunProgress;
         const sx = w * (0.15 + 0.7 * p);
@@ -412,22 +369,22 @@
 
         // Large glow
         const glowR = 80;
-        const glow = sCtx.createRadialGradient(sx, sy, 0, sx, sy, glowR);
+        const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR);
         glow.addColorStop(0, 'rgba(255, 240, 180, 0.6)');
         glow.addColorStop(0.3, 'rgba(255, 200, 100, 0.3)');
         glow.addColorStop(0.7, 'rgba(255, 160, 60, 0.1)');
         glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        sCtx.fillStyle = glow;
-        sCtx.fillRect(sx - glowR, sy - glowR, glowR * 2, glowR * 2);
+        ctx.fillStyle = glow;
+        ctx.fillRect(sx - glowR, sy - glowR, glowR * 2, glowR * 2);
 
         // Sun disc
-        sCtx.fillStyle = 'rgba(255, 245, 200, 0.95)';
-        sCtx.beginPath();
-        sCtx.arc(sx, sy, 18, 0, Math.PI * 2);
-        sCtx.fill();
+        ctx.fillStyle = 'rgba(255, 245, 200, 0.95)';
+        ctx.beginPath();
+        ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      function drawMoon(w, h, tod) {
+      function drawMoon(ctx, w, h, tod) {
         if (!tod.moonVisible) return;
         const p = tod.moonProgress;
         const mx = w * (0.2 + 0.6 * p);
@@ -435,27 +392,27 @@
 
         // Glow
         const glowR = 60;
-        const glow = sCtx.createRadialGradient(mx, my, 0, mx, my, glowR);
+        const glow = ctx.createRadialGradient(mx, my, 0, mx, my, glowR);
         glow.addColorStop(0, 'rgba(180, 200, 240, 0.4)');
         glow.addColorStop(0.4, 'rgba(150, 180, 230, 0.15)');
         glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        sCtx.fillStyle = glow;
-        sCtx.fillRect(mx - glowR, my - glowR, glowR * 2, glowR * 2);
+        ctx.fillStyle = glow;
+        ctx.fillRect(mx - glowR, my - glowR, glowR * 2, glowR * 2);
 
         // Moon disc
-        sCtx.fillStyle = 'rgba(200, 220, 255, 0.85)';
-        sCtx.beginPath();
-        sCtx.arc(mx, my, 14, 0, Math.PI * 2);
-        sCtx.fill();
+        ctx.fillStyle = 'rgba(200, 220, 255, 0.85)';
+        ctx.beginPath();
+        ctx.arc(mx, my, 14, 0, Math.PI * 2);
+        ctx.fill();
 
         // Crescent shadow
-        sCtx.fillStyle = rgb(tod.sky.zenith);
-        sCtx.beginPath();
-        sCtx.arc(mx + 6, my - 3, 12, 0, Math.PI * 2);
-        sCtx.fill();
+        ctx.fillStyle = rgb(tod.sky.zenith);
+        ctx.beginPath();
+        ctx.arc(mx + 6, my - 3, 12, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      function drawClouds(w, h, tod, windSpeed, dt) {
+      function drawClouds(ctx, w, h, tod, windSpeed, dt) {
         const cloudAlpha = tod.skyBrightness > 0.5 ? 0.6 : 0.3 + tod.skyBrightness * 0.4;
 
         for (let i = clouds.length - 1; i >= 0; i--) {
@@ -468,35 +425,35 @@
             continue;
           }
 
-          sCtx.fillStyle = rgb(tod.cloudColor, cloudAlpha);
+          ctx.fillStyle = rgb(tod.cloudColor, cloudAlpha);
           for (const b of c.blobs) {
-            sCtx.beginPath();
-            sCtx.ellipse(c.x + b.ox, c.y + b.oy, b.rx, b.ry, 0, 0, Math.PI * 2);
-            sCtx.fill();
+            ctx.beginPath();
+            ctx.ellipse(c.x + b.ox, c.y + b.oy, b.rx, b.ry, 0, 0, Math.PI * 2);
+            ctx.fill();
           }
         }
       }
 
-      function drawMountainRange(w, h, range, tod) {
+      function drawMountainRange(ctx, w, h, range, tod) {
         const color = lerpColor(range.nightColor, range.dayColor, tod.skyBrightness);
-        sCtx.fillStyle = rgb(color);
-        sCtx.beginPath();
+        ctx.fillStyle = rgb(color);
+        ctx.beginPath();
         const groundPx = h * GROUND_Y;
 
         for (let sx = 0; sx <= w; sx += 3) {
           const worldX = cameraX * range.parallax + sx;
           const mh = mountainHeight(worldX, range);
           const py = groundPx - mh * h;
-          if (sx === 0) sCtx.moveTo(sx, py);
-          else sCtx.lineTo(sx, py);
+          if (sx === 0) ctx.moveTo(sx, py);
+          else ctx.lineTo(sx, py);
         }
-        sCtx.lineTo(w, groundPx);
-        sCtx.lineTo(0, groundPx);
-        sCtx.closePath();
-        sCtx.fill();
+        ctx.lineTo(w, groundPx);
+        ctx.lineTo(0, groundPx);
+        ctx.closePath();
+        ctx.fill();
       }
 
-      function drawBirds(w, h, tod, windSpeed, time, dt) {
+      function drawBirds(ctx, w, h, tod, windSpeed, time, dt) {
         // Only spawn during daytime
         if (cycleTime >= 0.12 && cycleTime <= 0.50) {
           birdTimer -= dt;
@@ -512,15 +469,16 @@
           return;
         }
 
-        sCtx.strokeStyle = `rgba(20, 20, 30, ${birdAlpha})`;
-        sCtx.lineWidth = 1.5;
+        ctx.strokeStyle = `rgba(20, 20, 30, ${birdAlpha})`;
+        ctx.lineWidth = 1.5;
 
-        for (let i = flocks.length - 1; i >= 0; i--) {
+        let len = flocks.length;
+        for (let i = len - 1; i >= 0; i--) {
           const f = flocks[i];
           f.x += (f.speed + windSpeed * 0.3) * dt;
 
           if (f.x > w + 100) {
-            flocks.splice(i, 1);
+            flocks[i] = flocks[len - 1]; len--;
             continue;
           }
 
@@ -531,43 +489,44 @@
             const by = f.y + b.oy;
             const wingLen = 4;
 
-            sCtx.beginPath();
-            sCtx.moveTo(bx - wingLen, by - wingLen * wingAngle);
-            sCtx.lineTo(bx, by);
-            sCtx.lineTo(bx + wingLen, by - wingLen * wingAngle);
-            sCtx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(bx - wingLen, by - wingLen * wingAngle);
+            ctx.lineTo(bx, by);
+            ctx.lineTo(bx + wingLen, by - wingLen * wingAngle);
+            ctx.stroke();
           }
         }
+        flocks.length = len;
       }
 
-      function drawWindParticles(w, h, tod) {
+      function drawWindParticles(ctx, w, h, tod) {
         if (windParticles.length === 0) return;
         const alpha = Math.min(tod.skyBrightness + 0.15, 0.4);
-        sCtx.strokeStyle = `rgba(200, 210, 230, ${alpha})`;
-        sCtx.lineWidth = 0.8;
+        ctx.strokeStyle = `rgba(200, 210, 230, ${alpha})`;
+        ctx.lineWidth = 0.8;
 
         for (const p of windParticles) {
           const vis = p.life / p.maxLife;
-          sCtx.globalAlpha = vis * 0.5;
-          sCtx.beginPath();
-          sCtx.moveTo(p.x, p.y);
-          sCtx.lineTo(p.x + p.len, p.y);
-          sCtx.stroke();
+          ctx.globalAlpha = vis * 0.5;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x + p.len, p.y);
+          ctx.stroke();
         }
-        sCtx.globalAlpha = 1;
+        ctx.globalAlpha = 1;
       }
 
-      function drawGround(w, h, tod) {
+      function drawGround(ctx, w, h, tod) {
         const groundTop = h * GROUND_Y;
-        const grad = sCtx.createLinearGradient(0, groundTop, 0, h);
+        const grad = ctx.createLinearGradient(0, groundTop, 0, h);
         grad.addColorStop(0, rgb(tod.terrainColor));
         const darker = tod.terrainColor.map(c => c * 0.6);
         grad.addColorStop(1, rgb(darker));
-        sCtx.fillStyle = grad;
-        sCtx.fillRect(0, groundTop, w, h - groundTop);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, groundTop, w, h - groundTop);
       }
 
-      function drawTree(x, groundY, tree, tod) {
+      function drawTree(ctx, x, groundY, tree, tod) {
         const { height, width, tiers } = tree;
         const trunkW = width * 0.15;
         const trunkH = height * 0.25;
@@ -581,42 +540,42 @@
         const trunkColor = lerpColor(trunkNight, trunkDay, tod.skyBrightness);
 
         // Trunk
-        sCtx.fillStyle = rgb(trunkColor);
-        sCtx.fillRect(x - trunkW / 2, groundY - trunkH, trunkW, trunkH);
+        ctx.fillStyle = rgb(trunkColor);
+        ctx.fillRect(x - trunkW / 2, groundY - trunkH, trunkW, trunkH);
 
         // Canopy tiers (triangles stacked, each smaller going up)
-        sCtx.fillStyle = rgb(canopyColor);
+        ctx.fillStyle = rgb(canopyColor);
         const tierH = (height - trunkH) / tiers;
         for (let t = 0; t < tiers; t++) {
           const tierBottom = groundY - trunkH - t * tierH * 0.7;
           const tierTop = tierBottom - tierH;
           const tierW = width * (1 - t * 0.2);
 
-          sCtx.beginPath();
-          sCtx.moveTo(x, tierTop);
-          sCtx.lineTo(x - tierW / 2, tierBottom);
-          sCtx.lineTo(x + tierW / 2, tierBottom);
-          sCtx.closePath();
-          sCtx.fill();
+          ctx.beginPath();
+          ctx.moveTo(x, tierTop);
+          ctx.lineTo(x - tierW / 2, tierBottom);
+          ctx.lineTo(x + tierW / 2, tierBottom);
+          ctx.closePath();
+          ctx.fill();
         }
       }
 
-      function drawBush(x, groundY, bush, tod) {
+      function drawBush(ctx, x, groundY, bush, tod) {
         const bushDay = [30, 90, 22];
         const bushNight = [10, 24, 10];
         const color = lerpColor(bushNight, bushDay, tod.skyBrightness);
-        sCtx.fillStyle = rgb(color);
+        ctx.fillStyle = rgb(color);
 
         // Two overlapping circles
-        sCtx.beginPath();
-        sCtx.arc(x - bush.width * 0.15, groundY - bush.height * 0.5, bush.height * 0.5, 0, Math.PI * 2);
-        sCtx.fill();
-        sCtx.beginPath();
-        sCtx.arc(x + bush.width * 0.15, groundY - bush.height * 0.45, bush.height * 0.45, 0, Math.PI * 2);
-        sCtx.fill();
+        ctx.beginPath();
+        ctx.arc(x - bush.width * 0.15, groundY - bush.height * 0.5, bush.height * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(x + bush.width * 0.15, groundY - bush.height * 0.45, bush.height * 0.45, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      function drawVegetation(w, h, tod) {
+      function drawVegetation(ctx, w, h, tod) {
         const groundY = h * GROUND_Y;
         const startChunk = Math.floor((cameraX - 200) / CHUNK_SIZE);
         const endChunk = Math.floor((cameraX + w + 200) / CHUNK_SIZE);
@@ -628,12 +587,12 @@
           for (const bush of chunk.bushes) {
             const screenX = (chunkWorldX + bush.ox) - cameraX;
             if (screenX < -50 || screenX > w + 50) continue;
-            drawBush(screenX, groundY, bush, tod);
+            drawBush(ctx, screenX, groundY, bush, tod);
           }
           for (const tree of chunk.trees) {
             const screenX = (chunkWorldX + tree.ox) - cameraX;
             if (screenX < -60 || screenX > w + 60) continue;
-            drawTree(screenX, groundY, tree, tod);
+            drawTree(ctx, screenX, groundY, tree, tod);
           }
         }
 
@@ -643,91 +602,71 @@
         }
       }
 
-      // ─── Main Draw ────────────────────────────────────────
-      let lastTime = 0;
+      // ─── createApp ─────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#0a0a12',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Landscape structure — broad gradients, sky & mountains
+          {
+            fontSize: 18,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Detail — trees, birds, stars, cloud edges
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'mono',
+            blendMode: 'add',
+            opacity: 0.65,
+          },
+          // Layer 3: Atmospheric texture — haze, shimmer
+          {
+            fontSize: 12,
+            charset: 'braille',
+            colorScheme: 'vapor',
+            pattern: 'waves',
+            patternMix: 0.25,
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        draw(ctx, { time, dt, width, height }) {
+          const t = time * 0.001;
+          const w = width;
+          const h = height;
 
-      function drawSource(time) {
-        const t = time * 0.001;
-        const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
-        lastTime = time;
+          // Advance systems
+          cycleTime = (cycleTime + dt / CYCLE_DURATION) % 1;
+          cameraX += CAMERA_SPEED * dt;
+          const windSpeed = updateWind(dt);
+          const tod = getTimeOfDay(cycleTime);
 
-        const w = source.width;
-        const h = source.height;
-
-        // Advance systems
-        cycleTime = (cycleTime + dt / CYCLE_DURATION) % 1;
-        cameraX += CAMERA_SPEED * dt;
-        const windSpeed = updateWind(dt);
-        const tod = getTimeOfDay(cycleTime);
-
-        // Draw back to front
-        drawSky(w, h, tod);
-        drawHorizonGlow(w, h, tod);
-        drawStars(w, h, tod, t);
-        drawSun(w, h, tod);
-        drawMoon(w, h, tod);
-        drawClouds(w, h, tod, windSpeed, dt);
-        drawMountainRange(w, h, MOUNTAIN_RANGES[0], tod);
-        drawMountainRange(w, h, MOUNTAIN_RANGES[1], tod);
-        drawBirds(w, h, tod, windSpeed, t, dt);
-        drawWindParticles(w, h, tod);
-        drawMountainRange(w, h, MOUNTAIN_RANGES[2], tod);
-        drawGround(w, h, tod);
-        drawVegetation(w, h, tod);
-      }
-
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#0a0a12',
-        sourceOpacity: 0,
-        speed: 1,
+          // Draw back to front
+          drawSky(ctx, w, h, tod);
+          drawHorizonGlow(ctx, w, h, tod);
+          drawStars(ctx, w, h, tod, t);
+          drawSun(ctx, w, h, tod);
+          drawMoon(ctx, w, h, tod);
+          drawClouds(ctx, w, h, tod, windSpeed, dt);
+          drawMountainRange(ctx, w, h, MOUNTAIN_RANGES[0], tod);
+          drawMountainRange(ctx, w, h, MOUNTAIN_RANGES[1], tod);
+          drawBirds(ctx, w, h, tod, windSpeed, t, dt);
+          drawWindParticles(ctx, w, h, tod);
+          drawMountainRange(ctx, w, h, MOUNTAIN_RANGES[2], tod);
+          drawGround(ctx, w, h, tod);
+          drawVegetation(ctx, w, h, tod);
+        },
       });
 
-      // Layer 1: Landscape structure — broad gradients, sky & mountains
-      ascii.addLayer({
-        source,
-        fontSize: 18,
-        charset: 'blocks',
-        colorScheme: 'ocean',
-        blendMode: 'replace',
-        opacity: 1,
-      });
-
-      // Layer 2: Detail — trees, birds, stars, cloud edges
-      ascii.addLayer({
-        source,
-        fontSize: 8,
-        charset: 'density',
-        colorScheme: 'mono',
-        blendMode: 'add',
-        opacity: 0.65,
-      });
-
-      // Layer 3: Atmospheric texture — haze, shimmer
-      ascii.addLayer({
-        source,
-        fontSize: 12,
-        charset: 'braille',
-        colorScheme: 'vapor',
-        pattern: 'waves',
-        patternMix: 0.25,
-        blendMode: 'add',
-        opacity: 0.2,
-      });
-
-      // ─── Controls ─────────────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      // ─── Main Loop ────────────────────────────────────────
-      function loop(time) {
-        drawSource(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
+      // Initialize clouds spread across the sky
+      for (let i = 0; i < 6; i++) clouds.push(spawnCloud(true));
     </script>
   </body>
 </html>

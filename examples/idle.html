@@ -72,20 +72,10 @@
       <div id="shop"></div>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
+      import { createApp } from './boilerplate.js';
 
-      // ─── Canvas Setup ───────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
+      // ─── Elements ─────────────────────────────────────────
       const shop = document.getElementById('shop');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-        hideShop();
-      }
-      resize();
-      window.addEventListener('resize', resize);
 
       // ─── Constants ──────────────────────────────────────
       const TILE_W = 64;
@@ -179,8 +169,8 @@
       // ─── Iso Utilities ──────────────────────────────────
       function getCenter() {
         return {
-          x: source.width / 2,
-          y: source.height * 0.32,
+          x: app.width / 2,
+          y: app.height * 0.32,
         };
       }
 
@@ -398,7 +388,7 @@
 
       function spawnAmbientParticle() {
         if (particles.length >= MAX_PARTICLES) return;
-        const w = source.width, h = source.height;
+        const w = app.width, h = app.height;
         particles.push({
           x: Math.random() * w,
           y: Math.random() * h,
@@ -463,8 +453,9 @@
           }
         }
 
-        // Update all particles
-        for (let i = particles.length - 1; i >= 0; i--) {
+        // Update all particles (swap-and-pop)
+        let len = particles.length;
+        for (let i = len - 1; i >= 0; i--) {
           const p = particles[i];
           p.life -= dt * 60;
 
@@ -486,13 +477,14 @@
           }
 
           if (p.life <= 0) {
-            particles.splice(i, 1);
+            particles[i] = particles[len - 1]; len--;
           }
         }
+        particles.length = len;
       }
 
       // ─── Drawing Helpers ────────────────────────────────
-      function drawDiamond(x, y, w, h) {
+      function drawDiamond(ctx, x, y, w, h) {
         ctx.beginPath();
         ctx.moveTo(x, y - h / 2);
         ctx.lineTo(x + w / 2, y);
@@ -501,8 +493,8 @@
         ctx.closePath();
       }
 
-      function drawIsland() {
-        const w = source.width, h = source.height;
+      function drawIsland(ctx) {
+        const w = app.width, h = app.height;
 
         // Island body — large diamond beneath grid
         const c = getCenter();
@@ -542,13 +534,13 @@
         ctx.stroke();
       }
 
-      function drawGrid() {
+      function drawGrid(ctx) {
         ctx.strokeStyle = 'rgba(80, 100, 160, 0.25)';
         ctx.lineWidth = 1;
         for (let r = 0; r < GRID; r++) {
           for (let c = 0; c < GRID; c++) {
             const pos = isoToScreen(c, r);
-            drawDiamond(pos.x, pos.y, TILE_W, TILE_H);
+            drawDiamond(ctx, pos.x, pos.y, TILE_W, TILE_H);
             ctx.stroke();
           }
         }
@@ -556,7 +548,7 @@
         // Hover highlight
         if (hoverTile && inGrid(hoverTile.col, hoverTile.row)) {
           const pos = isoToScreen(hoverTile.col, hoverTile.row);
-          drawDiamond(pos.x, pos.y, TILE_W, TILE_H);
+          drawDiamond(ctx, pos.x, pos.y, TILE_W, TILE_H);
           ctx.strokeStyle = 'rgba(120, 100, 220, 0.35)';
           ctx.lineWidth = 1.5;
           ctx.stroke();
@@ -565,7 +557,7 @@
         }
       }
 
-      function drawCrystalNode(x, y, tier, t, seed) {
+      function drawCrystalNode(ctx, x, y, tier, t, seed) {
         const info = BUILDINGS.crystal;
         const color = info.colors[tier - 1];
         const glow = info.glowRadius[tier - 1];
@@ -582,16 +574,16 @@
 
         // Crystal diamond shape
         ctx.fillStyle = color;
-        drawDiamond(x, y - 10, size, size * 1.4);
+        drawDiamond(ctx, x, y - 10, size, size * 1.4);
         ctx.fill();
 
         // Bright core
         ctx.fillStyle = '#ffffff88';
-        drawDiamond(x, y - 10, size * 0.4, size * 0.6);
+        drawDiamond(ctx, x, y - 10, size * 0.4, size * 0.6);
         ctx.fill();
       }
 
-      function drawCollector(x, y, tier, t, seed) {
+      function drawCollector(ctx, x, y, tier, t, seed) {
         const info = BUILDINGS.collector;
         const color = info.colors[tier - 1];
         const glow = info.glowRadius[tier - 1];
@@ -634,7 +626,7 @@
         }
       }
 
-      function drawAmplifier(x, y, tier, t, seed) {
+      function drawAmplifier(ctx, x, y, tier, t, seed) {
         const info = BUILDINGS.amplifier;
         const color = info.colors[tier - 1];
         const glow = info.glowRadius[tier - 1];
@@ -672,7 +664,7 @@
         }
       }
 
-      function drawNexus(x, y, level, t) {
+      function drawNexus(ctx, x, y, level, t) {
         const radius = 16 + level * 4;
         const glowR = 50 + level * 12;
         const breathe = 0.92 + 0.08 * Math.sin(t * 0.8);
@@ -716,7 +708,7 @@
         ctx.fillText(`Lv${level}`, x, y + radius * 0.7);
       }
 
-      function drawEnergyBeams(t) {
+      function drawEnergyBeams(ctx, t) {
         for (let r = 0; r < GRID; r++) {
           for (let c = 0; c < GRID; c++) {
             const b = grid[r][c];
@@ -747,7 +739,7 @@
         }
       }
 
-      function drawParticles() {
+      function drawParticles(ctx) {
         for (const p of particles) {
           const alpha = Math.max(0, p.life / p.maxLife);
           const s = p.type === 'ambient' ? 40 : 80;
@@ -765,9 +757,9 @@
         }
       }
 
-      function drawHUD() {
-        const w = source.width;
-        const h = source.height;
+      function drawHUD(ctx) {
+        const w = app.width;
+        const h = app.height;
 
         // Resources — top left
         ctx.font = 'bold 16px monospace';
@@ -924,65 +916,22 @@
         shopMode = null;
       }
 
-      // ─── Input ──────────────────────────────────────────
-      source.addEventListener('mousemove', (e) => {
-        const rect = source.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const iso = screenToIso(sx, sy);
-        if (inGrid(iso.col, iso.row)) {
-          hoverTile = iso;
-        } else {
-          hoverTile = null;
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        // Accumulate resources
+        resources.shards += production.shards * dt;
+        resources.energy += production.energy * dt;
+
+        // Update particles
+        updateParticles(dt);
+
+        // Auto-save
+        saveTimer -= dt;
+        if (saveTimer <= 0) {
+          saveTimer = 10;
+          saveGame();
         }
-      });
-
-      source.addEventListener('mouseleave', () => { hoverTile = null; });
-
-      source.addEventListener('click', (e) => {
-        const rect = source.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const iso = screenToIso(sx, sy);
-
-        if (!inGrid(iso.col, iso.row)) {
-          hideShop();
-          return;
-        }
-
-        const b = grid[iso.row][iso.col];
-
-        if (b) {
-          // Click boost for crystals
-          if (b.type === 'crystal') {
-            const yield_ = BUILDINGS.crystal.clickYield * Math.pow(2, b.tier - 1);
-            resources.shards += yield_;
-            spawnClickBurst(iso.col, iso.row);
-          }
-          showUpgradePanel(iso.col, iso.row, e.clientX, e.clientY);
-        } else {
-          showBuildPanel(iso.col, iso.row, e.clientX, e.clientY);
-        }
-      });
-
-      // Prevent click on shop from propagating to canvas
-      shop.addEventListener('click', (e) => e.stopPropagation());
-
-      document.addEventListener('keydown', (e) => {
-        const key = e.key.toLowerCase();
-        if (key === 'p') ascii.togglePanel();
-        if (key === 'e') ascii.set('enabled', !ascii.get('enabled'));
-        if (key === 'escape') hideShop();
-        if (key === 'r') {
-          const now = performance.now();
-          if (now - resetTimer < 1000) {
-            resetGame();
-            resetTimer = 0;
-          } else {
-            resetTimer = now;
-          }
-        }
-      });
+      }
 
       // ─── Save / Load ───────────────────────────────────
       const SAVE_KEY = 'ascii-ify-idle-save';
@@ -1036,113 +985,7 @@
         hideShop();
       }
 
-      // ─── Update ─────────────────────────────────────────
-      function update(dt) {
-        // Accumulate resources
-        resources.shards += production.shards * dt;
-        resources.energy += production.energy * dt;
-
-        // Update particles
-        updateParticles(dt);
-
-        // Auto-save
-        saveTimer -= dt;
-        if (saveTimer <= 0) {
-          saveTimer = 10;
-          saveGame();
-        }
-      }
-
-      // ─── Draw ───────────────────────────────────────────
-      function draw(t) {
-        const w = source.width, h = source.height;
-
-        // Clear
-        ctx.fillStyle = '#0a0a20';
-        ctx.fillRect(0, 0, w, h);
-
-        // Background stars
-        for (const s of bgStars) {
-          const twinkle = 0.5 + 0.5 * Math.sin(t * s.speed + s.phase);
-          ctx.fillStyle = `rgba(200, 190, 240, ${s.brightness * twinkle * 1.8})`;
-          ctx.beginPath();
-          ctx.arc(s.x * w, s.y * h, 1.2, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Island body
-        drawIsland();
-
-        // Grid lines
-        drawGrid();
-
-        // Energy beams (below buildings)
-        drawEnergyBeams(t);
-
-        // Buildings — back to front (iso sort)
-        for (let r = 0; r < GRID; r++) {
-          for (let c = 0; c < GRID; c++) {
-            const b = grid[r][c];
-            if (!b) continue;
-            const pos = isoToScreen(c, r);
-            const x = pos.x, y = pos.y;
-
-            if (b.type === 'crystal')     drawCrystalNode(x, y, b.tier, t, b.seed);
-            else if (b.type === 'collector')  drawCollector(x, y, b.tier, t, b.seed);
-            else if (b.type === 'amplifier')  drawAmplifier(x, y, b.tier, t, b.seed);
-            else if (b.type === 'nexus')      drawNexus(x, y, nexusLevel, t);
-          }
-        }
-
-        // Particles (above buildings)
-        drawParticles();
-
-        // HUD
-        drawHUD();
-      }
-
-      // ─── ascii-ify Setup ────────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#0a0a20',
-        sourceOpacity: 0,
-        speed: 1,
-      });
-
-      // Layer 1 — Ground & Structure: blocks + vapor
-      ascii.addLayer({
-        source,
-        fontSize: 18,
-        charset: 'blocks',
-        colorScheme: 'vapor',
-        pattern: 'diamond',
-        patternMix: 0.08,
-        blendMode: 'replace',
-        opacity: 1,
-      });
-
-      // Layer 2 — Detail & Energy: density + neon
-      ascii.addLayer({
-        source,
-        fontSize: 10,
-        charset: 'density',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.8,
-      });
-
-      // Layer 3 — Atmosphere: braille + ocean
-      ascii.addLayer({
-        source,
-        fontSize: 6,
-        charset: 'braille',
-        colorScheme: 'ocean',
-        pattern: 'breathing',
-        patternMix: 0.2,
-        blendMode: 'add',
-        opacity: 0.25,
-      });
-
-      // ─── Init & Main Loop ───────────────────────────────
+      // ─── Init ─────────────────────────────────────────
       initGrid();
       initStars();
       if (!loadGame()) {
@@ -1150,21 +993,152 @@
       }
       window.addEventListener('beforeunload', saveGame);
 
-      let prevTime = performance.now();
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#0a0a20',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1 — Ground & Structure: blocks + vapor
+          {
+            fontSize: 18,
+            charset: 'blocks',
+            colorScheme: 'vapor',
+            pattern: 'diamond',
+            patternMix: 0.08,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2 — Detail & Energy: density + neon
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.8,
+          },
+          // Layer 3 — Atmosphere: braille + ocean
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'breathing',
+            patternMix: 0.2,
+            blendMode: 'add',
+            opacity: 0.25,
+          },
+        ],
+        onResize() {
+          hideShop();
+        },
+        onKeydown(e) {
+          const key = e.key.toLowerCase();
+          if (key === 'escape') hideShop();
+          if (key === 'r') {
+            const now = performance.now();
+            if (now - resetTimer < 1000) {
+              resetGame();
+              resetTimer = 0;
+            } else {
+              resetTimer = now;
+            }
+          }
+        },
+        draw(ctx, { time: rawTime, dt, width: w, height: h }) {
+          time = rawTime * 0.001;
 
-      function frame(now) {
-        const dt = Math.min((now - prevTime) / 1000, 0.05);
-        prevTime = now;
-        time = now * 0.001;
+          update(dt);
 
-        update(dt);
-        draw(time);
-        ascii.render();
+          // Clear
+          ctx.fillStyle = '#0a0a20';
+          ctx.fillRect(0, 0, w, h);
 
-        requestAnimationFrame(frame);
-      }
+          // Background stars
+          for (const s of bgStars) {
+            const twinkle = 0.5 + 0.5 * Math.sin(time * s.speed + s.phase);
+            ctx.fillStyle = `rgba(200, 190, 240, ${s.brightness * twinkle * 1.8})`;
+            ctx.beginPath();
+            ctx.arc(s.x * w, s.y * h, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
 
-      requestAnimationFrame(frame);
+          // Island body
+          drawIsland(ctx);
+
+          // Grid lines
+          drawGrid(ctx);
+
+          // Energy beams (below buildings)
+          drawEnergyBeams(ctx, time);
+
+          // Buildings — back to front (iso sort)
+          for (let r = 0; r < GRID; r++) {
+            for (let c = 0; c < GRID; c++) {
+              const b = grid[r][c];
+              if (!b) continue;
+              const pos = isoToScreen(c, r);
+              const x = pos.x, y = pos.y;
+
+              if (b.type === 'crystal')     drawCrystalNode(ctx, x, y, b.tier, time, b.seed);
+              else if (b.type === 'collector')  drawCollector(ctx, x, y, b.tier, time, b.seed);
+              else if (b.type === 'amplifier')  drawAmplifier(ctx, x, y, b.tier, time, b.seed);
+              else if (b.type === 'nexus')      drawNexus(ctx, x, y, nexusLevel, time);
+            }
+          }
+
+          // Particles (above buildings)
+          drawParticles(ctx);
+
+          // HUD
+          drawHUD(ctx);
+        },
+      });
+
+      // ─── Input (uses app.canvas) ──────────────────────
+      app.canvas.addEventListener('mousemove', (e) => {
+        const rect = app.canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const iso = screenToIso(sx, sy);
+        if (inGrid(iso.col, iso.row)) {
+          hoverTile = iso;
+        } else {
+          hoverTile = null;
+        }
+      });
+
+      app.canvas.addEventListener('mouseleave', () => { hoverTile = null; });
+
+      app.canvas.addEventListener('click', (e) => {
+        const rect = app.canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const iso = screenToIso(sx, sy);
+
+        if (!inGrid(iso.col, iso.row)) {
+          hideShop();
+          return;
+        }
+
+        const b = grid[iso.row][iso.col];
+
+        if (b) {
+          // Click boost for crystals
+          if (b.type === 'crystal') {
+            const yield_ = BUILDINGS.crystal.clickYield * Math.pow(2, b.tier - 1);
+            resources.shards += yield_;
+            spawnClickBurst(iso.col, iso.row);
+          }
+          showUpgradePanel(iso.col, iso.row, e.clientX, e.clientY);
+        } else {
+          showBuildPanel(iso.col, iso.row, e.clientX, e.clientY);
+        }
+      });
+
+      // Prevent click on shop from propagating to canvas
+      shop.addEventListener('click', (e) => e.stopPropagation());
     </script>
   </body>
 </html>

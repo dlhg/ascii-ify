@@ -16,18 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
 
       // ─── Element Definitions ──────────────────────────────
       // Each "element" has a proton count (nuclear charge), color, and
@@ -58,8 +47,8 @@
         freeElectrons.length = 0;
         transferArcs.length = 0;
 
-        const w = source.width;
-        const h = source.height;
+        const w = app.canvas.width;
+        const h = app.canvas.height;
         const padding = 250;
 
         for (let i = 0; i < NUM_ATOMS; i++) {
@@ -125,8 +114,8 @@
       }
 
       function updateAtoms() {
-        const w = source.width;
-        const h = source.height;
+        const w = app.canvas.width;
+        const h = app.canvas.height;
 
         for (const atom of atoms) {
           // Gentle drift with wobble
@@ -189,12 +178,14 @@
           }
         }
 
-        // Update free electrons
-        for (let i = freeElectrons.length - 1; i >= 0; i--) {
+        // Update free electrons (swap-and-pop)
+        let feLen = freeElectrons.length;
+        for (let i = feLen - 1; i >= 0; i--) {
           const fe = freeElectrons[i];
           fe.x += fe.vx;
           fe.y += fe.vy;
           fe.life--;
+          let captured = false;
 
           // Free electrons are attracted to nearby positive ions
           for (const atom of atoms) {
@@ -219,12 +210,14 @@
                     eccentricity: 0.9 + Math.random() * 0.2,
                   });
                   spawnTransferArc(fe.x, fe.y, atom.x, atom.y, 160);
-                  freeElectrons.splice(i, 1);
+                  freeElectrons[i] = freeElectrons[feLen - 1]; feLen--;
+                  captured = true;
                   break;
                 }
               }
             }
           }
+          if (captured) continue;
 
           // Drift and drag
           fe.vx *= 0.995;
@@ -232,25 +225,32 @@
 
           // Remove if expired or off-screen
           if (fe.life <= 0 || fe.x < -50 || fe.x > w + 50 || fe.y < -50 || fe.y > h + 50) {
-            freeElectrons.splice(i, 1);
+            freeElectrons[i] = freeElectrons[feLen - 1]; feLen--;
           }
         }
+        freeElectrons.length = feLen;
 
-        // Update transfer arcs
-        for (let i = transferArcs.length - 1; i >= 0; i--) {
+        // Update transfer arcs (swap-and-pop)
+        let arcLen = transferArcs.length;
+        for (let i = arcLen - 1; i >= 0; i--) {
           transferArcs[i].life--;
           if (transferArcs[i].life <= 0) {
-            transferArcs.splice(i, 1);
+            transferArcs[i] = transferArcs[arcLen - 1]; arcLen--;
           }
         }
+        transferArcs.length = arcLen;
 
-        // Update photon bursts
-        for (let i = photonBursts.length - 1; i >= 0; i--) {
+        // Update photon bursts (swap-and-pop)
+        let pbLen = photonBursts.length;
+        for (let i = pbLen - 1; i >= 0; i--) {
           const p = photonBursts[i];
           p.radius += p.speed;
           p.life--;
-          if (p.life <= 0) photonBursts.splice(i, 1);
+          if (p.life <= 0) {
+            photonBursts[i] = photonBursts[pbLen - 1]; pbLen--;
+          }
         }
+        photonBursts.length = pbLen;
       }
 
       function tryIonize(a, b, dist) {
@@ -371,9 +371,7 @@
       }
 
       // ─── Drawing ──────────────────────────────────────────
-      function drawScene(time) {
-        const w = source.width;
-        const h = source.height;
+      function drawScene(ctx, w, h, time) {
         const t = time * 0.001;
 
         updateAtoms();
@@ -590,62 +588,49 @@
         ctx.fillText('P panel · E toggle', w / 2, h - 12);
       }
 
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#050510',
-        sourceOpacity: 0,
-        speed: 0.8,
+      // ─── createApp ─────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#050510',
+          sourceOpacity: 0,
+          speed: 0.8,
+        },
+        layers: [
+          // Layer 1: Electromagnetic field — braille for soft field texture
+          {
+            fontSize: 14,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'plasma',
+            patternMix: 0.15,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Atoms and electrons — dense detail
+          {
+            fontSize: 6,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.85,
+          },
+          // Layer 3: Ionization energy / glow — large blocks for warmth
+          {
+            fontSize: 20,
+            charset: 'blocks',
+            colorScheme: 'fire',
+            pattern: 'breathing',
+            patternMix: 0.3,
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        draw(ctx, { time, width, height }) {
+          drawScene(ctx, width, height, time);
+        },
       });
 
-      // Layer 1: Electromagnetic field — braille for soft field texture
-      ascii.addLayer({
-        source: source,
-        fontSize: 14,
-        charset: 'braille',
-        colorScheme: 'ocean',
-        pattern: 'plasma',
-        patternMix: 0.15,
-        blendMode: 'replace',
-        opacity: 1,
-      });
-
-      // Layer 2: Atoms and electrons — dense detail
-      ascii.addLayer({
-        source: source,
-        fontSize: 6,
-        charset: 'density',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.85,
-      });
-
-      // Layer 3: Ionization energy / glow — large blocks for warmth
-      ascii.addLayer({
-        source: source,
-        fontSize: 20,
-        charset: 'blocks',
-        colorScheme: 'fire',
-        pattern: 'breathing',
-        patternMix: 0.3,
-        blendMode: 'add',
-        opacity: 0.2,
-      });
-
-      // ─── Keyboard Controls ────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      // ─── Init & Loop ─────────────────────────────────────
       initAtoms();
-
-      function loop(time) {
-        drawScene(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

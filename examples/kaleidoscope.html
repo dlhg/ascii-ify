@@ -16,18 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
 
       // ─── Kaleidoscope Parameters ────────────────────────
       const SEGMENTS = 8;
@@ -43,36 +32,17 @@
       let mouseAngle = 0;
       let mouseDist = 0;
 
-      window.addEventListener('mousemove', (e) => {
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-        updatePolar();
-      });
-
-      function updatePolar() {
-        const cx = source.width / 2;
-        const cy = source.height / 2;
+      function updatePolar(canvasW, canvasH) {
+        const cx = canvasW / 2;
+        const cy = canvasH / 2;
         const dx = mouseX - cx;
         const dy = mouseY - cy;
         mouseAngle = Math.atan2(dy, dx);
         mouseDist = Math.min(Math.sqrt(dx * dx + dy * dy) / Math.min(cx, cy), 1);
       }
 
-      // Scroll wheel: adjust rotation speed
-      source.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        rotationSpeed += e.deltaY * -0.0005;
-        rotationSpeed = Math.max(-1.5, Math.min(1.5, rotationSpeed));
-      }, { passive: false });
-
-      // Click: freeze briefly
-      window.addEventListener('click', () => {
-        frozen = true;
-        freezeTimer = 0.5;
-      });
-
       // ─── Draw Seed Wedge ────────────────────────────────
-      function drawSeedWedge(radius, t) {
+      function drawSeedWedge(ctx, radius, t) {
         // Orbiting circle 1: large, slow orbit
         const orbit1Angle = t * 0.7 + mouseAngle * 0.5;
         const orbit1Dist = radius * (0.3 + mouseDist * 0.3);
@@ -146,155 +116,147 @@
         ctx.stroke();
       }
 
-      // ─── Draw Kaleidoscope ──────────────────────────────
-      function drawSource(timestamp) {
-        const dt = 1 / 60;
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#08080c', sourceOpacity: 0, speed: 1 },
+        layers: [
+          // Layer 1: Core kaleidoscope — kaleidoscope pattern reinforces the symmetry
+          {
+            fontSize: 12,
+            charset: 'density',
+            colorScheme: 'rainbow',
+            pattern: 'kaleidoscope',
+            patternMix: 0.7,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Geometric structure — diamond pattern adds inner geometry
+          {
+            fontSize: 18,
+            charset: 'blocks',
+            colorScheme: 'vapor',
+            pattern: 'diamond',
+            patternMix: 0.5,
+            blendMode: 'add',
+            opacity: 0.3,
+          },
+          // Layer 3: Organic detail — spiral adds fine swirling detail
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'acid',
+            pattern: 'spiral',
+            patternMix: 0.6,
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        draw(ctx, { dt, width: w, height: h }) {
+          // Handle freeze
+          if (frozen) {
+            freezeTimer -= dt;
+            if (freezeTimer <= 0) frozen = false;
+          } else {
+            globalTime += dt * rotationSpeed;
+          }
 
-        // Handle freeze
-        if (frozen) {
-          freezeTimer -= dt;
-          if (freezeTimer <= 0) frozen = false;
-        } else {
-          globalTime += dt * rotationSpeed;
-        }
+          const cx = w / 2;
+          const cy = h / 2;
+          const radius = Math.min(w, h) * 0.45;
+          const t = globalTime;
 
-        const w = source.width;
-        const h = source.height;
-        const cx = w / 2;
-        const cy = h / 2;
-        const radius = Math.min(w, h) * 0.45;
-        const t = globalTime;
+          // Clear with dark background
+          ctx.fillStyle = '#06060e';
+          ctx.fillRect(0, 0, w, h);
 
-        // Clear with dark background
-        ctx.fillStyle = '#06060e';
-        ctx.fillRect(0, 0, w, h);
+          // Background radial gradient from center
+          const bgHue = (t * 15) % 360;
+          const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+          bgGrad.addColorStop(0, `hsla(${bgHue}, 60%, 15%, 0.5)`);
+          bgGrad.addColorStop(0.5, `hsla(${(bgHue + 40) % 360}, 50%, 8%, 0.3)`);
+          bgGrad.addColorStop(1, 'rgba(6, 6, 14, 0)');
+          ctx.fillStyle = bgGrad;
+          ctx.fillRect(0, 0, w, h);
 
-        // Background radial gradient from center
-        const bgHue = (t * 15) % 360;
-        const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-        bgGrad.addColorStop(0, `hsla(${bgHue}, 60%, 15%, 0.5)`);
-        bgGrad.addColorStop(0.5, `hsla(${(bgHue + 40) % 360}, 50%, 8%, 0.3)`);
-        bgGrad.addColorStop(1, 'rgba(6, 6, 14, 0)');
-        ctx.fillStyle = bgGrad;
-        ctx.fillRect(0, 0, w, h);
-
-        // ── Draw kaleidoscope segments ──
-        ctx.save();
-        ctx.translate(cx, cy);
-
-        // Build a triangular clip path for one wedge
-        const wedgeHalfAngle = SEGMENT_ANGLE / 2;
-
-        for (let i = 0; i < SEGMENTS; i++) {
-          const angle = SEGMENT_ANGLE * i + t * 0.2;
-
-          // Draw original wedge
+          // ── Draw kaleidoscope segments ──
           ctx.save();
-          ctx.rotate(angle);
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(Math.cos(-wedgeHalfAngle) * radius * 1.5, Math.sin(-wedgeHalfAngle) * radius * 1.5);
-          ctx.lineTo(Math.cos(wedgeHalfAngle) * radius * 1.5, Math.sin(wedgeHalfAngle) * radius * 1.5);
-          ctx.closePath();
-          ctx.clip();
-          drawSeedWedge(radius, t);
+          ctx.translate(cx, cy);
+
+          // Build a triangular clip path for one wedge
+          const wedgeHalfAngle = SEGMENT_ANGLE / 2;
+
+          for (let i = 0; i < SEGMENTS; i++) {
+            const angle = SEGMENT_ANGLE * i + t * 0.2;
+
+            // Draw original wedge
+            ctx.save();
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(Math.cos(-wedgeHalfAngle) * radius * 1.5, Math.sin(-wedgeHalfAngle) * radius * 1.5);
+            ctx.lineTo(Math.cos(wedgeHalfAngle) * radius * 1.5, Math.sin(wedgeHalfAngle) * radius * 1.5);
+            ctx.closePath();
+            ctx.clip();
+            drawSeedWedge(ctx, radius, t);
+            ctx.restore();
+
+            // Draw mirrored wedge
+            ctx.save();
+            ctx.rotate(angle);
+            ctx.scale(1, -1);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(Math.cos(-wedgeHalfAngle) * radius * 1.5, Math.sin(-wedgeHalfAngle) * radius * 1.5);
+            ctx.lineTo(Math.cos(wedgeHalfAngle) * radius * 1.5, Math.sin(wedgeHalfAngle) * radius * 1.5);
+            ctx.closePath();
+            ctx.clip();
+            drawSeedWedge(ctx, radius, t);
+            ctx.restore();
+          }
+
           ctx.restore();
 
-          // Draw mirrored wedge
-          ctx.save();
-          ctx.rotate(angle);
-          ctx.scale(1, -1);
+          // Center bright glow
+          const centerGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 0.15);
+          const cHue = (t * 30 + 180) % 360;
+          centerGlow.addColorStop(0, `hsla(${cHue}, 80%, 80%, 0.5)`);
+          centerGlow.addColorStop(0.5, `hsla(${cHue}, 70%, 50%, 0.15)`);
+          centerGlow.addColorStop(1, `hsla(${cHue}, 60%, 30%, 0)`);
+          ctx.fillStyle = centerGlow;
           ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(Math.cos(-wedgeHalfAngle) * radius * 1.5, Math.sin(-wedgeHalfAngle) * radius * 1.5);
-          ctx.lineTo(Math.cos(wedgeHalfAngle) * radius * 1.5, Math.sin(wedgeHalfAngle) * radius * 1.5);
-          ctx.closePath();
-          ctx.clip();
-          drawSeedWedge(radius, t);
+          ctx.arc(cx, cy, radius * 0.15, 0, Math.PI * 2);
+          ctx.fill();
+
+          // ── Instructions ──
+          ctx.save();
+          ctx.font = '12px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.fillText(
+            'move mouse to shape pattern \u00b7 scroll to change speed \u00b7 click to freeze \u00b7 P panel \u00b7 E toggle',
+            cx, h - 16
+          );
           ctx.restore();
-        }
-
-        ctx.restore();
-
-        // Center bright glow
-        const centerGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 0.15);
-        const cHue = (t * 30 + 180) % 360;
-        centerGlow.addColorStop(0, `hsla(${cHue}, 80%, 80%, 0.5)`);
-        centerGlow.addColorStop(0.5, `hsla(${cHue}, 70%, 50%, 0.15)`);
-        centerGlow.addColorStop(1, `hsla(${cHue}, 60%, 30%, 0)`);
-        ctx.fillStyle = centerGlow;
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius * 0.15, 0, Math.PI * 2);
-        ctx.fill();
-
-        // ── Instructions ──
-        ctx.save();
-        ctx.font = '12px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-        ctx.fillText(
-          'move mouse to shape pattern \u00b7 scroll to change speed \u00b7 click to freeze \u00b7 P panel \u00b7 E toggle',
-          cx, h - 16
-        );
-        ctx.restore();
-      }
-
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
+        },
       });
 
-      // Layer 1: Core kaleidoscope — kaleidoscope pattern reinforces the symmetry
-      ascii.addLayer({
-        source: source,
-        fontSize: 12,
-        charset: 'density',
-        colorScheme: 'rainbow',
-        pattern: 'kaleidoscope',
-        patternMix: 0.7,
-        blendMode: 'replace',
-        opacity: 1,
+      // ─── Canvas / Window Events ───────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+        updatePolar(app.width, app.height);
       });
 
-      // Layer 2: Geometric structure — diamond pattern adds inner geometry
-      ascii.addLayer({
-        source: source,
-        fontSize: 18,
-        charset: 'blocks',
-        colorScheme: 'vapor',
-        pattern: 'diamond',
-        patternMix: 0.5,
-        blendMode: 'add',
-        opacity: 0.3,
-      });
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        rotationSpeed += e.deltaY * -0.0005;
+        rotationSpeed = Math.max(-1.5, Math.min(1.5, rotationSpeed));
+      }, { passive: false });
 
-      // Layer 3: Organic detail — spiral adds fine swirling detail
-      ascii.addLayer({
-        source: source,
-        fontSize: 6,
-        charset: 'braille',
-        colorScheme: 'acid',
-        pattern: 'spiral',
-        patternMix: 0.6,
-        blendMode: 'add',
-        opacity: 0.2,
+      window.addEventListener('click', () => {
+        frozen = true;
+        freezeTimer = 0.5;
       });
-
-      // ─── Keyboard Controls ────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      // ─── Main Loop ────────────────────────────────────────
-      function loop(time) {
-        drawSource(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

@@ -16,17 +16,8 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resize();
-      window.addEventListener('resize', resize);
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
 
       // ─── Constants ─────────────────────────────────────
       const GRAVITY = 0.5;
@@ -39,51 +30,49 @@
 
       // ─── Game State ────────────────────────────────────
       let state = 'waiting'; // 'waiting' | 'playing' | 'dead'
-      let birdY, birdVY, score, pipes, feathers;
+      let birdY, birdVY, score, pipes;
       let deathTimer = 0;
       let flashTimer = 0;
       let globalTime = 0;
 
+      const feathers = new ParticlePool({ maxParticles: 200, gravity: 360 });
+
       function resetGame() {
-        const h = source.height;
+        const h = app.height;
         birdY = h * 0.45;
         birdVY = 0;
         score = 0;
         pipes = [];
-        feathers = [];
+        feathers.clear();
         deathTimer = 0;
         flashTimer = 0;
       }
-      resetGame();
 
-      function getBirdX() { return source.width * 0.25; }
-      function getGroundY() { return source.height * (1 - GROUND_RATIO); }
-      function getGapSize() { return source.height * 0.25; }
+      function getBirdX() { return app.width * 0.25; }
+      function getGroundY() { return app.height * (1 - GROUND_RATIO); }
+      function getGapSize() { return app.height * 0.25; }
 
       // ─── Pipes ─────────────────────────────────────────
       function spawnPipe() {
-        const h = source.height;
+        const h = app.height;
         const groundY = getGroundY();
-        const gap = getGapSize();
         const minCenter = h * 0.25;
         const maxCenter = groundY - h * 0.25;
         const gapCenter = minCenter + Math.random() * (maxCenter - minCenter);
-        pipes.push({ x: source.width + PIPE_WIDTH, gapCenter, scored: false });
+        pipes.push({ x: app.width + PIPE_WIDTH, gapCenter, scored: false });
       }
 
       // ─── Feathers ──────────────────────────────────────
       function emitFeathers() {
         const bx = getBirdX();
-        for (let i = 0; i < 3; i++) {
-          feathers.push({
-            x: bx + (Math.random() - 0.5) * 10,
-            y: birdY + (Math.random() - 0.5) * 10,
-            vx: (Math.random() - 0.5) * 2,
-            vy: -Math.random() * 2,
-            life: 1.0,
-            size: 2 + Math.random() * 3,
-          });
-        }
+        feathers.emit(3, () => ({
+          x: bx + (Math.random() - 0.5) * 10,
+          y: birdY + (Math.random() - 0.5) * 10,
+          vx: (Math.random() - 0.5) * 120,
+          vy: -Math.random() * 120,
+          life: 0.833,
+          size: 2 + Math.random() * 3,
+        }));
       }
 
       // ─── Input ─────────────────────────────────────────
@@ -101,15 +90,6 @@
           resetGame();
         }
       }
-
-      document.addEventListener('keydown', e => {
-        if (e.code === 'Space') { e.preventDefault(); flap(); }
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      source.addEventListener('click', flap);
-      source.addEventListener('touchstart', e => { e.preventDefault(); flap(); });
 
       // ─── Collision ─────────────────────────────────────
       function checkCollision() {
@@ -134,9 +114,7 @@
       }
 
       // ─── Draw ──────────────────────────────────────────
-      function draw(time) {
-        const w = source.width;
-        const h = source.height;
+      function draw(ctx, { time, dt, width: w, height: h }) {
         const bx = getBirdX();
         const groundY = getGroundY();
         const gap = getGapSize();
@@ -184,13 +162,7 @@
         }
 
         // Update feathers
-        for (const f of feathers) {
-          f.x += f.vx;
-          f.y += f.vy;
-          f.vy += 0.1;
-          f.life -= 0.02;
-        }
-        feathers = feathers.filter(f => f.life > 0);
+        feathers.update(dt);
 
         // ── Background: dark blue gradient sky ──
         const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
@@ -302,12 +274,12 @@
         ctx.restore();
 
         // ── Feather particles ──
-        for (const f of feathers) {
+        feathers.forEach(f => {
           ctx.beginPath();
           ctx.arc(f.x, f.y, f.size, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(255, 220, 100, ${f.life * 0.7})`;
+          ctx.fillStyle = `rgba(255, 220, 100, ${(f.life / 0.833) * 0.7})`;
           ctx.fill();
-        }
+        });
 
         // ── Death flash ──
         if (flashTimer > 0) {
@@ -347,51 +319,52 @@
       }
 
       // ─── ASCII-ify with Layers ─────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Sky background — large font, spiral pattern for hypnotic depth
+          {
+            fontSize: 20,
+            charset: 'density',
+            colorScheme: 'ocean',
+            pattern: 'spiral',
+            patternMix: 0.5,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Pipes and ground — blocks for solid structures
+          {
+            fontSize: 10,
+            charset: 'blocks',
+            colorScheme: 'acid',
+            blendMode: 'add',
+            opacity: 0.8,
+          },
+          // Layer 3: Bird and particles — fine detail
+          {
+            fontSize: 8,
+            charset: 'braille',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.6,
+          },
+        ],
+        draw,
+        onKeydown(e) {
+          if (e.code === 'Space') { e.preventDefault(); flap(); }
+        },
       });
 
-      // Layer 1: Sky background — large font, spiral pattern for hypnotic depth
-      ascii.addLayer({
-        source: source,
-        fontSize: 20,
-        charset: 'density',
-        colorScheme: 'ocean',
-        pattern: 'spiral',
-        patternMix: 0.5,
-        blendMode: 'replace',
-        opacity: 1,
-      });
+      // ─── Canvas Events ─────────────────────────────────
+      app.canvas.addEventListener('click', flap);
+      app.canvas.addEventListener('touchstart', e => { e.preventDefault(); flap(); });
 
-      // Layer 2: Pipes and ground — blocks for solid structures
-      ascii.addLayer({
-        source: source,
-        fontSize: 10,
-        charset: 'blocks',
-        colorScheme: 'acid',
-        blendMode: 'add',
-        opacity: 0.8,
-      });
-
-      // Layer 3: Bird and particles — fine detail
-      ascii.addLayer({
-        source: source,
-        fontSize: 8,
-        charset: 'braille',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.6,
-      });
-
-      // ─── Main Loop ─────────────────────────────────────
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
+      // ─── Initial Setup ─────────────────────────────────
+      resetGame();
     </script>
   </body>
 </html>

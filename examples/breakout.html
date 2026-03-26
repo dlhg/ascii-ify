@@ -16,17 +16,9 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resize();
-      window.addEventListener('resize', resize);
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { getCanvasPos } from './utils.js';
 
       // ─── Constants ──────────────────────────────────────
       const BALL_R = 8;
@@ -42,33 +34,19 @@
       let paddleX = 0, paddleW = 0, paddleH = 14, paddleY = 0;
       let ballX, ballY, ballVX, ballVY;
       let bricks = [];
-      let particles = [];
       let score = 0, lives = MAX_LIVES;
       let state = 'waiting'; // 'waiting' | 'playing' | 'win' | 'gameover'
-      let lastTime = 0;
 
-      source.addEventListener('mousemove', e => {
-        const rect = source.getBoundingClientRect();
-        mouseX = (e.clientX - rect.left) * (source.width / rect.width);
-      });
-
-      source.addEventListener('click', () => {
-        if (state === 'waiting') {
-          launchBall();
-          state = 'playing';
-        } else if (state === 'win' || state === 'gameover') {
-          resetGame();
-        }
-      });
+      const particles = new ParticlePool({ maxParticles: 2000, gravity: 300 });
 
       function initBricks() {
         bricks = [];
-        const w = source.width;
+        const w = app.width;
         const totalGapX = BRICK_GAP * (BRICK_COLS + 1);
         const bw = (w * 0.88 - totalGapX) / BRICK_COLS;
-        const bh = Math.min(28, source.height * 0.03);
+        const bh = Math.min(28, app.height * 0.03);
         const offsetX = w * 0.06;
-        const offsetY = source.height * 0.08;
+        const offsetY = app.height * 0.08;
         for (let row = 0; row < BRICK_ROWS; row++) {
           for (let col = 0; col < BRICK_COLS; col++) {
             const x = offsetX + col * (bw + BRICK_GAP) + BRICK_GAP;
@@ -81,8 +59,8 @@
       }
 
       function resetBallTopaddle() {
-        paddleW = source.width * 0.15;
-        paddleY = source.height - 50;
+        paddleW = app.width * 0.15;
+        paddleY = app.height - 50;
         paddleX = mouseX - paddleW / 2;
         ballX = paddleX + paddleW / 2;
         ballY = paddleY - BALL_R - 2;
@@ -99,35 +77,28 @@
       function resetGame() {
         score = 0;
         lives = MAX_LIVES;
-        particles = [];
+        particles.clear();
         initBricks();
         resetBallTopaddle();
         state = 'waiting';
       }
 
       function spawnParticles(x, y, hue, count) {
-        for (let i = 0; i < count; i++) {
+        particles.emit(count, () => {
           const angle = Math.random() * Math.PI * 2;
           const speed = 80 + Math.random() * 200;
-          particles.push({
+          return {
             x, y,
             vx: Math.cos(angle) * speed,
             vy: Math.sin(angle) * speed,
             life: 0.5 + Math.random() * 0.5,
             hue,
-          });
-        }
+          };
+        });
       }
 
-      // ─── Initial Setup ──────────────────────────────────
-      resetGame();
-
       // ─── Draw ───────────────────────────────────────────
-      function draw(time) {
-        const w = source.width, h = source.height;
-        const dt = Math.min((time - lastTime) / 1000, 0.05);
-        lastTime = time;
-
+      function draw(ctx, { time, dt, width: w, height: h }) {
         paddleW = w * 0.15;
         paddleY = h - 50;
         paddleX = Math.max(0, Math.min(w - paddleW, mouseX - paddleW / 2));
@@ -214,14 +185,7 @@
         }
 
         // Update particles
-        for (let i = particles.length - 1; i >= 0; i--) {
-          const p = particles[i];
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
-          p.vy += 300 * dt; // gravity
-          p.life -= dt;
-          if (p.life <= 0) particles.splice(i, 1);
-        }
+        particles.update(dt);
 
         // Update brick flash timers
         for (const b of bricks) {
@@ -251,12 +215,12 @@
         }
 
         // Particles
-        for (const p of particles) {
+        particles.forEach(p => {
           const alpha = Math.max(0, p.life * 1.5);
           const size = 3 + p.life * 4;
           ctx.fillStyle = `hsla(${p.hue}, 90%, 65%, ${alpha})`;
           ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
-        }
+        });
 
         // Paddle with glow
         const t = time * 0.001;
@@ -332,57 +296,61 @@
       }
 
       // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Bricks and paddle — blocks charset for solid feel
+          {
+            fontSize: 12,
+            charset: 'blocks',
+            colorScheme: 'acid',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Ball trail and particles — kaleidoscope for visual flair
+          {
+            fontSize: 6,
+            charset: 'density',
+            colorScheme: 'neon',
+            pattern: 'kaleidoscope',
+            patternMix: 0.2,
+            blendMode: 'add',
+            opacity: 0.7,
+          },
+          // Layer 3: Atmosphere — kaleidoscope at larger scale for ambient symmetry
+          {
+            fontSize: 16,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            pattern: 'kaleidoscope',
+            patternMix: 0.6,
+            blendMode: 'add',
+            opacity: 0.15,
+          },
+        ],
+        draw,
       });
 
-      // Layer 1: Bricks and paddle — blocks charset for solid feel
-      ascii.addLayer({
-        source: source,
-        fontSize: 12,
-        charset: 'blocks',
-        colorScheme: 'acid',
-        blendMode: 'replace',
-        opacity: 1,
+      // ─── Canvas Events ──────────────────────────────────
+      app.canvas.addEventListener('mousemove', e => {
+        mouseX = getCanvasPos(app.canvas, e).x;
       });
 
-      // Layer 2: Ball trail and particles — kaleidoscope for visual flair
-      ascii.addLayer({
-        source: source,
-        fontSize: 6,
-        charset: 'density',
-        colorScheme: 'neon',
-        pattern: 'kaleidoscope',
-        patternMix: 0.2,
-        blendMode: 'add',
-        opacity: 0.7,
+      app.canvas.addEventListener('click', () => {
+        if (state === 'waiting') {
+          launchBall();
+          state = 'playing';
+        } else if (state === 'win' || state === 'gameover') {
+          resetGame();
+        }
       });
 
-      // Layer 3: Atmosphere — kaleidoscope at larger scale for ambient symmetry
-      ascii.addLayer({
-        source: source,
-        fontSize: 16,
-        charset: 'minimal',
-        colorScheme: 'mono',
-        pattern: 'kaleidoscope',
-        patternMix: 0.6,
-        blendMode: 'add',
-        opacity: 0.15,
-      });
-
-      document.addEventListener('keydown', e => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
+      // ─── Initial Setup ──────────────────────────────────
+      resetGame();
     </script>
   </body>
 </html>

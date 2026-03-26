@@ -16,16 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-        buildGrid();
-      }
+      import { createApp } from './boilerplate.js';
 
       // ─── Grid & Path ────────────────────────────────────────
       const CELL = 40;
@@ -33,9 +24,9 @@
       let pathCells = new Set();   // "col,row" strings for fast lookup
       let pathWaypoints = [];       // pixel coordinates for enemy movement
 
-      function buildGrid() {
-        cols = Math.floor(source.width / CELL);
-        rows = Math.floor(source.height / CELL);
+      function buildGrid(w, h) {
+        cols = Math.floor(w / CELL);
+        rows = Math.floor(h / CELL);
         pathCells.clear();
         pathWaypoints = [];
 
@@ -97,7 +88,6 @@
       let spawnTimer = 0;
       let enemiesLeftToSpawn = 0;
       let gameOver = false;
-      let lastTime = 0;
       let selectedTurret = 0; // 0=basic, 1=heavy, 2=frost
       let mouseGX = -1, mouseGY = -1;
 
@@ -162,50 +152,6 @@
         turrets.push({ gx, gy, type: selectedTurret, lastFire: 0 });
       }
 
-      // ─── Input ──────────────────────────────────────────────
-      source.addEventListener('mousemove', e => {
-        const rect = source.getBoundingClientRect();
-        mouseGX = Math.floor((e.clientX - rect.left) / CELL);
-        mouseGY = Math.floor((e.clientY - rect.top) / CELL);
-      });
-
-      source.addEventListener('click', e => {
-        if (gameOver) {
-          // Restart
-          gold = 100; lives = 20; wave = 0;
-          waveActive = false; waveCountdown = 5;
-          gameOver = false;
-          turrets.length = 0; enemies.length = 0;
-          projectiles.length = 0; effects.length = 0;
-          return;
-        }
-        const rect = source.getBoundingClientRect();
-        const gx = Math.floor((e.clientX - rect.left) / CELL);
-        const gy = Math.floor((e.clientY - rect.top) / CELL);
-
-        // Check if clicked on "NEXT WAVE" area
-        const btnX = source.width / 2;
-        const btnY = 22;
-        if (!waveActive && Math.abs(e.clientX - rect.left - btnX) < 70 && e.clientY - rect.top < 40) {
-          startWave();
-          return;
-        }
-
-        placeTurret(gx, gy);
-      });
-
-      document.addEventListener('keydown', e => {
-        if (e.key === '1') selectedTurret = 0;
-        if (e.key === '2') selectedTurret = 1;
-        if (e.key === '3') selectedTurret = 2;
-        if (e.key === ' ' || e.key === 'Space') {
-          e.preventDefault();
-          if (!waveActive && !gameOver) startWave();
-        }
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
       // ─── Update ─────────────────────────────────────────────
       function update(dt) {
         if (gameOver) return;
@@ -229,7 +175,8 @@
         }
 
         // Move enemies
-        for (let i = enemies.length - 1; i >= 0; i--) {
+        let enLen = enemies.length;
+        for (let i = enLen - 1; i >= 0; i--) {
           const en = enemies[i];
           if (en.slowTimer > 0) {
             en.slowTimer -= dt;
@@ -241,7 +188,7 @@
           if (en.wpIdx >= pathWaypoints.length) {
             // Reached the end
             lives--;
-            enemies.splice(i, 1);
+            enemies[i] = enemies[enLen - 1]; enLen--;
             if (lives <= 0) { gameOver = true; lives = 0; }
             continue;
           }
@@ -257,6 +204,7 @@
             en.y += (dy / dist) * en.speed * dt;
           }
         }
+        enemies.length = enLen;
 
         // Turret firing
         const now = performance.now() / 1000;
@@ -291,11 +239,12 @@
         }
 
         // Move projectiles
-        for (let i = projectiles.length - 1; i >= 0; i--) {
+        let projLen = projectiles.length;
+        for (let i = projLen - 1; i >= 0; i--) {
           const p = projectiles[i];
           // If target is dead, remove projectile
           if (!enemies.includes(p.target)) {
-            projectiles.splice(i, 1);
+            projectiles[i] = projectiles[projLen - 1]; projLen--;
             continue;
           }
           const dx = p.target.x - p.x;
@@ -310,293 +259,321 @@
               gold += p.target.reward;
               effects.push({ x: p.target.x, y: p.target.y, timer: 0.4, color: '#ffff44' });
               const idx = enemies.indexOf(p.target);
-              if (idx >= 0) enemies.splice(idx, 1);
+              if (idx >= 0) { enemies[idx] = enemies[enemies.length - 1]; enemies.length--; }
             }
-            projectiles.splice(i, 1);
+            projectiles[i] = projectiles[projLen - 1]; projLen--;
           } else {
             p.x += (dx / dist) * p.speed * dt;
             p.y += (dy / dist) * p.speed * dt;
           }
         }
+        projectiles.length = projLen;
 
         // Effects decay
-        for (let i = effects.length - 1; i >= 0; i--) {
+        let fxLen = effects.length;
+        for (let i = fxLen - 1; i >= 0; i--) {
           effects[i].timer -= dt;
-          if (effects[i].timer <= 0) effects.splice(i, 1);
+          if (effects[i].timer <= 0) { effects[i] = effects[fxLen - 1]; fxLen--; }
         }
+        effects.length = fxLen;
       }
 
-      // ─── Draw ───────────────────────────────────────────────
-      function draw(time) {
-        const w = source.width, h = source.height;
-        const dt = Math.min((time - lastTime) / 1000, 0.05);
-        lastTime = time;
-
-        update(dt);
-
-        // Background terrain
-        ctx.fillStyle = '#1a1a0f';
-        ctx.fillRect(0, 0, w, h);
-
-        // Grid lines (very subtle)
-        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-        ctx.lineWidth = 1;
-        for (let x = 0; x <= cols; x++) {
-          ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, h); ctx.stroke();
-        }
-        for (let y = 0; y <= rows; y++) {
-          ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(w, y * CELL); ctx.stroke();
-        }
-
-        // Path cells
-        for (const key of pathCells) {
-          const [gx, gy] = key.split(',').map(Number);
-          if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
-            ctx.fillStyle = '#151510';
-            ctx.fillRect(gx * CELL, gy * CELL, CELL, CELL);
+      // ─── App ────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          // Layer 1: Terrain and path
+          {
+            fontSize: 16,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            pattern: 'diamond',
+            patternMix: 0.15,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2: Enemies and turrets
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.85,
+          },
+          // Layer 3: Projectiles and effects
+          {
+            fontSize: 6,
+            charset: 'binary',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.5,
+          },
+        ],
+        onResize(w, h) {
+          buildGrid(w, h);
+        },
+        onKeydown(e) {
+          if (e.key === '1') selectedTurret = 0;
+          if (e.key === '2') selectedTurret = 1;
+          if (e.key === '3') selectedTurret = 2;
+          if (e.key === ' ' || e.key === 'Space') {
+            e.preventDefault();
+            if (!waveActive && !gameOver) startWave();
           }
-        }
+        },
+        draw(ctx, { time, dt, width: w, height: h }) {
+          update(dt);
 
-        // Path direction dots
-        ctx.fillStyle = 'rgba(255,255,200,0.06)';
-        for (let i = 0; i < pathWaypoints.length - 1; i++) {
-          const a = pathWaypoints[i], b = pathWaypoints[i + 1];
-          const dx = b.x - a.x, dy = b.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const steps = Math.floor(dist / 20);
-          for (let s = 0; s <= steps; s++) {
-            const t = s / steps;
+          // Background terrain
+          ctx.fillStyle = '#1a1a0f';
+          ctx.fillRect(0, 0, w, h);
+
+          // Grid lines (very subtle)
+          ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+          ctx.lineWidth = 1;
+          for (let x = 0; x <= cols; x++) {
+            ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, h); ctx.stroke();
+          }
+          for (let y = 0; y <= rows; y++) {
+            ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(w, y * CELL); ctx.stroke();
+          }
+
+          // Path cells
+          for (const key of pathCells) {
+            const [gx, gy] = key.split(',').map(Number);
+            if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+              ctx.fillStyle = '#151510';
+              ctx.fillRect(gx * CELL, gy * CELL, CELL, CELL);
+            }
+          }
+
+          // Path direction dots
+          ctx.fillStyle = 'rgba(255,255,200,0.06)';
+          for (let i = 0; i < pathWaypoints.length - 1; i++) {
+            const a = pathWaypoints[i], b = pathWaypoints[i + 1];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const steps = Math.floor(dist / 20);
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              ctx.beginPath();
+              ctx.arc(a.x + dx * t, a.y + dy * t, 2, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+
+          // Hover preview
+          if (!gameOver && mouseGX >= 0 && mouseGY >= 0 && mouseGX < cols && mouseGY < rows) {
+            const type = TURRET_TYPES[selectedTurret];
+            const px = mouseGX * CELL, py = mouseGY * CELL;
+            const valid = canPlace(mouseGX, mouseGY) && gold >= type.cost;
+
+            // Range circle
             ctx.beginPath();
-            ctx.arc(a.x + dx * t, a.y + dy * t, 2, 0, Math.PI * 2);
+            ctx.arc(px + CELL / 2, py + CELL / 2, type.range, 0, Math.PI * 2);
+            ctx.fillStyle = valid ? 'rgba(255,255,255,0.04)' : 'rgba(255,0,0,0.04)';
+            ctx.fill();
+            ctx.strokeStyle = valid ? 'rgba(255,255,255,0.12)' : 'rgba(255,0,0,0.12)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Turret preview
+            ctx.beginPath();
+            ctx.arc(px + CELL / 2, py + CELL / 2, CELL * 0.35, 0, Math.PI * 2);
+            ctx.fillStyle = valid ? type.color + '66' : 'rgba(255,0,0,0.25)';
             ctx.fill();
           }
-        }
 
-        // Hover preview
-        if (!gameOver && mouseGX >= 0 && mouseGY >= 0 && mouseGX < cols && mouseGY < rows) {
-          const type = TURRET_TYPES[selectedTurret];
-          const px = mouseGX * CELL, py = mouseGY * CELL;
-          const valid = canPlace(mouseGX, mouseGY) && gold >= type.cost;
+          // Turrets
+          const t = time * 0.001;
+          for (const turret of turrets) {
+            const type = TURRET_TYPES[turret.type];
+            const tx = turret.gx * CELL + CELL / 2;
+            const ty = turret.gy * CELL + CELL / 2;
 
-          // Range circle
-          ctx.beginPath();
-          ctx.arc(px + CELL / 2, py + CELL / 2, type.range, 0, Math.PI * 2);
-          ctx.fillStyle = valid ? 'rgba(255,255,255,0.04)' : 'rgba(255,0,0,0.04)';
-          ctx.fill();
-          ctx.strokeStyle = valid ? 'rgba(255,255,255,0.12)' : 'rgba(255,0,0,0.12)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
+            // Base
+            ctx.fillStyle = '#222218';
+            ctx.fillRect(turret.gx * CELL + 4, turret.gy * CELL + 4, CELL - 8, CELL - 8);
 
-          // Turret preview
-          ctx.beginPath();
-          ctx.arc(px + CELL / 2, py + CELL / 2, CELL * 0.35, 0, Math.PI * 2);
-          ctx.fillStyle = valid ? type.color + '66' : 'rgba(255,0,0,0.25)';
-          ctx.fill();
-        }
+            // Turret body
+            ctx.beginPath();
+            ctx.arc(tx, ty, CELL * 0.32, 0, Math.PI * 2);
+            ctx.fillStyle = type.color;
+            ctx.fill();
 
-        // Turrets
-        const t = time * 0.001;
-        for (const turret of turrets) {
-          const type = TURRET_TYPES[turret.type];
-          const tx = turret.gx * CELL + CELL / 2;
-          const ty = turret.gy * CELL + CELL / 2;
-
-          // Base
-          ctx.fillStyle = '#222218';
-          ctx.fillRect(turret.gx * CELL + 4, turret.gy * CELL + 4, CELL - 8, CELL - 8);
-
-          // Turret body
-          ctx.beginPath();
-          ctx.arc(tx, ty, CELL * 0.32, 0, Math.PI * 2);
-          ctx.fillStyle = type.color;
-          ctx.fill();
-
-          // Inner glow
-          ctx.beginPath();
-          ctx.arc(tx, ty, CELL * 0.18, 0, Math.PI * 2);
-          ctx.fillStyle = '#ffffff44';
-          ctx.fill();
-        }
-
-        // Enemies
-        for (const en of enemies) {
-          const hpFrac = en.hp / en.maxHp;
-          const radius = 6 + (en.maxHp / 100) * 6;
-
-          // Enemy body color based on wave
-          let color;
-          if (wave <= 2) color = '#44cc44';
-          else if (wave <= 5) color = '#cccc44';
-          else if (wave <= 8) color = '#cc8844';
-          else color = '#cc4444';
-
-          // Slow tint
-          if (en.slowTimer > 0) color = '#44aacc';
-
-          // Body
-          ctx.beginPath();
-          ctx.arc(en.x, en.y, radius, 0, Math.PI * 2);
-          ctx.fillStyle = color;
-          ctx.fill();
-
-          // HP bar background
-          const barW = radius * 2.5;
-          const barH = 3;
-          const barX = en.x - barW / 2;
-          const barY = en.y - radius - 6;
-          ctx.fillStyle = '#331111';
-          ctx.fillRect(barX, barY, barW, barH);
-
-          // HP bar fill
-          const hpColor = hpFrac > 0.5 ? '#44cc44' : hpFrac > 0.25 ? '#cccc44' : '#cc4444';
-          ctx.fillStyle = hpColor;
-          ctx.fillRect(barX, barY, barW * hpFrac, barH);
-        }
-
-        // Projectiles
-        for (const p of projectiles) {
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-          ctx.fillStyle = p.color;
-          ctx.fill();
-          // Glow
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
-          ctx.fillStyle = p.color + '33';
-          ctx.fill();
-        }
-
-        // Hit effects
-        for (const fx of effects) {
-          const alpha = fx.timer / 0.4;
-          const r = 12 * (1 - alpha) + 4;
-          ctx.beginPath();
-          ctx.arc(fx.x, fx.y, r, 0, Math.PI * 2);
-          ctx.fillStyle = fx.color + Math.floor(alpha * 128).toString(16).padStart(2, '0');
-          ctx.fill();
-        }
-
-        // ─── HUD ───
-        ctx.textAlign = 'left';
-        ctx.font = 'bold 16px monospace';
-
-        // Gold
-        ctx.fillStyle = '#ffd700';
-        ctx.fillText(`Gold: ${gold}`, 14, 22);
-
-        // Lives
-        ctx.fillStyle = '#ff6666';
-        ctx.fillText(`Lives: ${lives}`, 14, 44);
-
-        // Wave
-        ctx.fillStyle = '#aaaaaa';
-        ctx.fillText(`Wave: ${wave}`, 14, 66);
-
-        // Next Wave button / countdown
-        ctx.textAlign = 'center';
-        if (!waveActive && !gameOver) {
-          const countdown = Math.ceil(waveCountdown);
-          ctx.fillStyle = '#66ff66';
-          ctx.font = 'bold 16px monospace';
-          ctx.fillText(`[ NEXT WAVE ] (${countdown}s)`, w / 2, 22);
-          ctx.font = '11px monospace';
-          ctx.fillStyle = 'rgba(255,255,255,0.2)';
-          ctx.fillText('click or press space', w / 2, 38);
-        } else if (waveActive) {
-          ctx.fillStyle = '#ff8844';
-          ctx.font = 'bold 14px monospace';
-          ctx.fillText(`~ WAVE ${wave} ~`, w / 2, 22);
-        }
-
-        // Turret selection bar (bottom center)
-        ctx.textAlign = 'center';
-        const barBaseY = h - 34;
-        ctx.font = '13px monospace';
-        for (let i = 0; i < TURRET_TYPES.length; i++) {
-          const tt = TURRET_TYPES[i];
-          const bx = w / 2 + (i - 1) * 140;
-          const selected = i === selectedTurret;
-          ctx.fillStyle = selected ? tt.color : 'rgba(255,255,255,0.3)';
-          ctx.fillText(`[${i + 1}] ${tt.name} (${tt.cost}g)`, bx, barBaseY);
-          if (selected) {
-            ctx.fillStyle = tt.color + '44';
-            ctx.fillRect(bx - 60, barBaseY - 14, 120, 18);
+            // Inner glow
+            ctx.beginPath();
+            ctx.arc(tx, ty, CELL * 0.18, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff44';
+            ctx.fill();
           }
-        }
 
-        // Instructions
-        if (wave === 0) {
-          ctx.font = '12px monospace';
-          ctx.fillStyle = 'rgba(255,255,255,0.15)';
-          ctx.fillText('click to place turrets \u00b7 1/2/3 select type \u00b7 space for next wave \u00b7 P panel \u00b7 E toggle', w / 2, h - 8);
-        }
+          // Enemies
+          for (const en of enemies) {
+            const hpFrac = en.hp / en.maxHp;
+            const radius = 6 + (en.maxHp / 100) * 6;
 
-        // Game Over overlay
-        if (gameOver) {
-          ctx.fillStyle = 'rgba(0,0,0,0.5)';
-          ctx.fillRect(0, 0, w, h);
-          ctx.textAlign = 'center';
-          ctx.font = `bold ${Math.min(w * 0.06, 60)}px monospace`;
-          ctx.fillStyle = '#ff4444';
-          ctx.fillText('GAME OVER', w / 2, h / 2 - 20);
-          ctx.font = '18px monospace';
+            // Enemy body color based on wave
+            let color;
+            if (wave <= 2) color = '#44cc44';
+            else if (wave <= 5) color = '#cccc44';
+            else if (wave <= 8) color = '#cc8844';
+            else color = '#cc4444';
+
+            // Slow tint
+            if (en.slowTimer > 0) color = '#44aacc';
+
+            // Body
+            ctx.beginPath();
+            ctx.arc(en.x, en.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+
+            // HP bar background
+            const barW = radius * 2.5;
+            const barH = 3;
+            const barX = en.x - barW / 2;
+            const barY = en.y - radius - 6;
+            ctx.fillStyle = '#331111';
+            ctx.fillRect(barX, barY, barW, barH);
+
+            // HP bar fill
+            const hpColor = hpFrac > 0.5 ? '#44cc44' : hpFrac > 0.25 ? '#cccc44' : '#cc4444';
+            ctx.fillStyle = hpColor;
+            ctx.fillRect(barX, barY, barW * hpFrac, barH);
+          }
+
+          // Projectiles
+          for (const p of projectiles) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+            // Glow
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+            ctx.fillStyle = p.color + '33';
+            ctx.fill();
+          }
+
+          // Hit effects
+          for (const fx of effects) {
+            const alpha = fx.timer / 0.4;
+            const r = 12 * (1 - alpha) + 4;
+            ctx.beginPath();
+            ctx.arc(fx.x, fx.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = fx.color + Math.floor(alpha * 128).toString(16).padStart(2, '0');
+            ctx.fill();
+          }
+
+          // ─── HUD ───
+          ctx.textAlign = 'left';
+          ctx.font = 'bold 16px monospace';
+
+          // Gold
+          ctx.fillStyle = '#ffd700';
+          ctx.fillText(`Gold: ${gold}`, 14, 22);
+
+          // Lives
+          ctx.fillStyle = '#ff6666';
+          ctx.fillText(`Lives: ${lives}`, 14, 44);
+
+          // Wave
           ctx.fillStyle = '#aaaaaa';
-          ctx.fillText(`Survived ${wave} waves`, w / 2, h / 2 + 20);
-          ctx.font = '14px monospace';
-          ctx.fillStyle = 'rgba(255,255,255,0.3)';
-          ctx.fillText('click to restart', w / 2, h / 2 + 55);
+          ctx.fillText(`Wave: ${wave}`, 14, 66);
+
+          // Next Wave button / countdown
+          ctx.textAlign = 'center';
+          if (!waveActive && !gameOver) {
+            const countdown = Math.ceil(waveCountdown);
+            ctx.fillStyle = '#66ff66';
+            ctx.font = 'bold 16px monospace';
+            ctx.fillText(`[ NEXT WAVE ] (${countdown}s)`, w / 2, 22);
+            ctx.font = '11px monospace';
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fillText('click or press space', w / 2, 38);
+          } else if (waveActive) {
+            ctx.fillStyle = '#ff8844';
+            ctx.font = 'bold 14px monospace';
+            ctx.fillText(`~ WAVE ${wave} ~`, w / 2, 22);
+          }
+
+          // Turret selection bar (bottom center)
+          ctx.textAlign = 'center';
+          const barBaseY = h - 34;
+          ctx.font = '13px monospace';
+          for (let i = 0; i < TURRET_TYPES.length; i++) {
+            const tt = TURRET_TYPES[i];
+            const bx = w / 2 + (i - 1) * 140;
+            const selected = i === selectedTurret;
+            ctx.fillStyle = selected ? tt.color : 'rgba(255,255,255,0.3)';
+            ctx.fillText(`[${i + 1}] ${tt.name} (${tt.cost}g)`, bx, barBaseY);
+            if (selected) {
+              ctx.fillStyle = tt.color + '44';
+              ctx.fillRect(bx - 60, barBaseY - 14, 120, 18);
+            }
+          }
+
+          // Instructions
+          if (wave === 0) {
+            ctx.font = '12px monospace';
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.fillText('click to place turrets · 1/2/3 select type · space for next wave · P panel · E toggle', w / 2, h - 8);
+          }
+
+          // Game Over overlay
+          if (gameOver) {
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, w, h);
+            ctx.textAlign = 'center';
+            ctx.font = `bold ${Math.min(w * 0.06, 60)}px monospace`;
+            ctx.fillStyle = '#ff4444';
+            ctx.fillText('GAME OVER', w / 2, h / 2 - 20);
+            ctx.font = '18px monospace';
+            ctx.fillStyle = '#aaaaaa';
+            ctx.fillText(`Survived ${wave} waves`, w / 2, h / 2 + 20);
+            ctx.font = '14px monospace';
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.fillText('click to restart', w / 2, h / 2 + 55);
+          }
+        },
+      });
+
+      // ─── Input (uses app.canvas) ────────────────────────────
+      app.canvas.addEventListener('mousemove', e => {
+        const rect = app.canvas.getBoundingClientRect();
+        mouseGX = Math.floor((e.clientX - rect.left) / CELL);
+        mouseGY = Math.floor((e.clientY - rect.top) / CELL);
+      });
+
+      app.canvas.addEventListener('click', e => {
+        if (gameOver) {
+          // Restart
+          gold = 100; lives = 20; wave = 0;
+          waveActive = false; waveCountdown = 5;
+          gameOver = false;
+          turrets.length = 0; enemies.length = 0;
+          projectiles.length = 0; effects.length = 0;
+          return;
         }
-      }
+        const rect = app.canvas.getBoundingClientRect();
+        const gx = Math.floor((e.clientX - rect.left) / CELL);
+        const gy = Math.floor((e.clientY - rect.top) / CELL);
 
-      // ─── ASCII-ify with Layers ──────────────────────────────
-      resize();
-      window.addEventListener('resize', resize);
+        // Check if clicked on "NEXT WAVE" area
+        const btnX = app.canvas.width / 2;
+        const btnY = 22;
+        if (!waveActive && Math.abs(e.clientX - rect.left - btnX) < 70 && e.clientY - rect.top < 40) {
+          startWave();
+          return;
+        }
 
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        speed: 1,
+        placeTurret(gx, gy);
       });
-
-      // Layer 1: Terrain and path
-      ascii.addLayer({
-        source: source,
-        fontSize: 16,
-        charset: 'blocks',
-        colorScheme: 'mono',
-        pattern: 'diamond',
-        patternMix: 0.15,
-        blendMode: 'replace',
-        opacity: 1,
-      });
-
-      // Layer 2: Enemies and turrets
-      ascii.addLayer({
-        source: source,
-        fontSize: 10,
-        charset: 'density',
-        colorScheme: 'fire',
-        blendMode: 'add',
-        opacity: 0.85,
-      });
-
-      // Layer 3: Projectiles and effects
-      ascii.addLayer({
-        source: source,
-        fontSize: 6,
-        charset: 'binary',
-        colorScheme: 'neon',
-        blendMode: 'add',
-        opacity: 0.5,
-      });
-
-      // ─── Main Loop ─────────────────────────────────────────
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

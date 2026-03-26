@@ -54,7 +54,7 @@
       </div>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
+      import { createApp } from './boilerplate.js';
 
       // ─── Emoji Pool ───────────────────────────────────
       const EMOJIS = [
@@ -81,24 +81,13 @@
       let spawnRate  = 4;
       let spawnAccum = 0;
 
-      // ─── Canvas ───────────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx    = source.getContext('2d');
+      // ─── Controls ─────────────────────────────────────
       const rateSlider  = document.getElementById('rate');
       const rateDisplay = document.getElementById('rate-value');
 
-      function resize() {
-        source.width  = window.innerWidth;
-        source.height = window.innerHeight;
-        buildPegs();
-      }
-      resize();
-      window.addEventListener('resize', resize);
-
       // ─── Peg Grid (staggered rows) ───────────────────
-      function buildPegs() {
+      function buildPegs(w, h) {
         pegs.length = 0;
-        const w = source.width, h = source.height;
         for (let y = TOP_ZONE; y < h - BOT_ZONE; y += PEG_GAP_Y) {
           const row = Math.round((y - TOP_ZONE) / PEG_GAP_Y);
           const off = (row & 1) * (PEG_GAP_X / 2);
@@ -109,16 +98,16 @@
       }
 
       // ─── Spawning ────────────────────────────────────
-      function spawn() {
+      function spawn(canvasW) {
         if (balls.length >= MAX_BALLS) return;
         const idx = (Math.random() * EMOJIS.length) | 0;
         // Centre-biased x position
-        const cx = source.width / 2;
-        const spread = source.width * 0.32;
+        const cx = canvasW / 2;
+        const spread = canvasW * 0.32;
         const x = cx + ((Math.random() + Math.random() + Math.random() - 1.5) / 1.5) * spread;
 
         balls.push({
-          x:  Math.max(BALL_R, Math.min(source.width - BALL_R, x)),
+          x:  Math.max(BALL_R, Math.min(canvasW - BALL_R, x)),
           y:  -BALL_R * 2,
           vx: (Math.random() - 0.5) * 30,
           vy: Math.random() * 60,
@@ -128,13 +117,10 @@
       }
 
       // ─── Physics Step ────────────────────────────────
-      function step(dt) {
-        dt = Math.min(dt, 0.05);               // clamp for tab-switch
-        const w = source.width, h = source.height;
-
+      function step(dt, w, h) {
         // Spawn
         spawnAccum += dt * spawnRate;
-        while (spawnAccum >= 1) { spawnAccum--; spawn(); }
+        while (spawnAccum >= 1) { spawnAccum--; spawn(w); }
 
         for (const b of balls) {
           b.vy += GRAVITY * dt;
@@ -197,134 +183,130 @@
           }
         }
 
-        // Cull
-        for (let i = balls.length - 1; i >= 0; i--) {
-          if (balls[i].y > h + 40) balls.splice(i, 1);
+        // Cull (swap-and-pop)
+        let len = balls.length;
+        for (let i = len - 1; i >= 0; i--) {
+          if (balls[i].y > h + 40) { balls[i] = balls[len - 1]; len--; }
         }
+        balls.length = len;
 
         // Decay peg flash
         for (const p of pegs) p.flash *= 0.88;
       }
 
-      // ─── Drawing ─────────────────────────────────────
-      function draw() {
-        const w = source.width, h = source.height;
-        ctx.fillStyle = '#08080c';
-        ctx.fillRect(0, 0, w, h);
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#08080c',
+          sourceOpacity: 0,
+          fontSize: 12,
+          charset: 'density',
+          colorScheme: 'neon',
+        },
+        layers: [
+          {
+            fontSize: 14,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'replace',
+            opacity: 1,
+            zIndex: 0,
+          },
+          {
+            fontSize: 8,
+            charset: 'braille',
+            colorScheme: 'vapor',
+            blendMode: 'add',
+            opacity: 0.35,
+            zIndex: 1,
+          },
+        ],
+        showPanel: true,
+        onResize(w, h) {
+          buildPegs(w, h);
+        },
+        onKeydown(e) {
+          if (e.key === 'ArrowUp'   || e.key === '+' || e.key === '=') { setRate(spawnRate + 0.5); e.preventDefault(); }
+          if (e.key === 'ArrowDown' || e.key === '-' || e.key === '_') { setRate(spawnRate - 0.5); e.preventDefault(); }
+        },
+        draw(ctx, { dt, width: w, height: h }) {
+          step(dt, w, h);
 
-        // Side walls (faint glow lines)
-        ctx.strokeStyle = 'rgba(140, 160, 255, 0.12)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(1.5, 0); ctx.lineTo(1.5, h);
-        ctx.moveTo(w - 1.5, 0); ctx.lineTo(w - 1.5, h);
-        ctx.stroke();
+          ctx.fillStyle = '#08080c';
+          ctx.fillRect(0, 0, w, h);
 
-        // Bottom slot dividers
-        const slots = Math.max(5, Math.floor(w / PEG_GAP_X));
-        const sw = w / slots;
-        const divTop = h - BOT_ZONE;
-        ctx.strokeStyle = 'rgba(140, 160, 255, 0.1)';
-        ctx.lineWidth = 2;
-        for (let i = 1; i < slots; i++) {
+          // Side walls (faint glow lines)
+          ctx.strokeStyle = 'rgba(140, 160, 255, 0.12)';
+          ctx.lineWidth = 3;
           ctx.beginPath();
-          ctx.moveTo(i * sw, divTop);
-          ctx.lineTo(i * sw, h);
+          ctx.moveTo(1.5, 0); ctx.lineTo(1.5, h);
+          ctx.moveTo(w - 1.5, 0); ctx.lineTo(w - 1.5, h);
           ctx.stroke();
-        }
-        // Horizontal bar above slots
-        ctx.beginPath();
-        ctx.moveTo(0, divTop);
-        ctx.lineTo(w, divTop);
-        ctx.stroke();
 
-        // Pegs
-        for (const p of pegs) {
-          const a = 0.1 + p.flash * 0.9;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, PEG_R, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(170, 190, 255, ${a})`;
-          ctx.fill();
-
-          if (p.flash > 0.25) {
-            const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, PEG_R * 5);
-            g.addColorStop(0, `rgba(200, 215, 255, ${p.flash * 0.22})`);
-            g.addColorStop(1, 'transparent');
-            ctx.fillStyle = g;
-            ctx.fillRect(p.x - PEG_R * 5, p.y - PEG_R * 5, PEG_R * 10, PEG_R * 10);
+          // Bottom slot dividers
+          const slots = Math.max(5, Math.floor(w / PEG_GAP_X));
+          const sw = w / slots;
+          const divTop = h - BOT_ZONE;
+          ctx.strokeStyle = 'rgba(140, 160, 255, 0.1)';
+          ctx.lineWidth = 2;
+          for (let i = 1; i < slots; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * sw, divTop);
+            ctx.lineTo(i * sw, h);
+            ctx.stroke();
           }
-        }
+          // Horizontal bar above slots
+          ctx.beginPath();
+          ctx.moveTo(0, divTop);
+          ctx.lineTo(w, divTop);
+          ctx.stroke();
 
-        // Balls
-        for (const b of balls) {
-          const r = BALL_R;
-          // Coloured glow (drives ASCII brightness + hue)
-          const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r * 2.4);
-          g.addColorStop(0,   `hsla(${b.hue}, 85%, 64%, 1)`);
-          g.addColorStop(0.3, `hsla(${b.hue}, 78%, 52%, 0.65)`);
-          g.addColorStop(0.7, `hsla(${b.hue}, 65%, 36%, 0.12)`);
-          g.addColorStop(1,   'transparent');
-          ctx.fillStyle = g;
-          const s = r * 4.8;
-          ctx.fillRect(b.x - s / 2, b.y - s / 2, s, s);
+          // Pegs
+          for (const p of pegs) {
+            const a = 0.1 + p.flash * 0.9;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, PEG_R, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(170, 190, 255, ${a})`;
+            ctx.fill();
 
-          // Emoji character
-          ctx.font = `${r * 1.5}px serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(b.emoji, b.x, b.y);
-        }
+            if (p.flash > 0.25) {
+              const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, PEG_R * 5);
+              g.addColorStop(0, `rgba(200, 215, 255, ${p.flash * 0.22})`);
+              g.addColorStop(1, 'transparent');
+              ctx.fillStyle = g;
+              ctx.fillRect(p.x - PEG_R * 5, p.y - PEG_R * 5, PEG_R * 10, PEG_R * 10);
+            }
+          }
 
-        // Ball count
-        ctx.save();
-        ctx.font = '11px monospace';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-        ctx.textAlign = 'right';
-        ctx.fillText(`${balls.length} balls`, w - 16, h - 14);
-        ctx.restore();
-      }
+          // Balls
+          for (const b of balls) {
+            const r = BALL_R;
+            // Coloured glow (drives ASCII brightness + hue)
+            const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r * 2.4);
+            g.addColorStop(0,   `hsla(${b.hue}, 85%, 64%, 1)`);
+            g.addColorStop(0.3, `hsla(${b.hue}, 78%, 52%, 0.65)`);
+            g.addColorStop(0.7, `hsla(${b.hue}, 65%, 36%, 0.12)`);
+            g.addColorStop(1,   'transparent');
+            ctx.fillStyle = g;
+            const s = r * 4.8;
+            ctx.fillRect(b.x - s / 2, b.y - s / 2, s, s);
 
-      // ─── ASCII-ify ───────────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#08080c',
-        sourceOpacity: 0,
-        fontSize: 12,
-        charset: 'density',
-        colorScheme: 'neon',
+            // Emoji character
+            ctx.font = `${r * 1.5}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(b.emoji, b.x, b.y);
+          }
+
+          // Ball count
+          ctx.save();
+          ctx.font = '11px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+          ctx.textAlign = 'right';
+          ctx.fillText(`${balls.length} balls`, w - 16, h - 14);
+          ctx.restore();
+        },
       });
-
-      ascii.addLayer({
-        source,
-        fontSize: 14,
-        charset: 'density',
-        colorScheme: 'neon',
-        blendMode: 'replace',
-        opacity: 1,
-        zIndex: 0,
-      });
-
-      ascii.addLayer({
-        source,
-        fontSize: 8,
-        charset: 'braille',
-        colorScheme: 'vapor',
-        blendMode: 'add',
-        opacity: 0.35,
-        zIndex: 1,
-      });
-
-      ascii.showPanel();
-
-      // ─── Loop ────────────────────────────────────────
-      let last = performance.now();
-      (function loop() {
-        const now = performance.now();
-        step((now - last) / 1000);
-        last = now;
-        draw();
-        ascii.render();
-        requestAnimationFrame(loop);
-      })();
 
       // ─── Rate Controls ───────────────────────────────
       function setRate(v) {
@@ -334,13 +316,6 @@
       }
 
       rateSlider.addEventListener('input', () => setRate(+rateSlider.value));
-
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowUp'   || e.key === '+' || e.key === '=') { setRate(spawnRate + 0.5); e.preventDefault(); }
-        if (e.key === 'ArrowDown' || e.key === '-' || e.key === '_') { setRate(spawnRate - 0.5); e.preventDefault(); }
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
 
       document.addEventListener('wheel', (e) => {
         setRate(spawnRate + (e.deltaY < 0 ? 0.5 : -0.5));

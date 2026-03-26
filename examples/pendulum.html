@@ -16,18 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resize() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resize();
-      window.addEventListener('resize', resize);
+      import { createApp } from './boilerplate.js';
 
       // ─── Pendulum Config ──────────────────────────────────
       const NUM_PENDULUMS = 15;
@@ -44,7 +33,6 @@
 
       // ─── State ────────────────────────────────────────────
       let phaseOffset = 0;            // reset shifts this to re-align
-      let lastTime = 0;
       let simTime = 0;                // accumulated simulation time (seconds)
       let timeScale = 0.3;            // default speed (slower)
       const TIME_SCALE_MIN = 0.05;
@@ -54,145 +42,133 @@
       // Trail history: array of arrays, one per pendulum
       const trails = Array.from({ length: NUM_PENDULUMS }, () => []);
 
-      // ─── Click to Reset ───────────────────────────────────
-      source.addEventListener('click', () => {
-        phaseOffset = -omega(0) * simTime;
-        for (let i = 0; i < NUM_PENDULUMS; i++) {
-          trails[i].length = 0;
-        }
-      });
+      // ─── Layer References (for visibility toggles) ────────
+      let bobsLayer, trailsLayer, atmosphereLayer;
 
-      // ─── Speed Control (scroll wheel) ─────────────────────
-      source.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        timeScale = Math.max(TIME_SCALE_MIN, Math.min(TIME_SCALE_MAX, timeScale - e.deltaY * 0.001));
-      }, { passive: false });
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#06060e', sourceOpacity: 0 },
+        onKeydown(e) {
+          if (e.key === '1') bobsLayer.set('visible', !bobsLayer.get('visible'));
+          if (e.key === '2') trailsLayer.set('visible', !trailsLayer.get('visible'));
+          if (e.key === '3') atmosphereLayer.set('visible', !atmosphereLayer.get('visible'));
+        },
+        draw(ctx, { dt, width: w, height: h }) {
+          simTime += dt * timeScale;
+          const t = simTime;
 
-      // ─── Draw ─────────────────────────────────────────────
-      function draw(time) {
-        const w = source.width, h = source.height;
-        const dt = lastTime ? (time - lastTime) * 0.001 : 0;
-        lastTime = time;
-        simTime += dt * timeScale;
-        const t = simTime;
+          const amplitude = h * AMPLITUDE_RATIO;
+          const mountY = 40;  // y position of the mounting bar
+          const centerY = h * 0.45; // vertical center of swing
 
-        const amplitude = h * AMPLITUDE_RATIO;
-        const mountY = 40;  // y position of the mounting bar
-        const centerY = h * 0.45; // vertical center of swing
+          // ─── Background ───
+          const bg = ctx.createRadialGradient(w / 2, h * 0.4, 0, w / 2, h * 0.4, Math.max(w, h) * 0.8);
+          bg.addColorStop(0, '#0c0a14');
+          bg.addColorStop(1, '#06060e');
+          ctx.fillStyle = bg;
+          ctx.fillRect(0, 0, w, h);
 
-        // ─── Background ───
-        const bg = ctx.createRadialGradient(w / 2, h * 0.4, 0, w / 2, h * 0.4, Math.max(w, h) * 0.8);
-        bg.addColorStop(0, '#0c0a14');
-        bg.addColorStop(1, '#06060e');
-        ctx.fillStyle = bg;
-        ctx.fillRect(0, 0, w, h);
-
-        // ─── Mounting Bar ───
-        ctx.strokeStyle = 'rgba(150, 160, 180, 0.25)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(w * 0.04, mountY);
-        ctx.lineTo(w * 0.96, mountY);
-        ctx.stroke();
-
-        // Small mounting points
-        for (let i = 0; i < NUM_PENDULUMS; i++) {
-          const x = w * (0.08 + 0.84 * i / (NUM_PENDULUMS - 1));
+          // ─── Mounting Bar ───
+          ctx.strokeStyle = 'rgba(150, 160, 180, 0.25)';
+          ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(x, mountY, 3, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(150, 160, 180, 0.35)';
-          ctx.fill();
-        }
+          ctx.moveTo(w * 0.04, mountY);
+          ctx.lineTo(w * 0.96, mountY);
+          ctx.stroke();
 
-        // ─── Pendulums ───
-        for (let i = 0; i < NUM_PENDULUMS; i++) {
-          const x = w * (0.08 + 0.84 * i / (NUM_PENDULUMS - 1));
-          const phase = omega(i) * t + phaseOffset;
-          const swing = Math.sin(phase);
-          const bobY = centerY + swing * amplitude;
-
-          // Store trail position
-          trails[i].push({ x, y: bobY, swing });
-          if (trails[i].length > TRAIL_LENGTH) {
-            trails[i].shift();
-          }
-
-          const hue = (i / NUM_PENDULUMS) * 360;
-
-          // ─── Motion Trail ───
-          for (let j = 0; j < trails[i].length - 1; j++) {
-            const trail = trails[i][j];
-            const alpha = (j + 1) / trails[i].length;
-            const trailRadius = BOB_RADIUS * 0.6 * alpha;
+          // Small mounting points
+          for (let i = 0; i < NUM_PENDULUMS; i++) {
+            const x = w * (0.08 + 0.84 * i / (NUM_PENDULUMS - 1));
             ctx.beginPath();
-            ctx.arc(trail.x, trail.y, trailRadius, 0, Math.PI * 2);
-            ctx.fillStyle = `hsla(${hue} 80% 55% / ${alpha * 0.25})`;
+            ctx.arc(x, mountY, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(150, 160, 180, 0.35)';
             ctx.fill();
           }
 
-          // ─── String / Rod ───
-          ctx.strokeStyle = `rgba(200, 210, 230, ${0.08 + 0.04 * Math.abs(swing)})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x, mountY);
-          ctx.lineTo(x, bobY);
-          ctx.stroke();
+          // ─── Pendulums ───
+          for (let i = 0; i < NUM_PENDULUMS; i++) {
+            const x = w * (0.08 + 0.84 * i / (NUM_PENDULUMS - 1));
+            const phase = omega(i) * t + phaseOffset;
+            const swing = Math.sin(phase);
+            const bobY = centerY + swing * amplitude;
 
-          // ─── Glow Effect ───
-          const glowGrad = ctx.createRadialGradient(x, bobY, 0, x, bobY, BOB_RADIUS * 3);
-          glowGrad.addColorStop(0, `hsla(${hue} 90% 60% / 0.25)`);
-          glowGrad.addColorStop(0.4, `hsla(${hue} 80% 50% / 0.08)`);
-          glowGrad.addColorStop(1, 'transparent');
-          ctx.fillStyle = glowGrad;
-          ctx.beginPath();
-          ctx.arc(x, bobY, BOB_RADIUS * 3, 0, Math.PI * 2);
-          ctx.fill();
+            // Store trail position
+            trails[i].push({ x, y: bobY, swing });
+            if (trails[i].length > TRAIL_LENGTH) {
+              trails[i].shift();
+            }
 
-          // ─── Bob ───
-          const bobGrad = ctx.createRadialGradient(
-            x - BOB_RADIUS * 0.3, bobY - BOB_RADIUS * 0.3, 0,
-            x, bobY, BOB_RADIUS
-          );
-          bobGrad.addColorStop(0, `hsla(${hue} 85% 75% / 1)`);
-          bobGrad.addColorStop(0.7, `hsla(${hue} 80% 55% / 1)`);
-          bobGrad.addColorStop(1, `hsla(${hue} 75% 35% / 1)`);
-          ctx.beginPath();
-          ctx.arc(x, bobY, BOB_RADIUS, 0, Math.PI * 2);
-          ctx.fillStyle = bobGrad;
-          ctx.fill();
+            const hue = (i / NUM_PENDULUMS) * 360;
 
-          // Specular highlight
-          ctx.beginPath();
-          ctx.arc(x - BOB_RADIUS * 0.25, bobY - BOB_RADIUS * 0.25, BOB_RADIUS * 0.35, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(255, 255, 255, 0.15)`;
-          ctx.fill();
-        }
+            // ─── Motion Trail ───
+            for (let j = 0; j < trails[i].length - 1; j++) {
+              const trail = trails[i][j];
+              const alpha = (j + 1) / trails[i].length;
+              const trailRadius = BOB_RADIUS * 0.6 * alpha;
+              ctx.beginPath();
+              ctx.arc(trail.x, trail.y, trailRadius, 0, Math.PI * 2);
+              ctx.fillStyle = `hsla(${hue} 80% 55% / ${alpha * 0.25})`;
+              ctx.fill();
+            }
 
-        // ─── Speed Bar ───
-        const barW = 140, barH = 4;
-        const barX = w - barW - 14, barY = h - 38;
-        const fill = (timeScale - TIME_SCALE_MIN) / (TIME_SCALE_MAX - TIME_SCALE_MIN);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
-        ctx.fillRect(barX, barY, barW, barH);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-        ctx.fillRect(barX, barY, barW * fill, barH);
+            // ─── String / Rod ───
+            ctx.strokeStyle = `rgba(200, 210, 230, ${0.08 + 0.04 * Math.abs(swing)})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, mountY);
+            ctx.lineTo(x, bobY);
+            ctx.stroke();
 
-        // ─── HUD ───
-        ctx.font = '13px monospace';
-        ctx.textAlign = 'right';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-        ctx.fillText(`speed: ${timeScale.toFixed(2)}x   scroll: adjust   click: reset`, w - 10, h - 14);
-      }
+            // ─── Glow Effect ───
+            const glowGrad = ctx.createRadialGradient(x, bobY, 0, x, bobY, BOB_RADIUS * 3);
+            glowGrad.addColorStop(0, `hsla(${hue} 90% 60% / 0.25)`);
+            glowGrad.addColorStop(0.4, `hsla(${hue} 80% 50% / 0.08)`);
+            glowGrad.addColorStop(1, 'transparent');
+            ctx.fillStyle = glowGrad;
+            ctx.beginPath();
+            ctx.arc(x, bobY, BOB_RADIUS * 3, 0, Math.PI * 2);
+            ctx.fill();
 
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#06060e',
-        sourceOpacity: 0,
+            // ─── Bob ───
+            const bobGrad = ctx.createRadialGradient(
+              x - BOB_RADIUS * 0.3, bobY - BOB_RADIUS * 0.3, 0,
+              x, bobY, BOB_RADIUS
+            );
+            bobGrad.addColorStop(0, `hsla(${hue} 85% 75% / 1)`);
+            bobGrad.addColorStop(0.7, `hsla(${hue} 80% 55% / 1)`);
+            bobGrad.addColorStop(1, `hsla(${hue} 75% 35% / 1)`);
+            ctx.beginPath();
+            ctx.arc(x, bobY, BOB_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = bobGrad;
+            ctx.fill();
+
+            // Specular highlight
+            ctx.beginPath();
+            ctx.arc(x - BOB_RADIUS * 0.25, bobY - BOB_RADIUS * 0.25, BOB_RADIUS * 0.35, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 255, 255, 0.15)`;
+            ctx.fill();
+          }
+
+          // ─── Speed Bar ───
+          const barW = 140, barH = 4;
+          const barX = w - barW - 14, barY = h - 38;
+          const fill = (timeScale - TIME_SCALE_MIN) / (TIME_SCALE_MAX - TIME_SCALE_MIN);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+          ctx.fillRect(barX, barY, barW, barH);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+          ctx.fillRect(barX, barY, barW * fill, barH);
+
+          // ─── HUD ───
+          ctx.font = '13px monospace';
+          ctx.textAlign = 'right';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+          ctx.fillText(`speed: ${timeScale.toFixed(2)}x   scroll: adjust   click: reset`, w - 10, h - 14);
+        },
       });
 
-      // Layer 1: Bobs and structure
-      const bobsLayer = ascii.addLayer({
-        source: source,
+      // ─── Layers (manually added for visibility toggles) ───
+      bobsLayer = app.ascii.addLayer({
+        source: app.canvas,
         fontSize: 16,
         charset: 'blocks',
         colorScheme: 'rainbow',
@@ -200,9 +176,8 @@
         opacity: 1,
       });
 
-      // Layer 2: Motion trails
-      const trailsLayer = ascii.addLayer({
-        source: source,
+      trailsLayer = app.ascii.addLayer({
+        source: app.canvas,
         fontSize: 8,
         charset: 'density',
         colorScheme: 'vapor',
@@ -210,9 +185,8 @@
         opacity: 0.5,
       });
 
-      // Layer 3: Atmospheric
-      const atmosphereLayer = ascii.addLayer({
-        source: source,
+      atmosphereLayer = app.ascii.addLayer({
+        source: app.canvas,
         fontSize: 12,
         charset: 'braille',
         colorScheme: 'ocean',
@@ -222,22 +196,18 @@
         opacity: 0.15,
       });
 
-      // ─── Keyboard ──────────────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-        if (e.key === '1') bobsLayer.set('visible', !bobsLayer.get('visible'));
-        if (e.key === '2') trailsLayer.set('visible', !trailsLayer.get('visible'));
-        if (e.key === '3') atmosphereLayer.set('visible', !atmosphereLayer.get('visible'));
+      // ─── Canvas Events ────────────────────────────────────
+      app.canvas.addEventListener('click', () => {
+        phaseOffset = -omega(0) * simTime;
+        for (let i = 0; i < NUM_PENDULUMS; i++) {
+          trails[i].length = 0;
+        }
       });
 
-      // ─── Main Loop ─────────────────────────────────────────
-      function loop(time) {
-        draw(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        timeScale = Math.max(TIME_SCALE_MIN, Math.min(TIME_SCALE_MAX, timeScale - e.deltaY * 0.001));
+      }, { passive: false });
     </script>
   </body>
 </html>

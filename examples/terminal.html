@@ -16,29 +16,11 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const sCtx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
 
       // ─── Offscreen Terminal Buffer ────────────────────────
       const termBuffer = document.createElement('canvas');
       const tCtx = termBuffer.getContext('2d');
-
-      function resizeTermBuffer() {
-        termBuffer.width = source.width;
-        termBuffer.height = source.height;
-      }
-      resizeTermBuffer();
-      window.addEventListener('resize', resizeTermBuffer);
 
       // ─── Terminal State ───────────────────────────────────
       const FONT_SIZE = 15;
@@ -241,9 +223,7 @@
       // ─── CRT Effects ─────────────────────────────────────
 
       // Barrel distortion: copy termBuffer to source with curvature
-      function drawBarrelDistorted() {
-        const w = source.width;
-        const h = source.height;
+      function drawBarrelDistorted(ctx, w, h) {
         const k = 0.08; // distortion strength
         const gridX = 20;
         const gridY = 15;
@@ -272,7 +252,7 @@
             const dstX = dstCenterX - dstW / 2;
             const dstY = dstCenterY - dstH / 2;
 
-            sCtx.drawImage(
+            ctx.drawImage(
               termBuffer,
               srcX, srcY, cellW, cellH,
               dstX, dstY, dstW, dstH
@@ -282,119 +262,95 @@
       }
 
       // Phosphor glow: blurred green bloom behind text
-      function drawPhosphorGlow() {
-        sCtx.save();
-        sCtx.filter = 'blur(6px)';
-        sCtx.globalAlpha = 0.3;
-        sCtx.globalCompositeOperation = 'lighter';
+      function drawPhosphorGlow(ctx, w, h) {
+        ctx.save();
+        ctx.filter = 'blur(6px)';
+        ctx.globalAlpha = 0.3;
+        ctx.globalCompositeOperation = 'lighter';
         // Draw the barrel-distorted version again with blur
-        drawBarrelDistorted();
-        sCtx.restore();
+        drawBarrelDistorted(ctx, w, h);
+        ctx.restore();
       }
 
       // Scanlines: horizontal dark lines
-      function drawScanlines() {
-        const w = source.width;
-        const h = source.height;
-        sCtx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+      function drawScanlines(ctx, w, h) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
         for (let y = 0; y < h; y += 3) {
-          sCtx.fillRect(0, y, w, 1);
+          ctx.fillRect(0, y, w, 1);
         }
       }
 
       // Vignette: dark edges
-      function drawVignette() {
-        const w = source.width;
-        const h = source.height;
+      function drawVignette(ctx, w, h) {
         const cx = w / 2;
         const cy = h / 2;
         const r = Math.max(w, h) * 0.55;
 
-        const grad = sCtx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r);
+        const grad = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r);
         grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
         grad.addColorStop(0.7, 'rgba(0, 0, 0, 0.3)');
         grad.addColorStop(1, 'rgba(0, 0, 0, 0.85)');
-        sCtx.fillStyle = grad;
-        sCtx.fillRect(0, 0, w, h);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
       }
 
-      // ─── Main Draw ───────────────────────────────────────
-      function drawTerminal(dt) {
-        const w = source.width;
-        const h = source.height;
+      // ─── createApp ─────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#050a05',
+          sourceOpacity: 0,
+        },
+        layers: [
+          // Layer 1: CRT scanline interference
+          {
+            fontSize: 14,
+            charset: 'minimal',
+            colorScheme: 'mono',
+            pattern: 'moiré',
+            patternMix: 0.7,
+            blendMode: 'replace',
+            opacity: 0.3,
+          },
+          // Layer 2: Phosphor text glow
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'acid',
+            blendMode: 'add',
+            opacity: 0.9,
+          },
+        ],
+        onResize(w, h) {
+          termBuffer.width = w;
+          termBuffer.height = h;
+        },
+        draw(ctx, { dt, width, height }) {
+          updateTerminal(dt);
+          renderTermBuffer();
 
-        updateTerminal(dt);
-        renderTermBuffer();
+          // Clear source
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, width, height);
 
-        // Clear source
-        sCtx.fillStyle = '#000';
-        sCtx.fillRect(0, 0, w, h);
+          // Subtle flicker
+          ctx.globalAlpha = 0.96 + Math.random() * 0.04;
 
-        // Subtle flicker
-        sCtx.globalAlpha = 0.96 + Math.random() * 0.04;
+          // Phosphor glow (blurred, behind)
+          drawPhosphorGlow(ctx, width, height);
 
-        // Phosphor glow (blurred, behind)
-        drawPhosphorGlow();
+          // Sharp text with barrel distortion
+          ctx.globalAlpha = 0.96 + Math.random() * 0.04;
+          drawBarrelDistorted(ctx, width, height);
 
-        // Sharp text with barrel distortion
-        sCtx.globalAlpha = 0.96 + Math.random() * 0.04;
-        drawBarrelDistorted();
+          ctx.globalAlpha = 1;
 
-        sCtx.globalAlpha = 1;
+          // Scanlines
+          drawScanlines(ctx, width, height);
 
-        // Scanlines
-        drawScanlines();
-
-        // Vignette
-        drawVignette();
-      }
-
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#050a05',
-        sourceOpacity: 0,
+          // Vignette
+          drawVignette(ctx, width, height);
+        },
       });
-
-      // Layer 1: CRT scanline interference
-      ascii.addLayer({
-        source,
-        fontSize: 14,
-        charset: 'minimal',
-        colorScheme: 'mono',
-        pattern: 'moiré',
-        patternMix: 0.7,
-        blendMode: 'replace',
-        opacity: 0.3,
-      });
-
-      // Layer 2: Phosphor text glow
-      ascii.addLayer({
-        source,
-        fontSize: 8,
-        charset: 'density',
-        colorScheme: 'acid',
-        blendMode: 'add',
-        opacity: 0.9,
-      });
-
-      // ─── Controls ─────────────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      // ─── Main Loop ───────────────────────────────────────
-      let lastTime = 0;
-
-      function loop(time) {
-        const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
-        lastTime = time;
-
-        drawTerminal(dt);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>

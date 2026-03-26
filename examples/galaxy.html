@@ -16,18 +16,7 @@
       <canvas id="source"></canvas>
     </div>
     <script type="module">
-      import { AsciiIfy } from '../src/index.js';
-
-      // ─── Source Canvas ────────────────────────────────────
-      const source = document.getElementById('source');
-      const ctx = source.getContext('2d');
-
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
-      }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
+      import { createApp } from './boilerplate.js';
 
       // ─── Galaxy Parameters ────────────────────────────────
       const NUM_STARS = 2500;
@@ -132,53 +121,18 @@
       const ZOOM_MIN = 0.5;
       const ZOOM_MAX = 2.0;
 
-      source.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        zoom -= e.deltaY * 0.001;
-        zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
-      }, { passive: false });
-
       // ─── Mouse Gravity Well ───────────────────────────────
       let mouseDown = false;
       let mouseX = 0;
       let mouseY = 0;
 
-      window.addEventListener('mousedown', (e) => {
-        mouseDown = true;
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-      });
-      window.addEventListener('mousemove', (e) => {
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-      });
-      window.addEventListener('mouseup', () => {
-        mouseDown = false;
-      });
-
-      // Touch support
-      window.addEventListener('touchstart', (e) => {
-        mouseDown = true;
-        mouseX = e.touches[0].clientX;
-        mouseY = e.touches[0].clientY;
-      });
-      window.addEventListener('touchmove', (e) => {
-        mouseX = e.touches[0].clientX;
-        mouseY = e.touches[0].clientY;
-      });
-      window.addEventListener('touchend', () => {
-        mouseDown = false;
-      });
-
       // ─── Draw Galaxy ──────────────────────────────────────
       let globalTime = 0;
+      let bgStars = null;
 
-      function drawGalaxy(timestamp) {
-        const dt = 1 / 60;
+      function drawGalaxy(ctx, dt, w, h) {
         globalTime += dt;
 
-        const w = source.width;
-        const h = source.height;
         const cx = w / 2;
         const cy = h / 2;
         const galaxyRadius = Math.min(w, h) * GALAXY_RADIUS_FRAC * zoom;
@@ -191,10 +145,10 @@
 
         // ── Background: faint distant stars ──
         ctx.save();
-        if (!drawGalaxy._bgStars) {
-          drawGalaxy._bgStars = [];
+        if (!bgStars) {
+          bgStars = [];
           for (let i = 0; i < 200; i++) {
-            drawGalaxy._bgStars.push({
+            bgStars.push({
               x: Math.random(),
               y: Math.random(),
               r: 0.3 + Math.random() * 0.8,
@@ -204,7 +158,7 @@
             });
           }
         }
-        for (const s of drawGalaxy._bgStars) {
+        for (const s of bgStars) {
           const alpha = s.b * (0.6 + 0.4 * Math.sin(globalTime * s.twinkleSpeed + s.twinklePhase));
           ctx.fillStyle = `rgba(200, 210, 255, ${alpha})`;
           ctx.beginPath();
@@ -327,57 +281,75 @@
         ctx.fillRect(0, 0, w, h);
       }
 
-      // ─── ASCII-ify with Layers ────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        background: '#04040a',
-        sourceOpacity: 0,
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#04040a', sourceOpacity: 0 },
+        layers: [
+          // Layer 1 (core): large blocks, fire palette
+          {
+            fontSize: 18,
+            charset: 'blocks',
+            colorScheme: 'fire',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          // Layer 2 (arms/stars): small density characters, vapor palette
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'vapor',
+            blendMode: 'add',
+            opacity: 0.6,
+          },
+          // Layer 3 (cosmic dust): braille characters, ocean palette with moire pattern
+          {
+            fontSize: 12,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'moiré',
+            patternMix: 0.5,
+            blendMode: 'add',
+            opacity: 0.15,
+          },
+        ],
+        draw(ctx, { dt, width: w, height: h }) {
+          drawGalaxy(ctx, dt, w, h);
+        },
       });
 
-      // Layer 1 (core): large blocks, fire palette
-      const coreLayer = ascii.addLayer({
-        source: source,
-        fontSize: 18,
-        charset: 'blocks',
-        colorScheme: 'fire',
-        blendMode: 'replace',
-        opacity: 1,
+      // ─── Canvas / Window Events ───────────────────────────
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        zoom -= e.deltaY * 0.001;
+        zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+      }, { passive: false });
+
+      window.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+      });
+      window.addEventListener('mouseup', () => {
+        mouseDown = false;
       });
 
-      // Layer 2 (arms/stars): small density characters, vapor palette
-      const armsLayer = ascii.addLayer({
-        source: source,
-        fontSize: 8,
-        charset: 'density',
-        colorScheme: 'vapor',
-        blendMode: 'add',
-        opacity: 0.6,
+      // Touch support
+      window.addEventListener('touchstart', (e) => {
+        mouseDown = true;
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
       });
-
-      // Layer 3 (cosmic dust): braille characters, ocean palette with moire pattern
-      const dustLayer = ascii.addLayer({
-        source: source,
-        fontSize: 12,
-        charset: 'braille',
-        colorScheme: 'ocean',
-        pattern: 'moiré',
-        patternMix: 0.5,
-        blendMode: 'add',
-        opacity: 0.15,
+      window.addEventListener('touchmove', (e) => {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
       });
-
-      // ─── Keyboard Controls ────────────────────────────────
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      window.addEventListener('touchend', () => {
+        mouseDown = false;
       });
-
-      // ─── Main Loop ────────────────────────────────────────
-      function loop(time) {
-        drawGalaxy(time);
-        ascii.render();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
     </script>
   </body>
 </html>
