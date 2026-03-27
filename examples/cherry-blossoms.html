@@ -236,11 +236,10 @@
 
       // ─── App ──────────────────────────────────────────
       const app = createApp({
-        asciiConfig: { fontSize: 16, background: '#0a0510', sourceOpacity: 0 },
+        asciiConfig: { fontSize: 6.5, charset: 'braille', colorScheme: 'sakura', opacity: 0.85, background: '#0a0510', sourceOpacity: 0 },
         layers: [
-          { fontSize: 6.5, charset: 'braille', colorScheme: 'sakura', opacity: 0.85 },
           { fontSize: 12, charset: 'blocks', colorScheme: 'mono', blendMode: 'add', opacity: 0.12 },
-          { fontSize: 7, charset: 'density', edgeDetect: true, edgeCharset: 'box-light', colorScheme: 'sakura', blendMode: 'add', opacity: 0.2 },
+          { fontSize: 7, charset: 'density', colorScheme: 'sakura', edgeDetect: true, edgeCharset: 'box-light', blendMode: 'add', opacity: 0.2 },
         ],
         draw(ctx, { time, dt, width: w, height: h }) {
           if (branches.length === 0) genTree(w, h);
