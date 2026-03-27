@@ -42,11 +42,8 @@
       function genTree(w, h) {
         branches = [];
         branchTips = [];
-        const cx = w * 0.48;
-        const baseY = h;
-        const trunkH = h * 0.45;
 
-        // recursive branching
+        // recursive branching helper
         function branch(x, y, angle, len, depth, width) {
           const ex = x + Math.cos(angle) * len;
           const ey = y + Math.sin(angle) * len;
@@ -69,20 +66,33 @@
           }
         }
 
-        const trunkTop = baseY - trunkH;
-        branches.push({ x1: cx, y1: baseY, x2: cx, y2: trunkTop, w: w * 0.022, depth: 7 });
-        branch(cx, trunkTop, -Math.PI / 2 - 0.15, trunkH * 0.38, 5, w * 0.014);
-        branch(cx, trunkTop, -Math.PI / 2 + 0.15, trunkH * 0.36, 5, w * 0.013);
-        branch(cx, trunkTop + trunkH * 0.15, -Math.PI / 2 - 0.5, trunkH * 0.25, 4, w * 0.008);
-        branch(cx, trunkTop + trunkH * 0.25, -Math.PI / 2 + 0.55, trunkH * 0.22, 4, w * 0.007);
+        function addTree(cx, scale, maxDepth) {
+          const baseY = h;
+          const trunkH = h * 0.45 * scale;
+          const trunkTop = baseY - trunkH;
+          const s = scale;
+          branches.push({ x1: cx, y1: baseY, x2: cx, y2: trunkTop, w: w * 0.022 * s, depth: 7 });
+          branch(cx, trunkTop, -Math.PI / 2 - 0.15, trunkH * 0.38, maxDepth, w * 0.014 * s);
+          branch(cx, trunkTop, -Math.PI / 2 + 0.15, trunkH * 0.36, maxDepth, w * 0.013 * s);
+          branch(cx, trunkTop + trunkH * 0.15, -Math.PI / 2 - 0.5, trunkH * 0.25, maxDepth - 1, w * 0.008 * s);
+          branch(cx, trunkTop + trunkH * 0.25, -Math.PI / 2 + 0.55, trunkH * 0.22, maxDepth - 1, w * 0.007 * s);
+        }
+
+        // Background trees (smaller, further away)
+        addTree(w * 0.08, 0.5, 3);
+        addTree(w * 0.88, 0.55, 3);
+        // Mid-ground trees
+        addTree(w * 0.24, 0.75, 4);
+        addTree(w * 0.78, 0.7, 4);
+        // Main foreground tree
+        addTree(w * 0.48, 1.0, 5);
       }
 
       // ─── Petals ───────────────────────────────────────
-      const petals = new ParticlePool({ maxParticles: 600, gravity: 28, drag: 0.995 });
+      const petals = new ParticlePool({ maxParticles: 400, gravity: 12, drag: 0.998 });
 
       function spawnPetals(dt, w, h) {
-        // Spawn from branch tips
-        const rate = 12; // per second total
+        const rate = 5; // per second total
         const count = Math.floor(rate * dt + (Math.random() < (rate * dt % 1) ? 1 : 0));
         if (branchTips.length === 0) return;
 
@@ -92,18 +102,18 @@
           return {
             x: tip.x + (Math.random() - 0.5) * 30,
             y: tip.y + (Math.random() - 0.5) * 20,
-            vx: (Math.random() - 0.3) * 25,
-            vy: -10 + Math.random() * 15,
-            life: 6 + Math.random() * 6,
+            vx: (Math.random() - 0.3) * 15,
+            vy: -5 + Math.random() * 8,
+            life: 8 + Math.random() * 8,
             maxLife: 0,
             size: 3 + Math.random() * 5,
             color,
             phase: Math.random() * Math.PI * 2,
-            wobbleAmp: 20 + Math.random() * 40,
-            wobbleFreq: 1.5 + Math.random() * 2,
-            spin: (Math.random() - 0.5) * 3,
-            gravity: 18 + Math.random() * 20,
-            drag: 0.997,
+            wobbleAmp: 15 + Math.random() * 30,
+            wobbleFreq: 1 + Math.random() * 1.5,
+            spin: (Math.random() - 0.5) * 2,
+            gravity: 8 + Math.random() * 10,
+            drag: 0.998,
           };
         });
       }
