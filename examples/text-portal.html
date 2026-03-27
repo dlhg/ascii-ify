@@ -19,8 +19,29 @@
       import { createApp } from './boilerplate.js';
       import { lerp, clamp, smoothstep } from './utils.js';
 
-      // ─── Words ──────────────────────────────────────────
-      const WORDS = ['DREAM', 'LIGHT', 'SPACE', 'PULSE', 'CHAOS', 'DEPTH', 'GLYPH', 'EMBER', 'DRIFT', 'BLOOM'];
+      // ─── Words in different scripts ─────────────────────
+      const WORDS = [
+        'DREAM',    // English
+        'МЕЧТА',    // Russian (Cyrillic) — dream
+        '夢',       // Japanese (Kanji) — dream
+        'حلم',      // Arabic — dream
+        '꿈',       // Korean — dream
+        'ΦΩΤΙΑ',    // Greek — fire
+        'सपना',     // Hindi (Devanagari) — dream
+        '光',       // Chinese (Hanzi) — light
+        'СВЕТ',     // Russian (Cyrillic) — light
+        'ひかり',    // Japanese (Hiragana) — light
+        'نور',      // Arabic — light
+        '빛',       // Korean — light
+        'ΟΝΕΙΡΟ',   // Greek — dream
+        'ฝัน',      // Thai — dream
+        '梦想',      // Chinese — dream
+        'CHAOS',    // English
+        'ユメ',      // Japanese (Katakana) — dream
+        'ТЕНЬ',     // Russian (Cyrillic) — shadow
+        '영혼',      // Korean — soul
+        'आग',       // Hindi (Devanagari) — fire
+      ];
       const WORD_DURATION = 3.5; // seconds per word
       let wordIndex = 0;
 
@@ -29,20 +50,24 @@
 
       function spawnDissolveParticles(text, fontSize, w, h) {
         particles.length = 0;
-        // Create particles from letter positions
-        const letterSpacing = fontSize * 0.65;
-        const totalWidth = text.length * letterSpacing;
+        // Measure actual text width for accurate particle placement
+        const measureCanvas = document.createElement('canvas');
+        const measureCtx = measureCanvas.getContext('2d');
+        measureCtx.font = `bold ${fontSize}px "Noto Sans", "Arial Unicode MS", sans-serif`;
+        const totalWidth = measureCtx.measureText(text).width;
+        const charWidth = totalWidth / Math.max(text.length, 1);
+
         const startX = (w - totalWidth) / 2;
 
         for (let i = 0; i < text.length; i++) {
-          const cx = startX + i * letterSpacing + letterSpacing / 2;
+          const cx = startX + i * charWidth + charWidth / 2;
           const cy = h / 2;
           // Multiple particles per letter
           for (let j = 0; j < 8; j++) {
             const angle = Math.random() * Math.PI * 2;
             const speed = 80 + Math.random() * 200;
             particles.push({
-              x: cx + (Math.random() - 0.5) * letterSpacing * 0.6,
+              x: cx + (Math.random() - 0.5) * charWidth * 0.6,
               y: cy + (Math.random() - 0.5) * fontSize * 0.6,
               vx: Math.cos(angle) * speed,
               vy: Math.sin(angle) * speed,
@@ -133,7 +158,7 @@
 
         const word = WORDS[wordIndex];
         const fontSize = Math.min(w * 0.14, h * 0.28);
-        ctx.font = `bold ${fontSize}px monospace`;
+        ctx.font = `bold ${fontSize}px "Noto Sans", "Arial Unicode MS", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
 
