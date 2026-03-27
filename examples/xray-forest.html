@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — X-Ray Forest</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, dist } from './utils.js';
+
+      // ─── Drifting Spots ────────────────────────────────
+      const spots = [];
+      const NUM_SPOTS = 3;
+      let mouseSpotX = 0, mouseSpotY = 0;
+      let mouseTargetX = 0, mouseTargetY = 0;
+      let mouseActive = false;
+
+      function initSpots(w, h) {
+        spots.length = 0;
+        for (let i = 0; i < NUM_SPOTS; i++) {
+          spots.push({
+            x: w * (0.15 + 0.7 * Math.random()),
+            y: h * (0.2 + 0.6 * Math.random()),
+            vx: (Math.random() - 0.5) * 0.25,
+            vy: (Math.random() - 0.5) * 0.25,
+            radius: 0.11 + Math.random() * 0.08,
+            phase: Math.random() * Math.PI * 2,
+            speed: 0.25 + Math.random() * 0.3,
+          });
+        }
+        mouseSpotX = mouseTargetX = w / 2;
+        mouseSpotY = mouseTargetY = h / 2;
+      }
+
+      function updateSpots(dt, w, h) {
+        for (const s of spots) {
+          s.vx += (Math.random() - 0.5) * 0.1 * dt;
+          s.vy += (Math.random() - 0.5) * 0.1 * dt;
+          const maxV = s.speed;
+          const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+          if (speed > maxV) { s.vx *= maxV / speed; s.vy *= maxV / speed; }
+          s.x += s.vx * dt * 60;
+          s.y += s.vy * dt * 60;
+          const margin = 0.1 * Math.min(w, h);
+          if (s.x < margin) { s.x = margin; s.vx = Math.abs(s.vx); }
+          if (s.x > w - margin) { s.x = w - margin; s.vx = -Math.abs(s.vx); }
+          if (s.y < margin) { s.y = margin; s.vy = Math.abs(s.vy); }
+          if (s.y > h - margin) { s.y = h - margin; s.vy = -Math.abs(s.vy); }
+        }
+        mouseSpotX = lerp(mouseSpotX, mouseTargetX, 1 - Math.exp(-6 * dt));
+        mouseSpotY = lerp(mouseSpotY, mouseTargetY, 1 - Math.exp(-6 * dt));
+      }
+
+      // ─── Trees ─────────────────────────────────────────
+      const trees = [];
+      function initTrees(w, h) {
+        trees.length = 0;
+        const groundY = h * 0.6;
+        for (let i = 0; i < 12; i++) {
+          const x = w * 0.05 + Math.random() * w * 0.9;
+          const trunkH = 60 + Math.random() * 120;
+          const canopyR = 25 + Math.random() * 50;
+          trees.push({
+            x,
+            groundY: groundY + Math.random() * 20 - 10,
+            trunkH,
+            trunkW: 6 + Math.random() * 8,
+            canopyR,
+            canopyLayers: 2 + Math.floor(Math.random() * 3),
+            hue: 80 + Math.random() * 60,
+            phase: Math.random() * Math.PI * 2,
+            rootDepth: 40 + Math.random() * 60,
+            rootSpread: 30 + Math.random() * 50,
+          });
+        }
+        // Sort by y for layering
+        trees.sort((a, b) => a.groundY - b.groundY);
+      }
+
+      // ─── Fossils ───────────────────────────────────────
+      const fossils = [];
+      function initFossils(w, h) {
+        fossils.length = 0;
+        const groundY = h * 0.6;
+        for (let i = 0; i < 6; i++) {
+          fossils.push({
+            x: w * 0.1 + Math.random() * w * 0.8,
+            y: groundY + 30 + Math.random() * (h - groundY - 60),
+            size: 12 + Math.random() * 20,
+            type: Math.floor(Math.random() * 3), // 0: ammonite, 1: bone, 2: crystal
+            angle: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+
+      // ─── Fireflies ────────────────────────────────────
+      const fireflies = [];
+      function initFireflies(w, h) {
+        fireflies.length = 0;
+        for (let i = 0; i < 20; i++) {
+          fireflies.push({
+            x: Math.random() * w,
+            y: h * 0.2 + Math.random() * h * 0.4,
+            phase: Math.random() * Math.PI * 2,
+            driftX: Math.random() * Math.PI * 2,
+            driftY: Math.random() * Math.PI * 2,
+            speed: 0.5 + Math.random() * 1.5,
+          });
+        }
+      }
+
+      // ─── Draw Scene ───────────────────────────────────
+      function drawScene(ctx, t, w, h) {
+        const groundY = h * 0.6;
+
+        // Sky gradient — twilight forest
+        const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+        sky.addColorStop(0, '#0a1520');
+        sky.addColorStop(0.4, '#0e2218');
+        sky.addColorStop(0.7, '#122a1a');
+        sky.addColorStop(1, '#0a1a10');
+        ctx.fillStyle = sky;
+        ctx.fillRect(0, 0, w, groundY);
+
+        // Underground gradient
+        const under = ctx.createLinearGradient(0, groundY, 0, h);
+        under.addColorStop(0, '#1a1408');
+        under.addColorStop(0.3, '#14100a');
+        under.addColorStop(1, '#0a0806');
+        ctx.fillStyle = under;
+        ctx.fillRect(0, groundY, w, h - groundY);
+
+        // Fog layers
+        for (let i = 0; i < 3; i++) {
+          const fogY = groundY - 30 - i * 40;
+          const fogAlpha = 0.04 + 0.02 * Math.sin(t * 0.3 + i);
+          ctx.fillStyle = `rgba(100, 140, 100, ${fogAlpha})`;
+          ctx.fillRect(0, fogY, w, 50);
+        }
+
+        // Moon peeking through canopy
+        const moonX = w * 0.7, moonY = h * 0.1;
+        const moonGrad = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, 40);
+        moonGrad.addColorStop(0, 'rgba(220, 240, 200, 0.6)');
+        moonGrad.addColorStop(0.4, 'rgba(180, 220, 160, 0.15)');
+        moonGrad.addColorStop(1, 'rgba(180, 220, 160, 0)');
+        ctx.fillStyle = moonGrad;
+        ctx.beginPath();
+        ctx.arc(moonX, moonY, 40, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Trees
+        for (const tree of trees) {
+          const sway = Math.sin(t * 0.5 + tree.phase) * 3;
+
+          // Trunk
+          ctx.fillStyle = `hsla(30, 30%, 18%, 0.9)`;
+          ctx.fillRect(tree.x - tree.trunkW / 2, tree.groundY - tree.trunkH, tree.trunkW, tree.trunkH);
+
+          // Bark texture lines
+          ctx.strokeStyle = 'rgba(60, 40, 20, 0.3)';
+          ctx.lineWidth = 1;
+          for (let i = 0; i < 5; i++) {
+            const by = tree.groundY - tree.trunkH * (0.1 + i * 0.2);
+            ctx.beginPath();
+            ctx.moveTo(tree.x - tree.trunkW / 2, by);
+            ctx.lineTo(tree.x + tree.trunkW / 2, by + 5);
+            ctx.stroke();
+          }
+
+          // Canopy layers
+          for (let layer = 0; layer < tree.canopyLayers; layer++) {
+            const ly = tree.groundY - tree.trunkH - layer * tree.canopyR * 0.4 + 10;
+            const lr = tree.canopyR * (1 - layer * 0.15);
+            const brightness = 15 + layer * 5;
+            ctx.fillStyle = `hsla(${tree.hue}, 40%, ${brightness}%, ${0.7 - layer * 0.1})`;
+            ctx.beginPath();
+            ctx.ellipse(tree.x + sway * (layer + 1) * 0.3, ly, lr, lr * 0.65, 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // ── Root system (underground x-ray detail) ──
+          ctx.strokeStyle = `rgba(120, 90, 40, 0.25)`;
+          ctx.lineWidth = 2;
+          const numRoots = 4 + Math.floor(Math.random() * 0.01); // Deterministic from init
+          for (let r = 0; r < 5; r++) {
+            const angle = (r / 5) * Math.PI - Math.PI * 0.1;
+            const rootLen = tree.rootDepth * (0.7 + Math.sin(r * 2.3) * 0.3);
+            const endX = tree.x + Math.cos(angle) * tree.rootSpread * (r % 2 === 0 ? 1 : -1);
+            const endY = tree.groundY + rootLen;
+            ctx.beginPath();
+            ctx.moveTo(tree.x, tree.groundY);
+            ctx.quadraticCurveTo(
+              tree.x + (endX - tree.x) * 0.3,
+              tree.groundY + rootLen * 0.6,
+              endX, endY
+            );
+            ctx.stroke();
+
+            // Root tips with nutrient glow
+            const glowAlpha = 0.2 + 0.15 * Math.sin(t * 2 + r + tree.phase);
+            ctx.fillStyle = `rgba(100, 200, 80, ${glowAlpha})`;
+            ctx.beginPath();
+            ctx.arc(endX, endY, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Mycorrhizal network — fungal threads connecting roots
+          if (trees.indexOf(tree) < trees.length - 1) {
+            const next = trees[trees.indexOf(tree) + 1];
+            if (Math.abs(tree.x - next.x) < w * 0.3) {
+              ctx.strokeStyle = `rgba(180, 160, 60, ${0.1 + 0.05 * Math.sin(t + tree.phase)})`;
+              ctx.lineWidth = 1;
+              const netY = groundY + 25 + Math.random() * 0.01 * 30;
+              ctx.beginPath();
+              ctx.moveTo(tree.x, groundY + 20);
+              ctx.quadraticCurveTo(
+                (tree.x + next.x) / 2,
+                netY + 15 + Math.sin(t * 0.8 + tree.phase) * 5,
+                next.x,
+                groundY + 20
+              );
+              ctx.stroke();
+
+              // Nutrient pulse traveling along network
+              const pulse = (t * 0.4 + tree.phase * 0.1) % 1;
+              const px = lerp(tree.x, next.x, pulse);
+              const py = netY + 15 + Math.sin(t * 0.8 + tree.phase) * 5 - (1 - 4 * (pulse - 0.5) ** 2) * 10;
+              const dotGrad = ctx.createRadialGradient(px, py, 0, px, py, 5);
+              dotGrad.addColorStop(0, 'rgba(200, 220, 60, 0.5)');
+              dotGrad.addColorStop(1, 'rgba(200, 220, 60, 0)');
+              ctx.fillStyle = dotGrad;
+              ctx.beginPath();
+              ctx.arc(px, py, 5, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        // Soil layers
+        ctx.strokeStyle = 'rgba(80, 60, 30, 0.15)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 4; i++) {
+          const ly = groundY + 15 + i * (h - groundY) * 0.22;
+          ctx.beginPath();
+          for (let x = 0; x < w; x += 5) {
+            const y = ly + Math.sin(x * 0.02 + i * 2) * 4;
+            if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+
+        // Fossils
+        for (const f of fossils) {
+          ctx.save();
+          ctx.translate(f.x, f.y);
+          ctx.rotate(f.angle);
+          ctx.strokeStyle = `rgba(200, 180, 140, ${0.25 + 0.1 * Math.sin(t + f.x * 0.01)})`;
+          ctx.lineWidth = 1.5;
+
+          if (f.type === 0) {
+            // Ammonite spiral
+            ctx.beginPath();
+            for (let a = 0; a < Math.PI * 6; a += 0.1) {
+              const r = a * f.size / (Math.PI * 6);
+              const x = Math.cos(a) * r;
+              const y = Math.sin(a) * r;
+              if (a === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+          } else if (f.type === 1) {
+            // Bone
+            ctx.beginPath();
+            ctx.moveTo(-f.size, 0);
+            ctx.lineTo(f.size, 0);
+            ctx.stroke();
+            // Bone ends
+            for (const dir of [-1, 1]) {
+              ctx.beginPath();
+              ctx.arc(dir * f.size, 0, f.size * 0.25, 0, Math.PI * 2);
+              ctx.stroke();
+            }
+          } else {
+            // Crystal cluster
+            for (let i = 0; i < 4; i++) {
+              const ca = (i / 4) * Math.PI - Math.PI / 4;
+              ctx.strokeStyle = `rgba(150, 200, 255, ${0.2 + 0.15 * Math.sin(t * 2 + i)})`;
+              ctx.beginPath();
+              ctx.moveTo(0, 0);
+              ctx.lineTo(Math.cos(ca) * f.size, Math.sin(ca) * f.size);
+              ctx.lineTo(Math.cos(ca + 0.15) * f.size * 0.7, Math.sin(ca + 0.15) * f.size * 0.7);
+              ctx.closePath();
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
+        }
+
+        // Underground creatures — worms
+        for (let i = 0; i < 3; i++) {
+          const wx = w * (0.2 + i * 0.3) + Math.sin(t * 0.5 + i * 2) * 30;
+          const wy = groundY + 50 + i * 40;
+          ctx.strokeStyle = `rgba(180, 120, 100, ${0.25 + 0.1 * Math.sin(t + i)})`;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(wx, wy);
+          for (let s = 1; s <= 6; s++) {
+            ctx.lineTo(
+              wx + s * 8 + Math.sin(t * 2 + s + i) * 4,
+              wy + Math.cos(t * 2 + s * 1.5 + i) * 5
+            );
+          }
+          ctx.stroke();
+        }
+
+        // Water table line (deep underground)
+        const waterY = h * 0.88;
+        ctx.strokeStyle = `rgba(60, 140, 200, ${0.15 + 0.05 * Math.sin(t * 0.5)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let x = 0; x < w; x += 5) {
+          const y = waterY + Math.sin(x * 0.015 + t * 0.8) * 3;
+          if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        // Water fill below
+        ctx.fillStyle = `rgba(30, 80, 120, ${0.08 + 0.03 * Math.sin(t * 0.5)})`;
+        ctx.fillRect(0, waterY + 3, w, h - waterY - 3);
+
+        // Fireflies (above ground)
+        for (const ff of fireflies) {
+          const glow = 0.5 + 0.5 * Math.sin(t * ff.speed * 2 + ff.phase);
+          ff.x += Math.sin(t * 0.3 + ff.driftX) * 0.3;
+          ff.y += Math.sin(t * 0.4 + ff.driftY) * 0.2;
+          if (ff.x < 0) ff.x = w; if (ff.x > w) ff.x = 0;
+          if (ff.y < h * 0.1) ff.y = h * 0.5; if (ff.y > groundY - 10) ff.y = h * 0.2;
+
+          const ffGrad = ctx.createRadialGradient(ff.x, ff.y, 0, ff.x, ff.y, 8);
+          ffGrad.addColorStop(0, `rgba(180, 255, 50, ${0.6 * glow})`);
+          ffGrad.addColorStop(1, 'rgba(180, 255, 50, 0)');
+          ctx.fillStyle = ffGrad;
+          ctx.beginPath();
+          ctx.arc(ff.x, ff.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = `rgba(200, 255, 100, ${0.8 * glow})`;
+          ctx.beginPath();
+          ctx.arc(ff.x, ff.y, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Ground surface line
+        ctx.strokeStyle = 'rgba(40, 80, 30, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let x = 0; x < w; x += 3) {
+          const y = groundY + Math.sin(x * 0.03) * 3 + Math.sin(x * 0.1) * 1;
+          if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Grass tufts
+        ctx.strokeStyle = 'rgba(50, 100, 40, 0.4)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x < w; x += 12) {
+          const gy = groundY + Math.sin(x * 0.03) * 3;
+          for (let blade = 0; blade < 3; blade++) {
+            const bx = x + blade * 3 - 3;
+            const bladeH = 5 + Math.random() * 8;
+            const bladeSway = Math.sin(t * 1.2 + x * 0.1 + blade) * 2;
+            ctx.beginPath();
+            ctx.moveTo(bx, gy);
+            ctx.quadraticCurveTo(bx + bladeSway, gy - bladeH * 0.6, bx + bladeSway * 1.5, gy - bladeH);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // ─── Draw Mask ────────────────────────────────────
+      function drawMask(ctx, t, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        for (const s of spots) {
+          const breathe = 1 + 0.04 * Math.sin(t * 2 + s.phase);
+          const r = s.radius * Math.min(w, h) * breathe;
+          const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
+          grad.addColorStop(0, '#ffffff');
+          grad.addColorStop(0.5, '#aaaaaa');
+          grad.addColorStop(1, '#000000');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (mouseActive) {
+          const r = 0.15 * Math.min(w, h) * (1 + 0.02 * Math.sin(t * 3));
+          const grad = ctx.createRadialGradient(mouseSpotX, mouseSpotY, 0, mouseSpotX, mouseSpotY, r);
+          grad.addColorStop(0, '#ffffff');
+          grad.addColorStop(0.6, '#bbbbbb');
+          grad.addColorStop(1, '#000000');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(mouseSpotX, mouseSpotY, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#0a1208', sourceOpacity: 0 },
+        layers: [
+          {
+            fontSize: 10,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 1,
+          },
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'neon',
+            opacity: 1,
+          },
+          {
+            fontSize: 8,
+            charset: 'density',
+            colorScheme: 'acid',
+            edgeDetect: true,
+            edgeCharset: 'box-light',
+            blendMode: 'add',
+            opacity: 0.3,
+          },
+          {
+            fontSize: 4,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            opacity: 0,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          updateSpots(dt, w, h);
+          drawScene(ctx, time / 1000, w, h);
+        },
+        onResize(ctx, w, h) {
+          initSpots(w, h);
+          initTrees(w, h);
+          initFossils(w, h);
+          initFireflies(w, h);
+        },
+      });
+
+      // ─── Mask Setup ───────────────────────────────────
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+
+      function resizeMask() {
+        maskCanvas.width = app.canvas.width;
+        maskCanvas.height = app.canvas.height;
+      }
+      resizeMask();
+      window.addEventListener('resize', resizeMask);
+
+      const layers = app.ascii.layers;
+      layers[0].set('visible', false);
+      layers[4].set('source', maskCanvas);
+
+      layers[1].set('maskLayer', layers[4].id);
+      layers[1].set('invertMask', true);
+
+      layers[2].set('maskLayer', layers[4].id);
+      layers[3].set('maskLayer', layers[4].id);
+
+      app.ascii.on('render', () => {
+        const t = performance.now() / 1000;
+        drawMask(maskCtx, t, maskCanvas.width, maskCanvas.height);
+      });
+
+      // ─── Input ────────────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseActive = true;
+        const rect = app.canvas.getBoundingClientRect();
+        mouseTargetX = (e.clientX - rect.left) * (app.canvas.width / rect.width);
+        mouseTargetY = (e.clientY - rect.top) * (app.canvas.height / rect.height);
+      });
+      window.addEventListener('touchmove', (e) => {
+        mouseActive = true;
+        const touch = e.touches[0];
+        const rect = app.canvas.getBoundingClientRect();
+        mouseTargetX = (touch.clientX - rect.left) * (app.canvas.width / rect.width);
+        mouseTargetY = (touch.clientY - rect.top) * (app.canvas.height / rect.height);
+      });
+      window.addEventListener('mouseleave', () => { mouseActive = false; });
+    </script>
+  </body>
+</html>
