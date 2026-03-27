@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Cherry Blossoms</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep } from './utils.js';
+
+      // ─── Palette ──────────────────────────────────────
+      const PINKS = [
+        [255, 183, 197],
+        [255, 150, 175],
+        [255, 200, 210],
+        [255, 220, 230],
+        [250, 130, 160],
+        [255, 170, 190],
+      ];
+      const BARK    = [62, 39, 35];
+      const BARK_HI = [95, 60, 50];
+      const SKY_TOP = [25, 10, 35];
+      const SKY_BOT = [60, 25, 55];
+
+      // ─── Tree Geometry ────────────────────────────────
+      // Branches are generated once on resize, petals spawn from tips
+      let branches = [];
+      let branchTips = [];
+
+      function genTree(w, h) {
+        branches = [];
+        branchTips = [];
+        const cx = w * 0.48;
+        const baseY = h;
+        const trunkH = h * 0.45;
+
+        // recursive branching
+        function branch(x, y, angle, len, depth, width) {
+          const ex = x + Math.cos(angle) * len;
+          const ey = y + Math.sin(angle) * len;
+          branches.push({ x1: x, y1: y, x2: ex, y2: ey, w: width, depth });
+
+          if (depth <= 0) {
+            branchTips.push({ x: ex, y: ey });
+            return;
+          }
+
+          const spread = 0.4 + Math.random() * 0.25;
+          const shrink = 0.62 + Math.random() * 0.15;
+          const numBranches = depth > 3 ? 2 : 2 + (Math.random() > 0.5 ? 1 : 0);
+
+          for (let i = 0; i < numBranches; i++) {
+            const t = (i / (numBranches - 1 || 1)) - 0.5;
+            const a = angle + t * spread * 2 + (Math.random() - 0.5) * 0.3;
+            const l = len * shrink * (0.85 + Math.random() * 0.3);
+            branch(ex, ey, a, l, depth - 1, width * 0.65);
+          }
+        }
+
+        const trunkTop = baseY - trunkH;
+        branches.push({ x1: cx, y1: baseY, x2: cx, y2: trunkTop, w: w * 0.022, depth: 7 });
+        branch(cx, trunkTop, -Math.PI / 2 - 0.15, trunkH * 0.38, 5, w * 0.014);
+        branch(cx, trunkTop, -Math.PI / 2 + 0.15, trunkH * 0.36, 5, w * 0.013);
+        branch(cx, trunkTop + trunkH * 0.15, -Math.PI / 2 - 0.5, trunkH * 0.25, 4, w * 0.008);
+        branch(cx, trunkTop + trunkH * 0.25, -Math.PI / 2 + 0.55, trunkH * 0.22, 4, w * 0.007);
+      }
+
+      // ─── Petals ───────────────────────────────────────
+      const petals = new ParticlePool({ maxParticles: 600, gravity: 28, drag: 0.995 });
+
+      function spawnPetals(dt, w, h) {
+        // Spawn from branch tips
+        const rate = 12; // per second total
+        const count = Math.floor(rate * dt + (Math.random() < (rate * dt % 1) ? 1 : 0));
+        if (branchTips.length === 0) return;
+
+        petals.emit(count, () => {
+          const tip = branchTips[(Math.random() * branchTips.length) | 0];
+          const color = PINKS[(Math.random() * PINKS.length) | 0];
+          return {
+            x: tip.x + (Math.random() - 0.5) * 30,
+            y: tip.y + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.3) * 25,
+            vy: -10 + Math.random() * 15,
+            life: 6 + Math.random() * 6,
+            maxLife: 0,
+            size: 3 + Math.random() * 5,
+            color,
+            phase: Math.random() * Math.PI * 2,
+            wobbleAmp: 20 + Math.random() * 40,
+            wobbleFreq: 1.5 + Math.random() * 2,
+            spin: (Math.random() - 0.5) * 3,
+            gravity: 18 + Math.random() * 20,
+            drag: 0.997,
+          };
+        });
+      }
+
+      // ─── Wind ─────────────────────────────────────────
+      let windX = 0;
+      let windTarget = 15;
+      let windTimer = 0;
+
+      function updateWind(dt, time) {
+        windTimer -= dt;
+        if (windTimer <= 0) {
+          windTarget = (Math.random() - 0.3) * 60;
+          windTimer = 2 + Math.random() * 4;
+        }
+        windX = lerp(windX, windTarget, dt * 0.8);
+
+        // Apply wind force to petals
+        petals.forEach((p) => {
+          p.vx += windX * dt * 0.5;
+          // Sinusoidal wobble
+          const t = time / 1000;
+          p.vx += Math.sin(t * p.wobbleFreq + p.phase) * p.wobbleAmp * dt;
+        });
+      }
+
+      // ─── Drawing ──────────────────────────────────────
+      function drawSky(ctx, w, h, time) {
+        const t = time / 1000;
+        // Gradient sky
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.1);
+        const r0 = SKY_TOP[0] + pulse * 8;
+        const g0 = SKY_TOP[1] + pulse * 5;
+        const b0 = SKY_TOP[2] + pulse * 12;
+        grad.addColorStop(0, `rgb(${r0|0},${g0|0},${b0|0})`);
+        grad.addColorStop(1, `rgb(${SKY_BOT[0]},${SKY_BOT[1]},${SKY_BOT[2]})`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawBranches(ctx, time) {
+        const t = time / 1000;
+        ctx.lineCap = 'round';
+        for (const b of branches) {
+          // Subtle sway for smaller branches
+          const sway = b.depth < 4 ? Math.sin(t * 0.8 + b.x1 * 0.01) * (4 - b.depth) * 0.8 : 0;
+          const r = lerp(BARK[0], BARK_HI[0], 1 - b.depth / 7);
+          const g = lerp(BARK[1], BARK_HI[1], 1 - b.depth / 7);
+          const bl = lerp(BARK[2], BARK_HI[2], 1 - b.depth / 7);
+          ctx.strokeStyle = `rgb(${r|0},${g|0},${bl|0})`;
+          ctx.lineWidth = Math.max(1, b.w);
+          ctx.beginPath();
+          ctx.moveTo(b.x1, b.y1);
+          ctx.lineTo(b.x2 + sway, b.y2 + sway * 0.3);
+          ctx.stroke();
+        }
+      }
+
+      function drawBlossomClusters(ctx, time) {
+        const t = time / 1000;
+        // Soft glow clusters at branch tips
+        for (const tip of branchTips) {
+          const pulse = 0.6 + 0.4 * Math.sin(t * 1.2 + tip.x * 0.05);
+          const radius = 12 + pulse * 8;
+          const color = PINKS[(tip.x * 7 | 0) % PINKS.length];
+          const grad = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, radius);
+          grad.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${0.4 * pulse})`);
+          grad.addColorStop(0.6, `rgba(${color[0]},${color[1]},${color[2]},${0.15 * pulse})`);
+          grad.addColorStop(1, `rgba(${color[0]},${color[1]},${color[2]},0)`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(tip.x - radius, tip.y - radius, radius * 2, radius * 2);
+        }
+      }
+
+      function drawPetals(ctx, time) {
+        const t = time / 1000;
+        petals.forEach((p) => {
+          const lifeRatio = p.life / (p.life + (p.maxLife || 0.01));
+          const fadeIn = clamp(1 - p.life / ((p.maxLife || p.life) - 0.3), 0, 1);
+          const alpha = p.life < 1.5 ? p.life / 1.5 : 1;
+
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(t * p.spin + p.phase);
+
+          // Petal shape: stretched ellipse
+          const scaleX = 1 + 0.3 * Math.sin(t * p.wobbleFreq * 2 + p.phase);
+          ctx.scale(scaleX, 1);
+
+          const s = p.size;
+          const c = p.color;
+          ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.85})`;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, s, s * 0.6, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Inner highlight
+          ctx.fillStyle = `rgba(255,240,245,${alpha * 0.3})`;
+          ctx.beginPath();
+          ctx.ellipse(s * 0.15, -s * 0.1, s * 0.4, s * 0.25, 0.3, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        });
+      }
+
+      function drawGroundPetals(ctx, w, h, time) {
+        // Soft accumulation at the bottom
+        const t = time / 1000;
+        const groundH = h * 0.04;
+        const grad = ctx.createLinearGradient(0, h - groundH, 0, h);
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.3);
+        grad.addColorStop(0, `rgba(255,180,200,0)`);
+        grad.addColorStop(0.4, `rgba(255,170,190,${0.1 + pulse * 0.05})`);
+        grad.addColorStop(1, `rgba(200,120,140,${0.25 + pulse * 0.05})`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, h - groundH, w, groundH);
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { fontSize: 16, background: '#0a0510', sourceOpacity: 0 },
+        layers: [
+          { fontSize: 6.5, charset: 'braille', colorScheme: 'sakura', opacity: 0.85 },
+          { fontSize: 12, charset: 'blocks', colorScheme: 'mono', blendMode: 'add', opacity: 0.12 },
+          { fontSize: 7, charset: 'density', edgeDetect: true, edgeCharset: 'box-light', colorScheme: 'sakura', blendMode: 'add', opacity: 0.2 },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          if (branches.length === 0) genTree(w, h);
+
+          updateWind(dt, time);
+          spawnPetals(dt, w, h);
+
+          // Remove petals that fall offscreen
+          petals.forEach((p) => {
+            if (p.y > h + 20) p.life = 0;
+            if (p.x < -50 || p.x > w + 50) p.life = 0;
+          });
+          petals.update(dt);
+
+          drawSky(ctx, w, h, time);
+          drawGroundPetals(ctx, w, h, time);
+          drawBranches(ctx, time);
+          drawBlossomClusters(ctx, time);
+          drawPetals(ctx, time);
+        },
+        onResize(ctx, w, h) {
+          genTree(w, h);
+        },
+      });
+    </script>
+  </body>
+</html>

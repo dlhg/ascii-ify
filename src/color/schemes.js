@@ -31,4 +31,8 @@ export const COLOR_SCHEMES = [
     name: 'mono',
     fn: (v) => [0, 0, v * 85],
   },
+  {
+    name: 'sakura',
+    fn: (v, t) => [340 + v * 30 + Math.sin(t * 0.6) * 10, 60 + v * 30, 40 + v * 45],
+  },
 ];
