@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Cube Swarm</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, mulberry32 } from './utils.js';
+
+      // --- Seeded RNG ---
+      const rng = mulberry32(7734);
+      function rand(lo = 0, hi = 1) { return lerp(lo, hi, rng()); }
+
+      // --- 3D cube geometry ---
+      // Unit cube vertices centered at origin
+      const VERTICES = [
+        [-1, -1, -1], [ 1, -1, -1], [ 1,  1, -1], [-1,  1, -1],
+        [-1, -1,  1], [ 1, -1,  1], [ 1,  1,  1], [-1,  1,  1],
+      ];
+      // 12 edges as index pairs
+      const EDGES = [
+        [0,1],[1,2],[2,3],[3,0],  // back face
+        [4,5],[5,6],[6,7],[7,4],  // front face
+        [0,4],[1,5],[2,6],[3,7],  // connecting edges
+      ];
+
+      const FOCAL_LENGTH = 400;
+      const NUM_CUBES = 40;
+      const ATTRACT_STRENGTH = 35;
+      const BURST_STRENGTH = 280;
+      const DRAG = 0.975;
+      const CLUSTER_THRESHOLD = 90;
+      const BURST_COOLDOWN = 1.5; // seconds after burst before next can trigger
+
+      // --- Cube state ---
+      let cubes = [];
+      let phase = 'attract'; // 'attract' or 'burst'
+      let burstTimer = 0;
+      let cycleTime = 0;
+
+      // --- Mouse parallax ---
+      let mouseX = 0.5;
+      let mouseY = 0.5;
+
+      function initCubes(w, h) {
+        cubes = [];
+        const spread = Math.min(w, h) * 0.6;
+        for (let i = 0; i < NUM_CUBES; i++) {
+          const angle = rand(0, Math.PI * 2);
+          const radius = rand(0.3, 1) * spread * 0.5;
+          cubes.push({
+            x: Math.cos(angle) * radius,
+            y: Math.sin(angle) * radius,
+            z: rand(-200, 200),
+            vx: (rand() - 0.5) * 60,
+            vy: (rand() - 0.5) * 60,
+            vz: (rand() - 0.5) * 30,
+            rx: rand(0, Math.PI * 2),
+            ry: rand(0, Math.PI * 2),
+            drx: rand(0.3, 1.8) * (rand() < 0.5 ? 1 : -1),
+            dry: rand(0.3, 1.8) * (rand() < 0.5 ? 1 : -1),
+            size: rand(8, 25),
+            hue: rand(0, 360),
+          });
+        }
+        phase = 'attract';
+        burstTimer = 0;
+        cycleTime = 0;
+      }
+
+      // --- Rotation helpers ---
+      function rotateY(v, angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
+      }
+      function rotateX(v, angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        return [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c];
+      }
+
+      // --- Project 3D point to 2D screen ---
+      function project(px, py, pz, cx, cy) {
+        const scale = FOCAL_LENGTH / (FOCAL_LENGTH + pz);
+        return {
+          sx: cx + px * scale,
+          sy: cy + py * scale,
+          scale,
+        };
+      }
+
+      // --- Physics update ---
+      function updateCubes(dt, w, h) {
+        cycleTime += dt;
+        burstTimer = Math.max(0, burstTimer - dt);
+
+        // Compute average distance from center
+        let avgDist = 0;
+        for (const c of cubes) {
+          avgDist += Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+        }
+        avgDist /= cubes.length;
+
+        // Phase transitions
+        if (phase === 'attract' && avgDist < CLUSTER_THRESHOLD && burstTimer <= 0 && cycleTime > 3) {
+          phase = 'burst';
+          burstTimer = BURST_COOLDOWN;
+          cycleTime = 0;
+          // Apply burst impulse
+          for (const c of cubes) {
+            const d = Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z) + 1;
+            const nx = c.x / d, ny = c.y / d, nz = c.z / d;
+            const impulse = BURST_STRENGTH * rand(0.7, 1.3);
+            c.vx += nx * impulse;
+            c.vy += ny * impulse;
+            c.vz += nz * impulse * 0.5;
+          }
+        } else if (phase === 'burst' && cycleTime > 2) {
+          phase = 'attract';
+          cycleTime = 0;
+        }
+
+        const boundRadius = Math.min(w, h) * 0.55;
+
+        for (const c of cubes) {
+          // Attract toward center
+          if (phase === 'attract') {
+            const d = Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z) + 1;
+            c.vx -= (c.x / d) * ATTRACT_STRENGTH * dt;
+            c.vy -= (c.y / d) * ATTRACT_STRENGTH * dt;
+            c.vz -= (c.z / d) * ATTRACT_STRENGTH * dt * 0.5;
+          }
+
+          // Drag
+          c.vx *= DRAG;
+          c.vy *= DRAG;
+          c.vz *= DRAG;
+
+          // Z oscillation
+          c.vz += Math.sin(cycleTime * 0.5 + c.hue * 0.01) * 5 * dt;
+
+          // Integrate position
+          c.x += c.vx * dt;
+          c.y += c.vy * dt;
+          c.z += c.vz * dt;
+
+          // Soft boundary
+          const posDist = Math.sqrt(c.x * c.x + c.y * c.y);
+          if (posDist > boundRadius) {
+            const push = (posDist - boundRadius) * 0.05;
+            c.vx -= (c.x / posDist) * push;
+            c.vy -= (c.y / posDist) * push;
+          }
+          c.z = clamp(c.z, -350, 350);
+
+          // Spin
+          c.rx += c.drx * dt;
+          c.ry += c.dry * dt;
+        }
+      }
+
+      // --- Drawing ---
+      function drawCubes(ctx, w, h, time) {
+        // Parallax offset from mouse
+        const parallaxX = (mouseX - 0.5) * 40;
+        const parallaxY = (mouseY - 0.5) * 30;
+        const cx = w * 0.5 + parallaxX;
+        const cy = h * 0.5 + parallaxY;
+
+        // Depth sort: back to front (higher z = farther)
+        const sorted = cubes.slice().sort((a, b) => b.z - a.z);
+
+        // Base hue rotates over time
+        const baseHue = (time * 0.02) % 360;
+
+        for (const cube of sorted) {
+          // Transform vertices
+          const transformed = VERTICES.map(v => {
+            let tv = [v[0] * cube.size, v[1] * cube.size, v[2] * cube.size];
+            tv = rotateX(tv, cube.rx);
+            tv = rotateY(tv, cube.ry);
+            // Translate to cube world position
+            tv[0] += cube.x;
+            tv[1] += cube.y;
+            tv[2] += cube.z;
+            return tv;
+          });
+
+          // Project all vertices
+          const projected = transformed.map(tv => project(tv[0], tv[1], tv[2], cx, cy));
+
+          // Depth-based alpha and line width
+          const depthNorm = clamp((cube.z + 350) / 700, 0, 1); // 0 = close, 1 = far
+          const alpha = lerp(0.9, 0.15, depthNorm);
+          const lineWidth = lerp(2.2, 0.5, depthNorm);
+
+          // Color: cycle through purples, cyans, magentas
+          const hue = (baseHue + cube.hue) % 360;
+          // Bias toward purple/cyan/magenta range
+          const biasedHue = 220 + ((hue * 0.5) % 160); // range ~220-380 (wraps to 220-360 + 0-20)
+          const sat = lerp(85, 100, 1 - depthNorm);
+          const lit = lerp(40, 75, 1 - depthNorm);
+
+          ctx.strokeStyle = `hsla(${biasedHue}, ${sat}%, ${lit}%, ${alpha})`;
+          ctx.lineWidth = lineWidth;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+
+          // Draw edges
+          ctx.beginPath();
+          for (const [a, b] of EDGES) {
+            const pa = projected[a];
+            const pb = projected[b];
+            ctx.moveTo(pa.sx, pa.sy);
+            ctx.lineTo(pb.sx, pb.sy);
+          }
+          ctx.stroke();
+
+          // Glow effect for close cubes
+          if (depthNorm < 0.4) {
+            const glowAlpha = alpha * 0.15 * (1 - depthNorm / 0.4);
+            ctx.strokeStyle = `hsla(${biasedHue}, 100%, 80%, ${glowAlpha})`;
+            ctx.lineWidth = lineWidth + 3;
+            ctx.beginPath();
+            for (const [a, b] of EDGES) {
+              const pa = projected[a];
+              const pb = projected[b];
+              ctx.moveTo(pa.sx, pa.sy);
+              ctx.lineTo(pb.sx, pb.sy);
+            }
+            ctx.stroke();
+          }
+        }
+      }
+
+      // --- Track mouse for parallax ---
+      document.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = e.clientY / window.innerHeight;
+      });
+
+      // --- Main app ---
+      createApp({
+        asciiConfig: {
+          fontSize: 6.5,
+          charset: 'density',
+          colorScheme: 'acid',
+          background: '#08080e',
+          sourceOpacity: 0,
+          pattern: 'kaleidoscope',
+          patternMix: 0.3,
+          crtEnabled: true,
+          crtScanlines: 0.87,
+          crtGlow: 0.97,
+          crtDistortion: 0.5,
+        },
+        onResize(ctx, w, h) {
+          initCubes(w, h);
+        },
+        draw(ctx, { time, dt, width, height }) {
+          // Dark background with slight gradient
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, '#08080e');
+          grad.addColorStop(0.5, '#0a0a14');
+          grad.addColorStop(1, '#08080e');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, width, height);
+
+          // Faint radial glow at center during attract phase
+          if (phase === 'attract' && cycleTime > 1) {
+            const glowIntensity = clamp((cycleTime - 1) / 6, 0, 1) * 0.08;
+            const grad2 = ctx.createRadialGradient(
+              width * 0.5, height * 0.5, 0,
+              width * 0.5, height * 0.5, Math.min(width, height) * 0.3
+            );
+            grad2.addColorStop(0, `rgba(140, 80, 200, ${glowIntensity})`);
+            grad2.addColorStop(0.5, `rgba(60, 140, 200, ${glowIntensity * 0.4})`);
+            grad2.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad2;
+            ctx.fillRect(0, 0, width, height);
+          }
+
+          // Burst flash
+          if (phase === 'burst' && cycleTime < 0.3) {
+            const flashAlpha = (1 - cycleTime / 0.3) * 0.12;
+            const grad3 = ctx.createRadialGradient(
+              width * 0.5, height * 0.5, 0,
+              width * 0.5, height * 0.5, Math.min(width, height) * 0.5
+            );
+            grad3.addColorStop(0, `rgba(200, 100, 255, ${flashAlpha})`);
+            grad3.addColorStop(0.6, `rgba(100, 200, 255, ${flashAlpha * 0.3})`);
+            grad3.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad3;
+            ctx.fillRect(0, 0, width, height);
+          }
+
+          updateCubes(dt, width, height);
+          drawCubes(ctx, width, height, time);
+        },
+      });
+    </script>
+  </body>
+</html>

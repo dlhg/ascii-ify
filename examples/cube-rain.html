@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Cube Rain</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, mulberry32 } from './utils.js';
+
+      // ─── Cube Geometry ──────────────────────────────────
+      // Unit cube vertices
+      const VERTS = [
+        [-1, -1, -1], [ 1, -1, -1], [ 1,  1, -1], [-1,  1, -1],
+        [-1, -1,  1], [ 1, -1,  1], [ 1,  1,  1], [-1,  1,  1],
+      ];
+      // 12 edges as index pairs
+      const EDGES = [
+        [0,1],[1,2],[2,3],[3,0],  // back face
+        [4,5],[5,6],[6,7],[7,4],  // front face
+        [0,4],[1,5],[2,6],[3,7],  // connectors
+      ];
+
+      // ─── Rotation helpers ─────────────────────────────
+      function rotateX(v, a) {
+        const c = Math.cos(a), s = Math.sin(a);
+        return [v[0], v[1]*c - v[2]*s, v[1]*s + v[2]*c];
+      }
+      function rotateY(v, a) {
+        const c = Math.cos(a), s = Math.sin(a);
+        return [v[0]*c + v[2]*s, v[1], -v[0]*s + v[2]*c];
+      }
+      function rotateZ(v, a) {
+        const c = Math.cos(a), s = Math.sin(a);
+        return [v[0]*c - v[1]*s, v[0]*s + v[1]*c, v[2]];
+      }
+
+      function projectVertex(v, cx, cy, size) {
+        // Simple perspective based on z
+        const scale = 1 / (1 + v[2] * 0.3);
+        return {
+          x: cx + v[0] * size * scale,
+          y: cy + v[1] * size * scale,
+          scale,
+        };
+      }
+
+      function getTransformedVerts(cube) {
+        const results = [];
+        for (let i = 0; i < VERTS.length; i++) {
+          let v = VERTS[i];
+          v = rotateX(v, cube.rx);
+          v = rotateY(v, cube.ry);
+          v = rotateZ(v, cube.rz);
+          results.push(projectVertex(v, cube.x, cube.y, cube.size));
+        }
+        return results;
+      }
+
+      // ─── State ────────────────────────────────────────
+      const cubes = [];
+      const splashes = [];
+      const GRAVITY = 400;
+      const GROUND_FRAC = 0.85;
+      let spawnTimer = 0;
+      let groundY = 0;
+
+      const rng = mulberry32(42);
+
+      // ─── Particles ────────────────────────────────────
+      const shards = new ParticlePool({ maxParticles: 2000, gravity: 300, drag: 0.97 });
+
+      // ─── Cube Spawning ────────────────────────────────
+      function spawnCube(w) {
+        const depth = 0.2 + rng() * 0.8;
+        const depthScale = 0.5 + depth * 0.5;
+        const size = (10 + rng() * 20) * depthScale;
+        cubes.push({
+          x: size + rng() * (w - size * 2),
+          y: -50 - rng() * 80,
+          vy: 50 + rng() * 50,
+          size,
+          rx: rng() * Math.PI * 2,
+          ry: rng() * Math.PI * 2,
+          rz: rng() * Math.PI * 2,
+          drx: (rng() - 0.5) * 3,
+          dry: (rng() - 0.5) * 3,
+          drz: (rng() - 0.5) * 2,
+          hue: 200 + rng() * 120,    // 200-320: purples, cyans, magentas
+          depth,
+          depthScale,
+        });
+      }
+
+      // ─── Shatter a cube into particles ────────────────
+      function shatterCube(cube) {
+        const verts = getTransformedVerts(cube);
+        const momentum = cube.vy;
+
+        // Emit one particle per vertex
+        shards.emit(8, (i) => {
+          const v = verts[i];
+          const spreadX = (rng() - 0.5) * 200 + (v.x - cube.x) * 3;
+          const spreadY = -momentum * (0.3 + rng() * 0.5) + (rng() - 0.5) * 100;
+          return {
+            x: v.x,
+            y: v.y,
+            vx: spreadX,
+            vy: spreadY,
+            life: 0.6 + rng() * 0.6,
+            hue: cube.hue + (rng() - 0.5) * 30,
+            size: 2 + rng() * 1.5,
+            depth: cube.depth,
+          };
+        });
+
+        // Additional debris particles for a richer shatter
+        shards.emit(6 + (rng() * 6 | 0), () => {
+          const angle = rng() * Math.PI * 2;
+          const speed = 60 + rng() * 180;
+          return {
+            x: cube.x + (rng() - 0.5) * cube.size,
+            y: groundY,
+            vx: Math.cos(angle) * speed,
+            vy: -Math.abs(Math.sin(angle)) * speed * 0.8 - momentum * 0.2,
+            life: 0.4 + rng() * 0.8,
+            hue: cube.hue + (rng() - 0.5) * 40,
+            size: 1.5 + rng() * 1,
+            depth: cube.depth,
+          };
+        });
+
+        // Splash effect
+        splashes.push({
+          x: cube.x,
+          y: groundY,
+          radius: cube.size * 1.5,
+          life: 0.3,
+          maxLife: 0.3,
+          hue: cube.hue,
+          intensity: clamp(momentum / 300, 0.3, 1),
+        });
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'neon',
+          background: '#04040c',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtScanlines: 0.25,
+          crtGlow: 0.2,
+        },
+        layers: [
+          { fontSize: 14, charset: 'density', colorScheme: 'fire', blendMode: 'add', opacity: 0.25 },
+        ],
+        onResize(ctx, w, h) {
+          groundY = h * GROUND_FRAC;
+        },
+        draw(ctx, { time, dt, width: w, height: h }) {
+          groundY = h * GROUND_FRAC;
+
+          // ── Clear with slight trail ──
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = 'rgba(4, 4, 12, 0.25)';
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Faint background gradient ──
+          const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+          bgGrad.addColorStop(0, 'rgba(4, 4, 16, 0.06)');
+          bgGrad.addColorStop(0.7, 'rgba(6, 4, 20, 0.04)');
+          bgGrad.addColorStop(1, 'rgba(10, 6, 24, 0.03)');
+          ctx.fillStyle = bgGrad;
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Spawn cubes ──
+          spawnTimer -= dt;
+          if (spawnTimer <= 0) {
+            spawnCube(w);
+            spawnTimer = 0.3 + rng() * 0.2;
+          }
+
+          // ── Update cubes ──
+          let cLen = cubes.length;
+          for (let i = cLen - 1; i >= 0; i--) {
+            const c = cubes[i];
+            const depthMul = 0.5 + c.depth * 0.5;
+
+            // Gravity and movement
+            c.vy += GRAVITY * depthMul * dt;
+            c.y += c.vy * dt;
+
+            // Rotation
+            c.rx += c.drx * dt;
+            c.ry += c.dry * dt;
+            c.rz += c.drz * dt;
+
+            // Ground collision
+            if (c.y >= groundY) {
+              shatterCube(c);
+              cubes[i] = cubes[cLen - 1];
+              cLen--;
+            }
+          }
+          cubes.length = cLen;
+
+          // ── Update particles ──
+          shards.update(dt);
+
+          // ── Update splashes ──
+          let sLen = splashes.length;
+          for (let i = sLen - 1; i >= 0; i--) {
+            splashes[i].life -= dt;
+            if (splashes[i].life <= 0) {
+              splashes[i] = splashes[sLen - 1];
+              sLen--;
+            }
+          }
+          splashes.length = sLen;
+
+          // ── Draw ground line ──
+          ctx.strokeStyle = 'rgba(100, 140, 255, 0.12)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, groundY);
+          ctx.lineTo(w, groundY);
+          ctx.stroke();
+
+          // Subtle ground glow
+          const groundGlow = ctx.createLinearGradient(0, groundY - 8, 0, groundY + 8);
+          groundGlow.addColorStop(0, 'rgba(80, 120, 255, 0)');
+          groundGlow.addColorStop(0.5, 'rgba(80, 120, 255, 0.04)');
+          groundGlow.addColorStop(1, 'rgba(80, 120, 255, 0)');
+          ctx.fillStyle = groundGlow;
+          ctx.fillRect(0, groundY - 8, w, 16);
+
+          // ── Draw cubes (sort by depth so far cubes draw first) ──
+          const sorted = cubes.slice().sort((a, b) => a.depth - b.depth);
+
+          for (const cube of sorted) {
+            const verts = getTransformedVerts(cube);
+            const alpha = (0.3 + cube.depth * 0.7) * 0.9;
+            const lightness = 55 + cube.depth * 30;
+            const h2 = ((cube.hue % 360) + 360) % 360;
+
+            ctx.strokeStyle = `hsla(${h2}, 85%, ${lightness}%, ${alpha})`;
+            ctx.lineWidth = 0.8 + cube.depth * 0.7;
+
+            // Draw edges
+            for (const [a, b] of EDGES) {
+              ctx.beginPath();
+              ctx.moveTo(verts[a].x, verts[a].y);
+              ctx.lineTo(verts[b].x, verts[b].y);
+              ctx.stroke();
+            }
+
+            // Faint glow around cube
+            const glowR = cube.size * 1.8;
+            const glow = ctx.createRadialGradient(cube.x, cube.y, 0, cube.x, cube.y, glowR);
+            glow.addColorStop(0, `hsla(${h2}, 70%, 60%, ${alpha * 0.12})`);
+            glow.addColorStop(1, `hsla(${h2}, 70%, 40%, 0)`);
+            ctx.fillStyle = glow;
+            ctx.fillRect(cube.x - glowR, cube.y - glowR, glowR * 2, glowR * 2);
+          }
+
+          // ── Draw splash effects ──
+          for (const sp of splashes) {
+            const t = 1 - sp.life / sp.maxLife; // 0 at start, 1 at end
+            const radius = sp.radius * (1 + t * 2);
+            const alpha = (1 - t) * sp.intensity * 0.6;
+            const hue = ((sp.hue % 360) + 360) % 360;
+
+            const grad = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, radius);
+            grad.addColorStop(0, `hsla(${hue}, 80%, 85%, ${alpha})`);
+            grad.addColorStop(0.4, `hsla(${hue}, 85%, 65%, ${alpha * 0.5})`);
+            grad.addColorStop(1, `hsla(${hue}, 80%, 50%, 0)`);
+            ctx.fillStyle = grad;
+            ctx.fillRect(sp.x - radius, sp.y - radius, radius * 2, radius * 2);
+
+            // Ground reflection flash
+            const reflW = radius * 2;
+            const reflGrad = ctx.createLinearGradient(sp.x - reflW, groundY, sp.x + reflW, groundY);
+            reflGrad.addColorStop(0, `hsla(${hue}, 70%, 50%, 0)`);
+            reflGrad.addColorStop(0.5, `hsla(${hue}, 70%, 60%, ${alpha * 0.3})`);
+            reflGrad.addColorStop(1, `hsla(${hue}, 70%, 50%, 0)`);
+            ctx.fillStyle = reflGrad;
+            ctx.fillRect(sp.x - reflW, groundY - 2, reflW * 2, 4);
+          }
+
+          // ── Draw shards (particles) ──
+          ctx.globalCompositeOperation = 'lighter';
+          shards.forEach((p) => {
+            const lifeRatio = Math.max(0, p.life);
+            const alpha = clamp(lifeRatio / 0.6, 0, 1) * (0.4 + p.depth * 0.6);
+            const hue = ((p.hue % 360) + 360) % 360;
+            const size = p.size * clamp(lifeRatio * 2, 0.3, 1);
+
+            // Bright core
+            ctx.fillStyle = `hsla(${hue}, 90%, 75%, ${alpha * 0.9})`;
+            ctx.fillRect(p.x - size * 0.5, p.y - size * 0.5, size, size);
+
+            // Outer glow
+            if (alpha > 0.3) {
+              const glowSize = size * 3;
+              ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${alpha * 0.15})`;
+              ctx.fillRect(p.x - glowSize * 0.5, p.y - glowSize * 0.5, glowSize, glowSize);
+            }
+          });
+
+          ctx.globalCompositeOperation = 'source-over';
+        },
+      });
+    </script>
+  </body>
+</html>

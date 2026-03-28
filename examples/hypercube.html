@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Hypercube</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp } from './utils.js';
+
+      // ─── 4D Tesseract Geometry ──────────────────────────────
+      // 16 vertices: all combinations of (±1, ±1, ±1, ±1)
+      const vertices4D = [];
+      for (let i = 0; i < 16; i++) {
+        vertices4D.push([
+          (i & 1) ? 1 : -1,
+          (i & 2) ? 1 : -1,
+          (i & 4) ? 1 : -1,
+          (i & 8) ? 1 : -1,
+        ]);
+      }
+
+      // 32 edges: pairs that differ in exactly 1 coordinate
+      const edges = [];
+      for (let i = 0; i < 16; i++) {
+        for (let j = i + 1; j < 16; j++) {
+          let diff = 0;
+          for (let k = 0; k < 4; k++) {
+            if (vertices4D[i][k] !== vertices4D[j][k]) diff++;
+          }
+          if (diff === 1) edges.push([i, j]);
+        }
+      }
+
+      // Classify edges by W coordinate of their endpoints
+      // Inner cube: both vertices have w = -1 (bit 3 unset → i & 8 === 0)
+      // Outer cube: both vertices have w = +1 (bit 3 set → i & 8 !== 0)
+      // Connecting: one w=-1, one w=+1
+      const EDGE_INNER = 0;
+      const EDGE_OUTER = 1;
+      const EDGE_CONNECT = 2;
+
+      const edgeTypes = edges.map(([i, j]) => {
+        const wI = vertices4D[i][3];
+        const wJ = vertices4D[j][3];
+        if (wI === -1 && wJ === -1) return EDGE_INNER;
+        if (wI === 1 && wJ === 1) return EDGE_OUTER;
+        return EDGE_CONNECT;
+      });
+
+      // ─── Rotation & Projection ──────────────────────────────
+      const XW_SPEED = 0.4;   // radians/s — XW plane rotation
+      const YZ_SPEED = 0.25;  // radians/s — YZ plane rotation
+      const XY_SPEED = 0.15;  // radians/s — slow XY tumble
+      const W_DIST = 3;       // 4D camera distance
+      const FOCAL = 4;        // 3D focal length
+
+      function project(v4, angleXW, angleYZ, angleXY, cx, cy, cubeSize) {
+        let [x, y, z, w] = v4;
+
+        // Rotate in XW plane
+        const cosA = Math.cos(angleXW);
+        const sinA = Math.sin(angleXW);
+        const x1 = x * cosA - w * sinA;
+        const w1 = x * sinA + w * cosA;
+        x = x1;
+        w = w1;
+
+        // Rotate in YZ plane
+        const cosB = Math.cos(angleYZ);
+        const sinB = Math.sin(angleYZ);
+        const y1 = y * cosB - z * sinB;
+        const z1 = y * sinB + z * cosB;
+        y = y1;
+        z = z1;
+
+        // Slow XY tumble for visual interest
+        const cosC = Math.cos(angleXY);
+        const sinC = Math.sin(angleXY);
+        const x2 = x * cosC - y * sinC;
+        const y2 = x * sinC + y * cosC;
+        x = x2;
+        y = y2;
+
+        // 4D → 3D perspective projection
+        const scale4 = W_DIST / (W_DIST - w);
+        const x3d = x * scale4;
+        const y3d = y * scale4;
+        const z3d = z * scale4;
+
+        // 3D → 2D perspective projection
+        const scale3 = FOCAL / (FOCAL + z3d);
+        const screenX = cx + x3d * scale3 * cubeSize;
+        const screenY = cy + y3d * scale3 * cubeSize;
+
+        // Combined depth for sorting/rendering
+        const depth = z3d + w; // composite depth
+
+        return { x: screenX, y: screenY, depth, scale: scale3 * scale4 };
+      }
+
+      // ─── Edge Colors ─────────────────────────────────────────
+      function edgeColor(type, alpha) {
+        if (type === EDGE_INNER)  return `hsla(180, 100%, 60%, ${alpha})`;
+        if (type === EDGE_OUTER)  return `hsla(300, 100%, 60%, ${alpha})`;
+        return `hsla(220, 20%, 80%, ${alpha})`;
+      }
+
+      function vertexColor(wCoord) {
+        // Use the original W coordinate to pick glow color
+        return wCoord < 0
+          ? { h: 180, s: 100, l: 60 }  // cyan for inner
+          : { h: 300, s: 100, l: 60 };  // magenta for outer
+      }
+
+      // ─── Draw ────────────────────────────────────────────────
+      function drawHypercube(ctx, time, dt, w, h) {
+        // Background with subtle radial gradient
+        const cx = w / 2;
+        const cy = h / 2;
+        const maxR = Math.sqrt(cx * cx + cy * cy);
+
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR);
+        grad.addColorStop(0, '#0a0a2e');
+        grad.addColorStop(1, '#06061a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Rotation angles
+        const t = time / 1000; // seconds
+        const angleXW = t * XW_SPEED;
+        const angleYZ = t * YZ_SPEED;
+        const angleXY = t * XY_SPEED;
+
+        // Cube size — 30% of smaller dimension
+        const cubeSize = Math.min(w, h) * 0.30;
+
+        // Project all 16 vertices
+        const projected = vertices4D.map(v =>
+          project(v, angleXW, angleYZ, angleXY, cx, cy, cubeSize)
+        );
+
+        // ── Build and sort edges by average depth (back-to-front) ──
+        const sortedEdges = edges.map((e, idx) => {
+          const avgDepth = (projected[e[0]].depth + projected[e[1]].depth) / 2;
+          return { edge: e, type: edgeTypes[idx], depth: avgDepth };
+        });
+        sortedEdges.sort((a, b) => a.depth - b.depth); // draw farthest first
+
+        // Depth range for normalization
+        const allDepths = projected.map(p => p.depth);
+        const minDepth = Math.min(...allDepths);
+        const maxDepth = Math.max(...allDepths);
+        const depthRange = maxDepth - minDepth || 1;
+
+        // ── Draw edges ──
+        ctx.lineCap = 'round';
+        for (const { edge, type, depth } of sortedEdges) {
+          const p0 = projected[edge[0]];
+          const p1 = projected[edge[1]];
+
+          // Depth-based alpha and thickness
+          const depthNorm = clamp((depth - minDepth) / depthRange, 0, 1);
+          const alpha = lerp(0.2, 0.9, depthNorm);
+          const thickness = lerp(0.5, 2.5, depthNorm);
+
+          // Glow pass (thicker, dimmer)
+          ctx.strokeStyle = edgeColor(type, alpha * 0.25);
+          ctx.lineWidth = thickness * 3;
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo(p1.x, p1.y);
+          ctx.stroke();
+
+          // Core pass
+          ctx.strokeStyle = edgeColor(type, alpha);
+          ctx.lineWidth = thickness;
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo(p1.x, p1.y);
+          ctx.stroke();
+        }
+
+        // ── Draw vertex glows ──
+        // Sort vertices by depth too (back-to-front)
+        const vertexOrder = projected
+          .map((p, i) => ({ p, i }))
+          .sort((a, b) => a.p.depth - b.p.depth);
+
+        for (const { p, i } of vertexOrder) {
+          const depthNorm = clamp((p.depth - minDepth) / depthRange, 0, 1);
+          const wCoord = vertices4D[i][3];
+          const col = vertexColor(wCoord);
+
+          const baseRadius = lerp(2, 6, depthNorm);
+          const alpha = lerp(0.3, 1.0, depthNorm);
+
+          // Outer glow
+          const glowRadius = baseRadius * 3;
+          const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowRadius);
+          glow.addColorStop(0, `hsla(${col.h}, ${col.s}%, ${col.l}%, ${alpha * 0.6})`);
+          glow.addColorStop(0.4, `hsla(${col.h}, ${col.s}%, ${col.l}%, ${alpha * 0.2})`);
+          glow.addColorStop(1, `hsla(${col.h}, ${col.s}%, ${col.l}%, 0)`);
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, glowRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Core dot
+          ctx.fillStyle = `hsla(${col.h}, ${col.s}%, ${Math.min(col.l + 20, 95)}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, baseRadius * 0.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── App ─────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'density',
+          colorScheme: 'neon',
+          background: '#06061a',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.6,
+          crtScanlines: 0.1,
+          crtDistortion: 0.03,
+        },
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawHypercube(ctx, time, dt, w, h);
+        },
+        onResize(ctx, w, h) {
+          ctx.fillStyle = '#06061a';
+          ctx.fillRect(0, 0, w, h);
+        },
+        showPanel: true,
+      });
+    </script>
+  </body>
+</html>

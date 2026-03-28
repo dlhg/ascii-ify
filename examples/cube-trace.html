@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Cube Trace</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp } from './utils.js';
+
+      // ─── Cube Geometry ──────────────────────────────────────
+      const VERTICES = [
+        [-1, -1, -1],
+        [ 1, -1, -1],
+        [ 1,  1, -1],
+        [-1,  1, -1],
+        [-1, -1,  1],
+        [ 1, -1,  1],
+        [ 1,  1,  1],
+        [-1,  1,  1],
+      ];
+
+      // 12 edges forming a connected path so the tracer walks continuously
+      const EDGES = [
+        [0, 1], [1, 2], [2, 3], [3, 0], // back face
+        [0, 4], [4, 5], [5, 1],          // bridge back→front via bottom
+        [5, 6], [6, 2],                  // bridge front→back via right
+        [6, 7], [7, 3],                  // bridge front→back via top
+        [7, 4],                          // close front face
+      ];
+
+      const FOCAL = 4;
+      const TRACE_DURATION = 10; // seconds for all 12 edges
+      const EDGE_TIME = TRACE_DURATION / EDGES.length;
+      const PULSE_DURATION = 1.5; // seconds the completed wireframe pulses
+      const FADE_DURATION = 1.0;  // seconds to fade out before restart
+
+      // ─── State ──────────────────────────────────────────────
+      let currentEdge = 0;
+      let edgeT = 0;
+      let completedEdges = [];
+      let phase = 'tracing'; // 'tracing' | 'pulse' | 'fade'
+      let phaseTimer = 0;
+      let cycleCount = 0;
+      let rotationOffset = 0;
+
+      // Trail canvas (offscreen)
+      let trailCanvas = null;
+      let trailCtx = null;
+
+      // Previous tracer screen position for line drawing
+      let prevTracerX = null;
+      let prevTracerY = null;
+
+      // ─── 3D Helpers ─────────────────────────────────────────
+      function rotateY(v, angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
+      }
+
+      function rotateX(v, angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        return [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c];
+      }
+
+      function project(v, cx, cy, scale) {
+        const d = FOCAL / (FOCAL + v[2]);
+        return [cx + v[0] * d * scale, cy + v[1] * d * scale];
+      }
+
+      function lerpVec3(a, b, t) {
+        return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+      }
+
+      function transformVertex(v, time) {
+        const angleY = time * 0.15 + rotationOffset;
+        const angleX = time * 0.1 + rotationOffset * 0.7;
+        let out = rotateY(v, angleY);
+        out = rotateX(out, angleX);
+        return out;
+      }
+
+      // ─── Reset Cycle ────────────────────────────────────────
+      function resetCycle() {
+        currentEdge = 0;
+        edgeT = 0;
+        completedEdges = [];
+        phase = 'tracing';
+        phaseTimer = 0;
+        cycleCount++;
+        rotationOffset += 0.8 + Math.random() * 0.5;
+        prevTracerX = null;
+        prevTracerY = null;
+        // Clear trail canvas
+        if (trailCtx) {
+          trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
+        }
+      }
+
+      // ─── Draw ───────────────────────────────────────────────
+      let firstFrame = true;
+
+      function drawCubeTrace(ctx, dt, time, w, h) {
+        // Ensure trail canvas matches size
+        if (!trailCanvas || trailCanvas.width !== w || trailCanvas.height !== h) {
+          trailCanvas = document.createElement('canvas');
+          trailCanvas.width = w;
+          trailCanvas.height = h;
+          trailCtx = trailCanvas.getContext('2d');
+          prevTracerX = null;
+          prevTracerY = null;
+        }
+
+        const cx = w / 2;
+        const cy = h / 2;
+        const cubeScale = Math.min(w, h) * 0.35;
+        const timeS = time / 1000;
+
+        // ── Phase logic ──
+        if (phase === 'tracing') {
+          edgeT += dt / EDGE_TIME;
+          while (edgeT >= 1 && currentEdge < EDGES.length) {
+            completedEdges.push(currentEdge);
+            currentEdge++;
+            edgeT -= 1;
+            prevTracerX = null;
+            prevTracerY = null;
+          }
+          if (currentEdge >= EDGES.length) {
+            phase = 'pulse';
+            phaseTimer = 0;
+            prevTracerX = null;
+            prevTracerY = null;
+          }
+        } else if (phase === 'pulse') {
+          phaseTimer += dt;
+          if (phaseTimer >= PULSE_DURATION) {
+            phase = 'fade';
+            phaseTimer = 0;
+          }
+        } else if (phase === 'fade') {
+          phaseTimer += dt;
+          if (phaseTimer >= FADE_DURATION) {
+            resetCycle();
+          }
+        }
+
+        // ── Fade trail canvas ──
+        trailCtx.fillStyle = 'rgba(6, 6, 14, 0.02)';
+        trailCtx.fillRect(0, 0, w, h);
+
+        // ── Transform all vertices ──
+        const transformed = VERTICES.map(v => transformVertex(v, timeS));
+        const projected = transformed.map(v => project(v, cx, cy, cubeScale));
+
+        // ── Draw completed edges on trail canvas (keep them bright) ──
+        trailCtx.save();
+        trailCtx.lineCap = 'round';
+        trailCtx.lineJoin = 'round';
+
+        for (const ei of completedEdges) {
+          const edge = EDGES[ei];
+          const p0 = projected[edge[0]];
+          const p1 = projected[edge[1]];
+
+          // Glow layer
+          trailCtx.strokeStyle = 'rgba(180, 120, 255, 0.15)';
+          trailCtx.lineWidth = 6;
+          trailCtx.beginPath();
+          trailCtx.moveTo(p0[0], p0[1]);
+          trailCtx.lineTo(p1[0], p1[1]);
+          trailCtx.stroke();
+
+          // Core layer
+          trailCtx.strokeStyle = 'rgba(200, 160, 255, 0.7)';
+          trailCtx.lineWidth = 2;
+          trailCtx.beginPath();
+          trailCtx.moveTo(p0[0], p0[1]);
+          trailCtx.lineTo(p1[0], p1[1]);
+          trailCtx.stroke();
+        }
+
+        // ── Draw currently tracing edge segment ──
+        if (phase === 'tracing' && currentEdge < EDGES.length) {
+          const edge = EDGES[currentEdge];
+          const v0 = transformed[edge[0]];
+          const v1 = transformed[edge[1]];
+          const tracerPos3D = lerpVec3(v0, v1, clamp(edgeT, 0, 1));
+          const tracerScreen = project(tracerPos3D, cx, cy, cubeScale);
+
+          // Draw partial edge from start to tracer
+          const startScreen = projected[edge[0]];
+          trailCtx.strokeStyle = 'rgba(180, 120, 255, 0.15)';
+          trailCtx.lineWidth = 6;
+          trailCtx.beginPath();
+          trailCtx.moveTo(startScreen[0], startScreen[1]);
+          trailCtx.lineTo(tracerScreen[0], tracerScreen[1]);
+          trailCtx.stroke();
+
+          trailCtx.strokeStyle = 'rgba(200, 160, 255, 0.7)';
+          trailCtx.lineWidth = 2;
+          trailCtx.beginPath();
+          trailCtx.moveTo(startScreen[0], startScreen[1]);
+          trailCtx.lineTo(tracerScreen[0], tracerScreen[1]);
+          trailCtx.stroke();
+
+          // Draw line from previous tracer pos to current (for smoother trails)
+          if (prevTracerX !== null) {
+            trailCtx.strokeStyle = 'rgba(140, 220, 255, 0.4)';
+            trailCtx.lineWidth = 3;
+            trailCtx.beginPath();
+            trailCtx.moveTo(prevTracerX, prevTracerY);
+            trailCtx.lineTo(tracerScreen[0], tracerScreen[1]);
+            trailCtx.stroke();
+          }
+          prevTracerX = tracerScreen[0];
+          prevTracerY = tracerScreen[1];
+        }
+
+        trailCtx.restore();
+
+        // ── Pulse phase: brighten all edges ──
+        if (phase === 'pulse') {
+          const pulseT = phaseTimer / PULSE_DURATION;
+          const brightness = 0.5 + 0.5 * Math.sin(pulseT * Math.PI * 4);
+          const alpha = 0.3 + brightness * 0.5;
+
+          trailCtx.save();
+          trailCtx.lineCap = 'round';
+          trailCtx.globalCompositeOperation = 'lighter';
+
+          for (let i = 0; i < EDGES.length; i++) {
+            const edge = EDGES[i];
+            const p0 = projected[edge[0]];
+            const p1 = projected[edge[1]];
+
+            // Bright pulse glow
+            trailCtx.strokeStyle = `rgba(220, 180, 255, ${alpha * 0.4})`;
+            trailCtx.lineWidth = 8;
+            trailCtx.beginPath();
+            trailCtx.moveTo(p0[0], p0[1]);
+            trailCtx.lineTo(p1[0], p1[1]);
+            trailCtx.stroke();
+
+            trailCtx.strokeStyle = `rgba(255, 240, 255, ${alpha * 0.7})`;
+            trailCtx.lineWidth = 3;
+            trailCtx.beginPath();
+            trailCtx.moveTo(p0[0], p0[1]);
+            trailCtx.lineTo(p1[0], p1[1]);
+            trailCtx.stroke();
+          }
+
+          // Pulse the vertices as dots
+          for (const p of projected) {
+            trailCtx.fillStyle = `rgba(255, 220, 255, ${alpha * 0.6})`;
+            trailCtx.beginPath();
+            trailCtx.arc(p[0], p[1], 4 + brightness * 3, 0, Math.PI * 2);
+            trailCtx.fill();
+          }
+
+          trailCtx.restore();
+        }
+
+        // ── Clear main canvas ──
+        const fadeAlpha = phase === 'fade' ? 1 - (phaseTimer / FADE_DURATION) : 1;
+        ctx.fillStyle = '#06060e';
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Draw trail canvas to main ──
+        ctx.save();
+        ctx.globalAlpha = clamp(fadeAlpha, 0, 1);
+        ctx.drawImage(trailCanvas, 0, 0);
+        ctx.restore();
+
+        // ── Draw tracer dot ──
+        if (phase === 'tracing' && currentEdge < EDGES.length) {
+          const edge = EDGES[currentEdge];
+          const v0 = transformed[edge[0]];
+          const v1 = transformed[edge[1]];
+          const tracerPos3D = lerpVec3(v0, v1, clamp(edgeT, 0, 1));
+          const tp = project(tracerPos3D, cx, cy, cubeScale);
+
+          ctx.save();
+          ctx.globalAlpha = clamp(fadeAlpha, 0, 1);
+
+          // Outer halo glow
+          const grad = ctx.createRadialGradient(tp[0], tp[1], 0, tp[0], tp[1], 20);
+          grad.addColorStop(0, 'rgba(180, 140, 255, 0.6)');
+          grad.addColorStop(0.3, 'rgba(120, 200, 255, 0.3)');
+          grad.addColorStop(1, 'rgba(100, 140, 255, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(tp[0], tp[1], 20, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Core dot
+          const coreGrad = ctx.createRadialGradient(tp[0], tp[1], 0, tp[0], tp[1], 5);
+          coreGrad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+          coreGrad.addColorStop(0.5, 'rgba(200, 180, 255, 0.9)');
+          coreGrad.addColorStop(1, 'rgba(140, 100, 255, 0)');
+          ctx.fillStyle = coreGrad;
+          ctx.beginPath();
+          ctx.arc(tp[0], tp[1], 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        }
+
+        // ── Faint wireframe ghost (untraced edges) ──
+        if (phase === 'tracing') {
+          ctx.save();
+          ctx.globalAlpha = 0.06;
+          ctx.strokeStyle = '#8866cc';
+          ctx.lineWidth = 1;
+          for (let i = currentEdge + 1; i < EDGES.length; i++) {
+            const edge = EDGES[i];
+            const p0 = projected[edge[0]];
+            const p1 = projected[edge[1]];
+            ctx.beginPath();
+            ctx.moveTo(p0[0], p0[1]);
+            ctx.lineTo(p1[0], p1[1]);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+      }
+
+      // ─── App ─────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'braille',
+          colorScheme: 'vapor',
+          background: '#06060e',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.3,
+          crtScanlines: 0.2,
+        },
+        layers: [
+          {
+            fontSize: 16,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.3,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawCubeTrace(ctx, dt, time, w, h);
+        },
+        onResize(ctx, w, h) {
+          // Reset trail canvas on resize
+          if (trailCanvas) {
+            trailCanvas.width = w;
+            trailCanvas.height = h;
+            trailCtx = trailCanvas.getContext('2d');
+          }
+          prevTracerX = null;
+          prevTracerY = null;
+          ctx.fillStyle = '#06060e';
+          ctx.fillRect(0, 0, w, h);
+        },
+      });
+    </script>
+  </body>
+</html>

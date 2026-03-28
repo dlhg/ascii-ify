@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Impossible Cube</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────────
+      const TAU = Math.PI * 2;
+      const MORPH_PERIOD = 6; // seconds for full morph cycle
+      const ROTATION_SPEED = 0.3; // rad/s Y-axis
+      const TILT_AMOUNT = 0.15; // rad X-axis oscillation amplitude
+      const TILT_SPEED = 0.4; // oscillation speed
+      const FOCAL_LENGTH = 4; // perspective projection
+
+      // ─── Cube Geometry ──────────────────────────────────────
+      // 8 vertices of a unit cube centered at origin
+      const VERTICES = [
+        [-1, -1, -1], // 0
+        [ 1, -1, -1], // 1
+        [ 1,  1, -1], // 2
+        [-1,  1, -1], // 3
+        [-1, -1,  1], // 4
+        [ 1, -1,  1], // 5
+        [ 1,  1,  1], // 6
+        [-1,  1,  1], // 7
+      ];
+
+      // 6 faces as quads (vertex indices, wound consistently)
+      const FACES = [
+        [0, 1, 2, 3], // front
+        [5, 4, 7, 6], // back
+        [4, 0, 3, 7], // left
+        [1, 5, 6, 2], // right
+        [4, 5, 1, 0], // top
+        [3, 2, 6, 7], // bottom
+      ];
+
+      // 12 edges as pairs of vertex indices
+      const EDGES = [
+        [0, 1], [1, 2], [2, 3], [3, 0], // front face
+        [4, 5], [5, 6], [6, 7], [7, 4], // back face
+        [0, 4], [1, 5], [2, 6], [3, 7], // connecting edges
+      ];
+
+      // Face colors: deep purples through cyans and pinks
+      const FACE_COLORS = [
+        [90, 50, 160],   // purple
+        [60, 40, 180],   // deep blue-purple
+        [40, 100, 180],  // blue-cyan
+        [80, 160, 200],  // cyan
+        [160, 60, 180],  // magenta
+        [120, 40, 160],  // violet
+      ];
+
+      // ─── 3D Math Helpers ────────────────────────────────────
+      function lerp3(a, b, t) {
+        return [
+          lerp(a[0], b[0], t),
+          lerp(a[1], b[1], t),
+          lerp(a[2], b[2], t),
+        ];
+      }
+
+      function rotateY(v, angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        return [
+          v[0] * c + v[2] * s,
+          v[1],
+          -v[0] * s + v[2] * c,
+        ];
+      }
+
+      function rotateX(v, angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        return [
+          v[0],
+          v[1] * c - v[2] * s,
+          v[1] * s + v[2] * c,
+        ];
+      }
+
+      function project(v, cx, cy, scale) {
+        const d = FOCAL_LENGTH / (FOCAL_LENGTH + v[2]);
+        return {
+          x: cx + v[0] * d * scale,
+          y: cy + v[1] * d * scale,
+          z: v[2],
+          d, // depth scale factor
+        };
+      }
+
+      // ─── State ──────────────────────────────────────────────
+      let rotAngle = 0;
+
+      // ─── Draw ───────────────────────────────────────────────
+      function drawCube(ctx, time, dt, w, h) {
+        const cx = w / 2;
+        const cy = h / 2;
+        const cubeScale = Math.min(w, h) * 0.4;
+
+        // ── Background: radial gradient ──
+        const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.7);
+        bgGrad.addColorStop(0, '#0a0818');
+        bgGrad.addColorStop(0.5, '#070614');
+        bgGrad.addColorStop(1, '#020210');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Morph animation ──
+        const timeS = time / 1000;
+        // Smooth cycle: sin gives -1 to 1, map to 0 to 1
+        const rawMorph = (Math.sin(timeS * TAU / MORPH_PERIOD) + 1) / 2;
+        // Apply smoothstep easing for slower extremes
+        const morphT = smoothstep(0, 1, rawMorph);
+
+        // ── Rotation ──
+        rotAngle += ROTATION_SPEED * dt;
+        const tiltAngle = Math.sin(timeS * TILT_SPEED) * TILT_AMOUNT;
+
+        // ── Transform vertices ──
+        const transformed = [];
+        const projected = [];
+
+        for (let i = 0; i < 8; i++) {
+          // Morph: each vertex lerps toward its diagonally opposite (index 7-i)
+          const morphed = lerp3(VERTICES[i], VERTICES[7 - i], morphT);
+
+          // Apply rotation
+          let v = rotateY(morphed, rotAngle);
+          v = rotateX(v, tiltAngle);
+
+          transformed.push(v);
+          projected.push(project(v, cx, cy, cubeScale));
+        }
+
+        // ── Face rendering (painter's algorithm) ──
+        // Compute face data with average Z
+        const faceData = FACES.map((face, idx) => {
+          const avgZ = face.reduce((sum, vi) => sum + transformed[vi][2], 0) / 4;
+          return { face, idx, avgZ };
+        });
+
+        // Sort back-to-front (most negative Z first = furthest away)
+        faceData.sort((a, b) => a.avgZ - b.avgZ);
+
+        // Impossible moment: when morphT is between 0.3-0.7, swap 2nd and 5th
+        // in the sorted order to create visual paradox
+        if (morphT > 0.3 && morphT < 0.7 && faceData.length >= 5) {
+          const temp = faceData[1];
+          faceData[1] = faceData[4];
+          faceData[4] = temp;
+        }
+
+        // Draw faces
+        for (const { face, idx } of faceData) {
+          const pts = face.map(vi => projected[vi]);
+
+          // Determine face opacity based on morph state
+          // Faces become more transparent near the collapse point
+          const morphFade = 1 - 0.4 * Math.sin(morphT * Math.PI);
+          const baseAlpha = 0.35 * morphFade;
+
+          const color = FACE_COLORS[idx];
+          ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${baseAlpha})`;
+
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          ctx.lineTo(pts[1].x, pts[1].y);
+          ctx.lineTo(pts[2].x, pts[2].y);
+          ctx.lineTo(pts[3].x, pts[3].y);
+          ctx.closePath();
+          ctx.fill();
+
+          // Subtle face edge highlight
+          ctx.strokeStyle = `rgba(${color[0] + 60}, ${color[1] + 60}, ${color[2] + 60}, ${baseAlpha * 0.6})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+
+        // ── Edge rendering ──
+        ctx.lineCap = 'round';
+        for (const [a, b] of EDGES) {
+          const pa = projected[a];
+          const pb = projected[b];
+
+          // Edge brightness varies with depth
+          const avgD = (pa.d + pb.d) / 2;
+          const brightness = clamp(avgD * 0.8, 0.3, 1);
+
+          // Morph pulsing effect on edges
+          const pulse = 0.85 + 0.15 * Math.sin(timeS * 3 + a * 0.7);
+
+          const alpha = brightness * pulse * 0.85;
+          ctx.strokeStyle = `rgba(200, 180, 255, ${alpha})`;
+          ctx.lineWidth = 2 + brightness;
+
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y);
+          ctx.lineTo(pb.x, pb.y);
+          ctx.stroke();
+
+          // Bright glow layer for edges
+          ctx.strokeStyle = `rgba(220, 200, 255, ${alpha * 0.3})`;
+          ctx.lineWidth = 5 + brightness * 2;
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y);
+          ctx.lineTo(pb.x, pb.y);
+          ctx.stroke();
+        }
+
+        // ── Vertex glow ──
+        for (let i = 0; i < 8; i++) {
+          const p = projected[i];
+          const glowRadius = 6 * p.d;
+
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowRadius);
+          grad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+          grad.addColorStop(0.3, 'rgba(200, 180, 255, 0.5)');
+          grad.addColorStop(1, 'rgba(140, 100, 255, 0)');
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, glowRadius, 0, TAU);
+          ctx.fill();
+        }
+
+        // ── Ambient particle dust ──
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < 30; i++) {
+          // Deterministic but animated particles orbiting the cube
+          const angle = (i / 30) * TAU + timeS * 0.15;
+          const radius = cubeScale * (0.8 + 0.4 * Math.sin(timeS * 0.3 + i * 2.1));
+          const yOff = Math.sin(timeS * 0.5 + i * 1.7) * cubeScale * 0.3;
+          const px = cx + Math.cos(angle) * radius;
+          const py = cy + yOff;
+
+          const particleAlpha = 0.15 + 0.1 * Math.sin(timeS * 2 + i);
+          const hue = (260 + i * 8 + timeS * 10) % 360;
+
+          ctx.fillStyle = `hsla(${hue}, 70%, 60%, ${particleAlpha})`;
+          ctx.beginPath();
+          ctx.arc(px, py, 1.5, 0, TAU);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // ─── App ─────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 10,
+          charset: 'blocks',
+          colorScheme: 'vapor',
+          background: '#08061a',
+          sourceOpacity: 0,
+          pattern: 'breathing',
+          patternMix: 0.15,
+          crtEnabled: true,
+          crtGlow: 0.5,
+          crtScanlines: 0.15,
+        },
+        draw(ctx, { time, dt, width, height }) {
+          drawCube(ctx, time, dt, width, height);
+        },
+        onResize(ctx, w, h) {
+          ctx.fillStyle = '#08061a';
+          ctx.fillRect(0, 0, w, h);
+        },
+      });
+    </script>
+  </body>
+</html>
