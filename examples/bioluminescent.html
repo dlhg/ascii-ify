@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Bioluminescent Abyss</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb, lerpColor } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────────
+      const TWO_PI = Math.PI * 2;
+      const PI = Math.PI;
+
+      function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
+      function randInt(lo, hi) { return Math.floor(rand(lo, hi + 1)); }
+
+      // ─── Scene State ───────────────────────────────────────
+      let w = 0, h = 0;
+      let jellies = [];
+      let anglerfish = [];
+      let vents = [];
+      let flashes = [];
+      let currentStreaks = [];
+
+      // ─── Particle Pools ────────────────────────────────────
+      const plankton = new ParticlePool({ maxParticles: 200, gravity: 0, drag: 1 });
+      const ventParticles = new ParticlePool({ maxParticles: 300, gravity: 0, drag: 0.998 });
+
+      // ─── Jellyfish ─────────────────────────────────────────
+      const JELLY_HUES = [
+        { base: [0, 200, 240],   glow: [80, 255, 255],  rim: [160, 255, 255] },   // cyan
+        { base: [40, 100, 255],  glow: [100, 160, 255], rim: [180, 210, 255] },   // deep blue
+        { base: [120, 60, 220],  glow: [180, 120, 255], rim: [220, 180, 255] },   // purple
+        { base: [0, 180, 160],   glow: [60, 255, 220],  rim: [140, 255, 240] },   // teal
+        { base: [80, 40, 200],   glow: [140, 100, 255], rim: [200, 170, 255] },   // blue-violet
+      ];
+
+      function createJellyfish(x, y, size, hueIndex) {
+        const palette = JELLY_HUES[hueIndex % JELLY_HUES.length];
+        const tentacleCount = randInt(4, 6);
+        const tentacles = [];
+        for (let i = 0; i < tentacleCount; i++) {
+          tentacles.push({
+            offset: (i / tentacleCount - 0.5) * size * 1.2,
+            length: rand(size * 1.2, size * 2.5),
+            freq: rand(1.5, 3.5),
+            amp: rand(8, 20),
+            phase: rand(0, TWO_PI),
+          });
+        }
+        return {
+          x, y,
+          vx: rand(-6, 6),
+          vy: rand(-4, 2),
+          size,
+          palette,
+          tentacles,
+          pulseSpeed: rand(0.6, 1.2),
+          pulsePhase: rand(0, TWO_PI),
+          glowPhase: rand(0, TWO_PI),
+        };
+      }
+
+      function updateJellyfish(jf, dt, time) {
+        const phase = (time * jf.pulseSpeed + jf.pulsePhase) % TWO_PI;
+        const pulseT = (Math.sin(phase) + 1) * 0.5;
+
+        // Pulse propulsion
+        const pulseForce = -Math.cos(phase) * jf.pulseSpeed;
+        if (pulseForce > 0) {
+          jf.vy -= pulseForce * 14 * dt;
+        }
+
+        // Gentle gravity
+        jf.vy += 2.5 * dt;
+
+        // Slow lateral drift
+        jf.vx += Math.sin(time * 0.3 + jf.pulsePhase) * 2 * dt;
+
+        // Boundary steering
+        const margin = jf.size * 2;
+        if (jf.x < margin) jf.vx += 10 * dt;
+        if (jf.x > w - margin) jf.vx -= 10 * dt;
+        if (jf.y < margin) jf.vy += 12 * dt;
+        if (jf.y > h - margin * 2) jf.vy -= 18 * dt;
+
+        // Drag
+        jf.vx *= 0.985;
+        jf.vy *= 0.985;
+
+        // Clamp speed
+        const speed = Math.sqrt(jf.vx * jf.vx + jf.vy * jf.vy);
+        if (speed > 30) {
+          jf.vx = (jf.vx / speed) * 30;
+          jf.vy = (jf.vy / speed) * 30;
+        }
+
+        jf.x += jf.vx * dt;
+        jf.y += jf.vy * dt;
+
+        // Wrap horizontally
+        if (jf.x < -jf.size * 3) jf.x = w + jf.size * 2;
+        if (jf.x > w + jf.size * 3) jf.x = -jf.size * 2;
+        jf.y = clamp(jf.y, jf.size, h - jf.size * 3);
+
+        return { pulseT, phase };
+      }
+
+      function drawJellyfish(ctx, jf, pulseT, time) {
+        const { palette, size } = jf;
+        const bellW = size * lerp(0.6, 1.0, pulseT);
+        const bellH = size * lerp(1.0, 0.7, pulseT);
+        const glowPulse = 0.6 + 0.4 * Math.sin(time * 1.8 + jf.glowPhase);
+
+        ctx.save();
+
+        // Outer glow
+        const glowR = size * 3;
+        const glowGrad = ctx.createRadialGradient(jf.x, jf.y, 0, jf.x, jf.y, glowR);
+        const glowAlpha = 0.06 * glowPulse;
+        glowGrad.addColorStop(0, rgb(palette.glow, glowAlpha));
+        glowGrad.addColorStop(0.5, rgb(palette.base, glowAlpha * 0.3));
+        glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glowGrad;
+        ctx.fillRect(jf.x - glowR, jf.y - glowR, glowR * 2, glowR * 2);
+
+        // Bell dome via bezier
+        ctx.beginPath();
+        ctx.moveTo(jf.x - bellW, jf.y + bellH * 0.25);
+        ctx.bezierCurveTo(
+          jf.x - bellW, jf.y - bellH * 0.4,
+          jf.x - bellW * 0.3, jf.y - bellH * 0.65,
+          jf.x, jf.y - bellH * 0.55
+        );
+        ctx.bezierCurveTo(
+          jf.x + bellW * 0.3, jf.y - bellH * 0.65,
+          jf.x + bellW, jf.y - bellH * 0.4,
+          jf.x + bellW, jf.y + bellH * 0.25
+        );
+        // Scalloped rim
+        const scallops = 6;
+        for (let i = scallops; i >= 0; i--) {
+          const t = i / scallops;
+          const sx = jf.x + bellW * (1 - 2 * t);
+          const sy = jf.y + bellH * 0.25 + Math.sin(t * PI * scallops + time * 2.5) * bellH * 0.035;
+          ctx.lineTo(sx, sy);
+        }
+        ctx.closePath();
+
+        const bellGrad = ctx.createRadialGradient(jf.x, jf.y - bellH * 0.15, 0, jf.x, jf.y, bellH * 0.8);
+        const bellAlpha = 0.25 + 0.15 * glowPulse;
+        bellGrad.addColorStop(0, rgb(palette.glow, bellAlpha * 0.9));
+        bellGrad.addColorStop(0.5, rgb(palette.base, bellAlpha * 0.5));
+        bellGrad.addColorStop(1, rgb(palette.base, bellAlpha * 0.15));
+        ctx.fillStyle = bellGrad;
+        ctx.fill();
+
+        ctx.strokeStyle = rgb(palette.rim, 0.3 + 0.2 * glowPulse);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Inner organ glow
+        const innerR = bellH * 0.25;
+        const innerGrad = ctx.createRadialGradient(jf.x, jf.y - bellH * 0.2, 0, jf.x, jf.y - bellH * 0.2, innerR);
+        innerGrad.addColorStop(0, rgb(palette.glow, 0.35 * glowPulse));
+        innerGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = innerGrad;
+        ctx.beginPath();
+        ctx.arc(jf.x, jf.y - bellH * 0.2, innerR, 0, TWO_PI);
+        ctx.fill();
+
+        // Tentacles
+        for (const tent of jf.tentacles) {
+          const anchorX = jf.x + tent.offset * lerp(0.7, 1, pulseT);
+          const anchorY = jf.y + bellH * 0.25;
+          const segs = 20;
+
+          ctx.beginPath();
+          ctx.moveTo(anchorX, anchorY);
+          for (let i = 1; i <= segs; i++) {
+            const t = i / segs;
+            const wave = Math.sin(time * tent.freq + tent.phase + t * 4) * tent.amp * t;
+            const tx = anchorX + wave + tent.offset * t * 0.3;
+            const ty = anchorY + t * tent.length;
+            if (i === 1) {
+              ctx.lineTo(tx, ty);
+            } else {
+              const prevT = (i - 1) / segs;
+              const prevWave = Math.sin(time * tent.freq + tent.phase + prevT * 4) * tent.amp * prevT;
+              const prevX = anchorX + prevWave + tent.offset * prevT * 0.3;
+              const prevY = anchorY + prevT * tent.length;
+              ctx.quadraticCurveTo(prevX, prevY, (prevX + tx) * 0.5, (prevY + ty) * 0.5);
+            }
+          }
+
+          const tentAlpha = 0.2 + 0.1 * glowPulse;
+          ctx.strokeStyle = rgb(palette.base, tentAlpha);
+          ctx.lineWidth = 1.2;
+          ctx.lineCap = 'round';
+          ctx.stroke();
+
+          // Glowing tip
+          const tipT = 1;
+          const tipWave = Math.sin(time * tent.freq + tent.phase + tipT * 4) * tent.amp;
+          const tipX = anchorX + tipWave + tent.offset * 0.3;
+          const tipY = anchorY + tent.length;
+          const tipR = 3;
+          const tipGrad = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, tipR);
+          tipGrad.addColorStop(0, rgb(palette.glow, 0.4 * glowPulse));
+          tipGrad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = tipGrad;
+          ctx.fillRect(tipX - tipR, tipY - tipR, tipR * 2, tipR * 2);
+        }
+
+        ctx.restore();
+      }
+
+      // ─── Anglerfish ────────────────────────────────────────
+      function createAnglerfish(x, y, dir) {
+        return {
+          x, y,
+          dir,  // 1 = right, -1 = left
+          speed: rand(12, 22),
+          size: rand(30, 50),
+          lurePhase: rand(0, TWO_PI),
+          bobPhase: rand(0, TWO_PI),
+          bobAmp: rand(8, 15),
+        };
+      }
+
+      function updateAnglerfish(af, dt, time) {
+        af.x += af.dir * af.speed * dt;
+        af.y += Math.sin(time * 0.8 + af.bobPhase) * af.bobAmp * dt;
+
+        // Wrap around
+        if (af.dir > 0 && af.x > w + af.size * 3) {
+          af.x = -af.size * 3;
+          af.y = rand(h * 0.3, h * 0.75);
+        }
+        if (af.dir < 0 && af.x < -af.size * 3) {
+          af.x = w + af.size * 3;
+          af.y = rand(h * 0.3, h * 0.75);
+        }
+      }
+
+      function drawAnglerfish(ctx, af, time) {
+        const { x, y, dir, size } = af;
+        const lurePulse = 0.5 + 0.5 * Math.sin(time * 3.5 + af.lurePhase);
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(dir, 1);
+
+        // Body silhouette (dark shape)
+        ctx.beginPath();
+        // Head/mouth end (left side when dir=1)
+        ctx.moveTo(-size * 0.6, 0);
+        // Upper jaw
+        ctx.lineTo(-size * 0.8, -size * 0.15);
+        // Top of head
+        ctx.bezierCurveTo(
+          -size * 0.5, -size * 0.45,
+          size * 0.1, -size * 0.4,
+          size * 0.5, -size * 0.15
+        );
+        // Tail
+        ctx.lineTo(size * 0.9, -size * 0.25);
+        ctx.lineTo(size * 0.7, 0);
+        ctx.lineTo(size * 0.9, size * 0.2);
+        ctx.lineTo(size * 0.5, size * 0.1);
+        // Bottom
+        ctx.bezierCurveTo(
+          size * 0.1, size * 0.35,
+          -size * 0.4, size * 0.35,
+          -size * 0.7, size * 0.12
+        );
+        // Lower jaw
+        ctx.lineTo(-size * 0.85, size * 0.08);
+        ctx.lineTo(-size * 0.6, 0);
+        ctx.closePath();
+
+        ctx.fillStyle = '#050510';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(20,30,60,0.4)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Tiny evil eye
+        const eyeX = -size * 0.3;
+        const eyeY = -size * 0.15;
+        ctx.fillStyle = `rgba(180,220,255,${0.4 + 0.2 * lurePulse})`;
+        ctx.beginPath();
+        ctx.arc(eyeX, eyeY, 2, 0, TWO_PI);
+        ctx.fill();
+
+        // Teeth (small pointed shapes along jaw)
+        ctx.fillStyle = 'rgba(40,50,80,0.6)';
+        for (let i = 0; i < 5; i++) {
+          const tx = -size * 0.75 + i * size * 0.08;
+          const tDir = i % 2 === 0 ? -1 : 1;
+          ctx.beginPath();
+          ctx.moveTo(tx - 1.5, tDir * size * 0.02);
+          ctx.lineTo(tx, tDir * size * 0.08);
+          ctx.lineTo(tx + 1.5, tDir * size * 0.02);
+          ctx.fill();
+        }
+
+        // Lure stalk (curved line from top of head)
+        const stalkBaseX = -size * 0.2;
+        const stalkBaseY = -size * 0.4;
+        const lureX = -size * 0.5;
+        const lureY = -size * 0.8 + Math.sin(time * 2 + af.lurePhase) * 5;
+
+        ctx.beginPath();
+        ctx.moveTo(stalkBaseX, stalkBaseY);
+        ctx.quadraticCurveTo(
+          -size * 0.15, -size * 0.65,
+          lureX, lureY
+        );
+        ctx.strokeStyle = 'rgba(30,40,60,0.5)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        // Lure glow
+        const lureR = 12 + 6 * lurePulse;
+        const lureGrad = ctx.createRadialGradient(lureX, lureY, 0, lureX, lureY, lureR);
+        lureGrad.addColorStop(0, `rgba(255,250,200,${0.7 + 0.3 * lurePulse})`);
+        lureGrad.addColorStop(0.3, `rgba(200,255,180,${0.3 * lurePulse})`);
+        lureGrad.addColorStop(0.6, `rgba(100,200,255,${0.1 * lurePulse})`);
+        lureGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = lureGrad;
+        ctx.fillRect(lureX - lureR, lureY - lureR, lureR * 2, lureR * 2);
+
+        // Bright core
+        ctx.fillStyle = `rgba(255,255,240,${0.8 + 0.2 * lurePulse})`;
+        ctx.beginPath();
+        ctx.arc(lureX, lureY, 2, 0, TWO_PI);
+        ctx.fill();
+
+        ctx.restore();
+      }
+
+      // ─── Hydrothermal Vents ────────────────────────────────
+      function createVent(x) {
+        return {
+          x,
+          width: rand(25, 50),
+          height: rand(20, 40),
+          emitRate: rand(15, 30),
+          emitTimer: 0,
+        };
+      }
+
+      function updateVent(vent, dt, time) {
+        vent.emitTimer += dt;
+        const interval = 1 / vent.emitRate;
+        while (vent.emitTimer >= interval) {
+          vent.emitTimer -= interval;
+          ventParticles.emit(1, () => ({
+            x: vent.x + rand(-vent.width * 0.3, vent.width * 0.3),
+            y: h - vent.height + rand(-5, 5),
+            vx: rand(-8, 8),
+            vy: rand(-50, -20),
+            life: rand(2, 5),
+            size: rand(2, 5),
+            heat: 1.0, // starts hot (orange/red), cools to blue
+          }));
+        }
+      }
+
+      function drawVent(ctx, vent, time) {
+        const x = vent.x;
+        const bw = vent.width;
+        const bh = vent.height;
+        const baseY = h;
+
+        // Rocky vent mound
+        ctx.beginPath();
+        ctx.moveTo(x - bw, baseY);
+        ctx.bezierCurveTo(
+          x - bw * 0.8, baseY - bh * 0.5,
+          x - bw * 0.3, baseY - bh,
+          x, baseY - bh - rand(0, 3)
+        );
+        ctx.bezierCurveTo(
+          x + bw * 0.3, baseY - bh,
+          x + bw * 0.8, baseY - bh * 0.5,
+          x + bw, baseY
+        );
+        ctx.closePath();
+        ctx.fillStyle = '#0a0812';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(40,20,10,0.3)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Vent opening glow
+        const glowR = bw * 0.5;
+        const ventGlow = ctx.createRadialGradient(x, baseY - bh, 0, x, baseY - bh, glowR);
+        const pulse = 0.5 + 0.5 * Math.sin(time * 2 + x * 0.01);
+        ventGlow.addColorStop(0, `rgba(255,120,30,${0.3 * pulse})`);
+        ventGlow.addColorStop(0.5, `rgba(255,60,10,${0.1 * pulse})`);
+        ventGlow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = ventGlow;
+        ctx.fillRect(x - glowR, baseY - bh - glowR, glowR * 2, glowR * 2);
+      }
+
+      // ─── Bioluminescent Flashes ────────────────────────────
+      function spawnFlash() {
+        flashes.push({
+          x: rand(50, w - 50),
+          y: rand(50, h - 100),
+          life: 0,
+          maxLife: rand(0.3, 0.8),
+          radius: rand(30, 80),
+          color: [
+            [0, 200, 255],
+            [100, 255, 200],
+            [80, 160, 255],
+            [200, 100, 255],
+          ][randInt(0, 3)],
+        });
+      }
+
+      function updateFlashes(dt) {
+        for (let i = flashes.length - 1; i >= 0; i--) {
+          flashes[i].life += dt;
+          if (flashes[i].life >= flashes[i].maxLife) {
+            flashes.splice(i, 1);
+          }
+        }
+      }
+
+      function drawFlashes(ctx) {
+        for (const f of flashes) {
+          const t = f.life / f.maxLife;
+          const alpha = t < 0.3 ? t / 0.3 : 1 - (t - 0.3) / 0.7;
+          const r = f.radius * (0.5 + 0.5 * t);
+
+          const grad = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+          grad.addColorStop(0, rgb(f.color, alpha * 0.5));
+          grad.addColorStop(0.4, rgb(f.color, alpha * 0.2));
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(f.x - r, f.y - r, r * 2, r * 2);
+        }
+      }
+
+      // ─── Ocean Current Streaks ─────────────────────────────
+      function initStreaks() {
+        currentStreaks = [];
+        for (let i = 0; i < 12; i++) {
+          currentStreaks.push({
+            x: rand(0, w),
+            y: rand(0, h),
+            length: rand(60, 200),
+            speed: rand(5, 15),
+            alpha: rand(0.01, 0.03),
+            phase: rand(0, TWO_PI),
+          });
+        }
+      }
+
+      function drawStreaks(ctx, time) {
+        for (const s of currentStreaks) {
+          const sx = (s.x + time * s.speed * 10) % (w + s.length) - s.length;
+          const sy = s.y + Math.sin(time * 0.3 + s.phase) * 15;
+          const alpha = s.alpha * (0.5 + 0.5 * Math.sin(time * 0.5 + s.phase));
+
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(sx + s.length, sy + Math.sin(time * 0.2 + s.phase) * 3);
+          ctx.strokeStyle = `rgba(30,60,100,${alpha})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+
+      // ─── Draw Background ──────────────────────────────────
+      function drawBackground(ctx, time) {
+        // Near pitch-black deep ocean gradient
+        const bg = ctx.createLinearGradient(0, 0, 0, h);
+        bg.addColorStop(0, '#020208');
+        bg.addColorStop(0.3, '#020208');
+        bg.addColorStop(0.6, '#020108');
+        bg.addColorStop(0.85, '#030210');
+        bg.addColorStop(1, '#050215');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // Very subtle depth haze at middle
+        const hazeGrad = ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.4, Math.max(w, h) * 0.6);
+        hazeGrad.addColorStop(0, `rgba(10,20,40,${0.015 + 0.008 * Math.sin(time * 0.15)})`);
+        hazeGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = hazeGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Ocean floor
+        const floorGrad = ctx.createLinearGradient(0, h - 60, 0, h);
+        floorGrad.addColorStop(0, 'rgba(0,0,0,0)');
+        floorGrad.addColorStop(0.5, 'rgba(8,5,15,0.4)');
+        floorGrad.addColorStop(1, 'rgba(10,6,18,0.7)');
+        ctx.fillStyle = floorGrad;
+        ctx.fillRect(0, h - 60, w, 60);
+
+        // Rocky floor texture (uneven bumps)
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        for (let x = 0; x <= w; x += 15) {
+          const bumpY = h - 8 - Math.abs(Math.sin(x * 0.03 + 1.5) * 12 + Math.sin(x * 0.07) * 6);
+          ctx.lineTo(x, bumpY);
+        }
+        ctx.lineTo(w, h);
+        ctx.closePath();
+        ctx.fillStyle = '#060412';
+        ctx.fill();
+      }
+
+      // ─── Draw Plankton ─────────────────────────────────────
+      function drawPlankton(ctx, time) {
+        plankton.forEach((p) => {
+          const fadePulse = 0.3 + 0.7 * Math.sin(time * p.pulseFreq + p.pulsePhase);
+          const fade = clamp(p.life / 2, 0, 1) * fadePulse;
+          const r = p.size * 2;
+
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+          grad.addColorStop(0, `rgba(${p.r},${p.g},${p.b},${0.35 * fade})`);
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+
+          // Tiny bright core
+          ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${0.5 * fade})`;
+          ctx.fillRect(p.x - 0.5, p.y - 0.5, 1, 1);
+        });
+      }
+
+      // ─── Draw Vent Particles ───────────────────────────────
+      function drawVentParticles(ctx) {
+        ventParticles.forEach((p) => {
+          const fade = clamp(p.life / 1.5, 0, 1);
+          // Lerp from hot (orange/red) to cool (blue) based on remaining heat
+          const heat = clamp(p.heat, 0, 1);
+          const r = lerp(30, 255, heat);
+          const g = lerp(80, 100, heat);
+          const b = lerp(255, 20, heat);
+
+          const size = p.size * (1 + (1 - heat) * 0.5);
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size);
+          grad.addColorStop(0, `rgba(${r | 0},${g | 0},${b | 0},${0.35 * fade})`);
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(p.x - size, p.y - size, size * 2, size * 2);
+        });
+      }
+
+      // ─── Scene Init ────────────────────────────────────────
+      function initScene(width, height) {
+        w = width;
+        h = height;
+
+        // Jellyfish
+        jellies = [];
+        const jellyCount = clamp(randInt(3, 5), 3, 5);
+        for (let i = 0; i < jellyCount; i++) {
+          const size = rand(25, 55);
+          jellies.push(createJellyfish(
+            rand(size * 2, w - size * 2),
+            rand(h * 0.1, h * 0.6),
+            size,
+            i
+          ));
+        }
+
+        // Anglerfish
+        anglerfish = [];
+        const afCount = randInt(1, 2);
+        for (let i = 0; i < afCount; i++) {
+          const dir = Math.random() < 0.5 ? 1 : -1;
+          anglerfish.push(createAnglerfish(
+            rand(0, w),
+            rand(h * 0.35, h * 0.7),
+            dir
+          ));
+        }
+
+        // Hydrothermal vents
+        vents = [];
+        const ventCount = randInt(2, 3);
+        const ventSpacing = w / (ventCount + 1);
+        for (let i = 0; i < ventCount; i++) {
+          vents.push(createVent(ventSpacing * (i + 1) + rand(-60, 60)));
+        }
+
+        // Streaks
+        initStreaks();
+
+        // Seed initial plankton
+        plankton.clear();
+        for (let i = 0; i < 150; i++) {
+          spawnPlanktonParticle(true);
+        }
+
+        flashes = [];
+        ventParticles.clear();
+      }
+
+      // ─── Plankton Colors ───────────────────────────────────
+      const PLANKTON_COLORS = [
+        [0, 200, 240],    // cyan
+        [40, 140, 255],   // blue
+        [60, 220, 180],   // green-cyan
+        [80, 180, 255],   // light blue
+        [30, 255, 200],   // sea green
+        [100, 160, 255],  // periwinkle
+      ];
+
+      function spawnPlanktonParticle(initial) {
+        const color = PLANKTON_COLORS[randInt(0, PLANKTON_COLORS.length - 1)];
+        plankton.emit(1, () => ({
+          x: rand(0, w),
+          y: initial ? rand(0, h) : rand(h + 10, h + 50),
+          vx: rand(-4, 4),
+          vy: rand(-12, -3),
+          life: rand(8, 25),
+          size: rand(1, 3),
+          r: color[0],
+          g: color[1],
+          b: color[2],
+          pulseFreq: rand(1, 4),
+          pulsePhase: rand(0, TWO_PI),
+        }));
+      }
+
+      // ─── Flash Timer ───────────────────────────────────────
+      let flashTimer = rand(2, 6);
+
+      // ─── App ────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 5,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          background: '#010108',
+          sourceOpacity: 0,
+        },
+        layers: [
+          { fontSize: 8, charset: 'density', colorScheme: 'neon', blendMode: 'add', opacity: 0.15 },
+          { fontSize: 12, charset: 'minimal', colorScheme: 'mono', blendMode: 'add', opacity: 0.05 },
+        ],
+        draw(ctx, { time: rawTime, dt, width: cw, height: ch }) {
+          const time = rawTime / 1000;
+
+          if (cw !== w || ch !== h) initScene(cw, ch);
+
+          // ─── Background ──────────────────────────────
+          drawBackground(ctx, time);
+
+          // ─── Ocean current streaks ───────────────────
+          drawStreaks(ctx, time);
+
+          // ─── Hydrothermal vents ──────────────────────
+          for (const vent of vents) {
+            updateVent(vent, dt, time);
+            drawVent(ctx, vent, time);
+          }
+
+          // ─── Vent particles ──────────────────────────
+          ventParticles.update(dt);
+          // Cool down particles over time
+          ventParticles.forEach((p) => {
+            p.heat = clamp(p.heat - dt * 0.35, 0, 1);
+            // Slow upward deceleration and lateral drift
+            p.vx += Math.sin(time * 2 + p.x * 0.01) * 3 * dt;
+          });
+          drawVentParticles(ctx);
+
+          // ─── Plankton ────────────────────────────────
+          plankton.update(dt);
+          // Gentle drift: add subtle sine wave motion
+          plankton.forEach((p) => {
+            p.vx += Math.sin(time * 0.5 + p.y * 0.01) * 2 * dt;
+            p.vy += Math.cos(time * 0.3 + p.x * 0.01) * 1 * dt;
+          });
+          // Replenish
+          while (plankton.length < 180) {
+            spawnPlanktonParticle(false);
+          }
+          drawPlankton(ctx, time);
+
+          // ─── Jellyfish ───────────────────────────────
+          for (const jf of jellies) {
+            const { pulseT } = updateJellyfish(jf, dt, time);
+            drawJellyfish(ctx, jf, pulseT, time);
+          }
+
+          // ─── Anglerfish ──────────────────────────────
+          for (const af of anglerfish) {
+            updateAnglerfish(af, dt, time);
+            drawAnglerfish(ctx, af, time);
+          }
+
+          // ─── Bioluminescent flashes ──────────────────
+          flashTimer -= dt;
+          if (flashTimer <= 0) {
+            spawnFlash();
+            flashTimer = rand(2, 7);
+          }
+          updateFlashes(dt);
+          drawFlashes(ctx);
+        },
+        onResize(ctx, cw, ch) {
+          initScene(cw, ch);
+        },
+      });
+    </script>
+  </body>
+</html>

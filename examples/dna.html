@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — DNA Helix</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────────
+      const HELIX_RADIUS = 150;
+      const VERTICAL_SPACING = 18;
+      const TURNS = 6;
+      const TOTAL_T = TURNS * Math.PI * 2;
+      const SAMPLE_STEP = 0.08;
+      const RUNG_STEP = Math.PI / 6; // every 30 degrees
+      const ROTATION_SPEED = 0.4;
+      const SCROLL_SPEED = 25;
+      const PERSPECTIVE_D = 600;
+      const PARTICLE_COUNT = 120;
+
+      // ─── Dust Particles ────────────────────────────────────
+      let particles = [];
+      let pw = 0, ph = 0;
+
+      function initParticles(w, h) {
+        pw = w; ph = h;
+        particles = [];
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+          particles.push({
+            x: Math.random() * w,
+            y: Math.random() * h,
+            z: Math.random() * 400 - 200,
+            vx: (Math.random() - 0.5) * 8,
+            vy: (Math.random() - 0.5) * 8,
+            size: Math.random() * 1.5 + 0.5,
+            alpha: Math.random() * 0.25 + 0.05,
+          });
+        }
+      }
+
+      function updateParticles(dt) {
+        for (const p of particles) {
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          if (p.x < -20) p.x += pw + 40;
+          if (p.x > pw + 20) p.x -= pw + 40;
+          if (p.y < -20) p.y += ph + 40;
+          if (p.y > ph + 20) p.y -= ph + 40;
+        }
+      }
+
+      // ─── 3D Projection ─────────────────────────────────────
+      function project(x3d, y3d, z3d, cx, cy) {
+        const scale = PERSPECTIVE_D / (PERSPECTIVE_D + z3d);
+        return {
+          x: cx + x3d * scale,
+          y: cy + y3d * scale,
+          scale,
+          z: z3d,
+        };
+      }
+
+      // ─── Colors ─────────────────────────────────────────────
+      // Backbone colors
+      const STRAND_A_COLOR = [0, 220, 210];  // cyan/teal
+      const STRAND_B_COLOR = [200, 60, 255];  // magenta/purple
+
+      // Base pair colors (alternating warm and cool)
+      const WARM_PAIR = [[255, 80, 40], [255, 160, 30]]; // red -> orange
+      const COOL_PAIR = [[40, 140, 255], [60, 230, 220]]; // blue -> cyan
+
+      function colorWithDepth(baseColor, depthScale, alpha) {
+        const brightness = clamp(depthScale, 0.15, 1.0);
+        const r = (baseColor[0] * brightness) | 0;
+        const g = (baseColor[1] * brightness) | 0;
+        const b = (baseColor[2] * brightness) | 0;
+        return `rgba(${r},${g},${b},${alpha})`;
+      }
+
+      // ─── Draw ───────────────────────────────────────────────
+      function draw(ctx, { time, dt, width: w, height: h }) {
+        // Clear with dark background
+        ctx.fillStyle = '#030308';
+        ctx.fillRect(0, 0, w, h);
+
+        // Update and draw background particles
+        updateParticles(dt);
+        for (const p of particles) {
+          const pScale = PERSPECTIVE_D / (PERSPECTIVE_D + p.z);
+          const brightness = clamp(pScale, 0.3, 1.0);
+          ctx.fillStyle = `rgba(${(100 * brightness) | 0},${(140 * brightness) | 0},${(180 * brightness) | 0},${p.alpha * brightness})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * pScale, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const cx = w * 0.5;
+        const cy = h * 0.5;
+        const timeSec = time / 1000;
+        const rotation = timeSec * ROTATION_SPEED;
+        const verticalScroll = timeSec * SCROLL_SPEED;
+
+        // Collect all drawable elements for z-sorting
+        const elements = [];
+
+        // ─── Helix Geometry ──────────────────────────────────
+        // Height range of the helix
+        const helixHeight = TOTAL_T * VERTICAL_SPACING;
+        const halfHeight = helixHeight * 0.5;
+
+        // Sample backbone points
+        const strandA = [];
+        const strandB = [];
+
+        for (let t = 0; t <= TOTAL_T; t += SAMPLE_STEP) {
+          // y position scrolls vertically, wrapping around
+          let rawY = t * VERTICAL_SPACING - halfHeight;
+          // Apply vertical scrolling with wrap
+          rawY = ((rawY - verticalScroll) % helixHeight);
+          if (rawY < -halfHeight) rawY += helixHeight;
+          if (rawY > halfHeight) rawY -= helixHeight;
+
+          // Skip points far outside visible range
+          const visibleHalf = h * 0.55;
+          if (Math.abs(rawY) > visibleHalf) continue;
+
+          // 3D positions
+          const xA = HELIX_RADIUS * Math.cos(t + rotation);
+          const zA = HELIX_RADIUS * Math.sin(t + rotation);
+          const xB = HELIX_RADIUS * Math.cos(t + rotation + Math.PI);
+          const zB = HELIX_RADIUS * Math.sin(t + rotation + Math.PI);
+
+          const pA = project(xA, rawY, zA, cx, cy);
+          const pB = project(xB, rawY, zB, cx, cy);
+
+          strandA.push({ t, ...pA, rawY });
+          strandB.push({ t, ...pB, rawY });
+        }
+
+        // ─── Add Backbone Points ─────────────────────────────
+        for (let i = 0; i < strandA.length; i++) {
+          const a = strandA[i];
+          const b = strandB[i];
+
+          // Fade elements near the edges vertically
+          const edgeFadeA = 1.0 - clamp((Math.abs(a.rawY) - h * 0.35) / (h * 0.15), 0, 1);
+          const edgeFadeB = 1.0 - clamp((Math.abs(b.rawY) - h * 0.35) / (h * 0.15), 0, 1);
+
+          if (edgeFadeA > 0.01) {
+            const depthBrightness = clamp(a.scale * 1.2, 0.2, 1.3);
+            const radius = clamp(3.5 * a.scale, 1.0, 6.0);
+            elements.push({
+              type: 'backbone',
+              x: a.x, y: a.y, z: a.z,
+              radius,
+              color: STRAND_A_COLOR,
+              brightness: depthBrightness,
+              alpha: edgeFadeA * clamp(depthBrightness, 0.3, 1.0),
+            });
+          }
+
+          if (edgeFadeB > 0.01) {
+            const depthBrightness = clamp(b.scale * 1.2, 0.2, 1.3);
+            const radius = clamp(3.5 * b.scale, 1.0, 6.0);
+            elements.push({
+              type: 'backbone',
+              x: b.x, y: b.y, z: b.z,
+              radius,
+              color: STRAND_B_COLOR,
+              brightness: depthBrightness,
+              alpha: edgeFadeB * clamp(depthBrightness, 0.3, 1.0),
+            });
+          }
+
+          // Backbone connections (lines between consecutive points)
+          if (i > 0) {
+            const prevA = strandA[i - 1];
+            const prevB = strandB[i - 1];
+
+            // Only draw connections for adjacent points (skip wrapping discontinuities)
+            if (Math.abs(a.rawY - prevA.rawY) < VERTICAL_SPACING * 3) {
+              const avgZA = (a.z + prevA.z) * 0.5;
+              const avgScaleA = (a.scale + prevA.scale) * 0.5;
+              const lineEdgeFade = Math.min(edgeFadeA, 1.0 - clamp((Math.abs(prevA.rawY) - h * 0.35) / (h * 0.15), 0, 1));
+              if (lineEdgeFade > 0.01) {
+                elements.push({
+                  type: 'line',
+                  x1: prevA.x, y1: prevA.y,
+                  x2: a.x, y2: a.y,
+                  z: avgZA,
+                  width: clamp(2.0 * avgScaleA, 0.5, 3.5),
+                  color: STRAND_A_COLOR,
+                  brightness: clamp(avgScaleA * 1.1, 0.2, 1.2),
+                  alpha: lineEdgeFade * clamp(avgScaleA, 0.25, 0.9),
+                });
+              }
+            }
+
+            if (Math.abs(b.rawY - prevB.rawY) < VERTICAL_SPACING * 3) {
+              const avgZB = (b.z + prevB.z) * 0.5;
+              const avgScaleB = (b.scale + prevB.scale) * 0.5;
+              const lineEdgeFade = Math.min(edgeFadeB, 1.0 - clamp((Math.abs(prevB.rawY) - h * 0.35) / (h * 0.15), 0, 1));
+              if (lineEdgeFade > 0.01) {
+                elements.push({
+                  type: 'line',
+                  x1: prevB.x, y1: prevB.y,
+                  x2: b.x, y2: b.y,
+                  z: avgZB,
+                  width: clamp(2.0 * avgScaleB, 0.5, 3.5),
+                  color: STRAND_B_COLOR,
+                  brightness: clamp(avgScaleB * 1.1, 0.2, 1.2),
+                  alpha: lineEdgeFade * clamp(avgScaleB, 0.25, 0.9),
+                });
+              }
+            }
+          }
+        }
+
+        // ─── Base Pair Rungs ─────────────────────────────────
+        let rungIndex = 0;
+        for (let t = 0; t <= TOTAL_T; t += RUNG_STEP) {
+          let rawY = t * VERTICAL_SPACING - halfHeight;
+          rawY = ((rawY - verticalScroll) % helixHeight);
+          if (rawY < -halfHeight) rawY += helixHeight;
+          if (rawY > halfHeight) rawY -= helixHeight;
+
+          const visibleHalf = h * 0.55;
+          if (Math.abs(rawY) > visibleHalf) { rungIndex++; continue; }
+
+          const edgeFade = 1.0 - clamp((Math.abs(rawY) - h * 0.35) / (h * 0.15), 0, 1);
+          if (edgeFade < 0.01) { rungIndex++; continue; }
+
+          const xA = HELIX_RADIUS * Math.cos(t + rotation);
+          const zA = HELIX_RADIUS * Math.sin(t + rotation);
+          const xB = HELIX_RADIUS * Math.cos(t + rotation + Math.PI);
+          const zB = HELIX_RADIUS * Math.sin(t + rotation + Math.PI);
+
+          const pA = project(xA, rawY, zA, cx, cy);
+          const pB = project(xB, rawY, zB, cx, cy);
+          const avgZ = (zA + zB) * 0.5;
+          const avgScale = PERSPECTIVE_D / (PERSPECTIVE_D + avgZ);
+
+          // Alternate warm/cool base pairs
+          const isWarm = rungIndex % 2 === 0;
+          const pairColors = isWarm ? WARM_PAIR : COOL_PAIR;
+
+          // Draw the rung as two halves meeting in the middle
+          const midX = (pA.x + pB.x) * 0.5;
+          const midY = (pA.y + pB.y) * 0.5;
+          const midZ = avgZ;
+
+          const depthBrightness = clamp(avgScale * 1.1, 0.2, 1.2);
+
+          // First half (strand A side)
+          elements.push({
+            type: 'rung',
+            x1: pA.x, y1: pA.y,
+            x2: midX, y2: midY,
+            z: midZ,
+            width: clamp(2.5 * avgScale, 0.8, 4.0),
+            color: pairColors[0],
+            brightness: depthBrightness,
+            alpha: edgeFade * clamp(depthBrightness, 0.35, 0.95),
+          });
+
+          // Second half (strand B side)
+          elements.push({
+            type: 'rung',
+            x1: midX, y1: midY,
+            x2: pB.x, y2: pB.y,
+            z: midZ,
+            width: clamp(2.5 * avgScale, 0.8, 4.0),
+            color: pairColors[1],
+            brightness: depthBrightness,
+            alpha: edgeFade * clamp(depthBrightness, 0.35, 0.95),
+          });
+
+          // Small circles at the hydrogen bond point in the middle
+          elements.push({
+            type: 'bond',
+            x: midX, y: midY,
+            z: midZ,
+            radius: clamp(2.0 * avgScale, 0.5, 3.0),
+            color: [255, 255, 255],
+            brightness: depthBrightness,
+            alpha: edgeFade * clamp(depthBrightness * 0.4, 0.1, 0.5),
+          });
+
+          rungIndex++;
+        }
+
+        // ─── Z-Sort (painter's algorithm: far to near) ───────
+        elements.sort((a, b) => a.z - b.z);
+
+        // ─── Render All Elements ─────────────────────────────
+        for (const el of elements) {
+          switch (el.type) {
+            case 'backbone': {
+              const col = colorWithDepth(el.color, el.brightness, el.alpha);
+              ctx.fillStyle = col;
+              ctx.beginPath();
+              ctx.arc(el.x, el.y, el.radius, 0, Math.PI * 2);
+              ctx.fill();
+
+              // Subtle glow
+              const glowR = el.radius * 3;
+              const grad = ctx.createRadialGradient(el.x, el.y, el.radius * 0.5, el.x, el.y, glowR);
+              grad.addColorStop(0, colorWithDepth(el.color, el.brightness, el.alpha * 0.3));
+              grad.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = grad;
+              ctx.beginPath();
+              ctx.arc(el.x, el.y, glowR, 0, Math.PI * 2);
+              ctx.fill();
+              break;
+            }
+
+            case 'line': {
+              ctx.strokeStyle = colorWithDepth(el.color, el.brightness, el.alpha);
+              ctx.lineWidth = el.width;
+              ctx.lineCap = 'round';
+              ctx.beginPath();
+              ctx.moveTo(el.x1, el.y1);
+              ctx.lineTo(el.x2, el.y2);
+              ctx.stroke();
+              break;
+            }
+
+            case 'rung': {
+              ctx.strokeStyle = colorWithDepth(el.color, el.brightness, el.alpha);
+              ctx.lineWidth = el.width;
+              ctx.lineCap = 'round';
+              ctx.beginPath();
+              ctx.moveTo(el.x1, el.y1);
+              ctx.lineTo(el.x2, el.y2);
+              ctx.stroke();
+              break;
+            }
+
+            case 'bond': {
+              ctx.fillStyle = colorWithDepth(el.color, el.brightness, el.alpha);
+              ctx.beginPath();
+              ctx.arc(el.x, el.y, el.radius, 0, Math.PI * 2);
+              ctx.fill();
+              break;
+            }
+          }
+        }
+
+        // ─── Ambient glow at center ──────────────────────────
+        const ambGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(w, h) * 0.45);
+        ambGrad.addColorStop(0, 'rgba(20, 60, 80, 0.06)');
+        ambGrad.addColorStop(0.5, 'rgba(10, 20, 50, 0.03)');
+        ambGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = ambGrad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── App Setup ──────────────────────────────────────────
+      createApp({
+        asciiConfig: {
+          fontSize: 6,
+          charset: 'braille',
+          colorScheme: 'acid',
+          background: '#030308',
+          sourceOpacity: 0,
+        },
+        layers: [
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.15,
+            zIndex: 1,
+          },
+          {
+            fontSize: 5,
+            charset: 'braille',
+            edgeDetect: true,
+            edgeCharset: 'box-light',
+            edgeThreshold: 0.2,
+            blendMode: 'add',
+            opacity: 0.12,
+            zIndex: 2,
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) {
+          initParticles(w, h);
+        },
+      });
+    </script>
+  </body>
+</html>

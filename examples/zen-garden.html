@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Zen Garden</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, mulberry32, rgb } from './utils.js';
+
+      // ─── Palette ──────────────────────────────────────
+      const SAND_BASE  = [200, 190, 170];
+      const SAND_LIGHT = [215, 205, 185];
+      const SAND_DARK  = [175, 165, 145];
+      const STONE_DARK = [55, 50, 48];
+      const STONE_MID  = [80, 74, 68];
+      const STONE_WARM = [90, 78, 65];
+      const MOSS_DARK  = [35, 60, 30];
+      const MOSS_LIGHT = [50, 80, 42];
+      const POOL_COLOR = [140, 155, 160];
+      const LEAF_COLOR = [160, 60, 30];
+      const SHADOW_CLR = [150, 140, 120];
+
+      // ─── Seeded random for deterministic layout ───────
+      const rng = mulberry32(42);
+
+      // ─── Stones ───────────────────────────────────────
+      // Positions as fractions of canvas; generated once, scaled on resize
+      const STONE_DEFS = [
+        { fx: 0.35, fy: 0.32, rw: 0.055, rh: 0.032, rot: -0.15, moss: true },
+        { fx: 0.62, fy: 0.45, rw: 0.038, rh: 0.022, rot: 0.25, moss: true },
+        { fx: 0.28, fy: 0.58, rw: 0.042, rh: 0.025, rot: -0.08, moss: false },
+        { fx: 0.70, fy: 0.28, rw: 0.025, rh: 0.015, rot: 0.4, moss: false },
+        { fx: 0.55, fy: 0.68, rw: 0.020, rh: 0.013, rot: -0.3, moss: true },
+      ];
+
+      // Precomputed noise dots for stone texture
+      const STONE_DOTS = [];
+      for (let i = 0; i < 200; i++) {
+        STONE_DOTS.push({ dx: rng() * 2 - 1, dy: rng() * 2 - 1, br: rng() });
+      }
+
+      // ─── Pool ─────────────────────────────────────────
+      const POOL = { fx: 0.12, fy: 0.78, rw: 0.10, rh: 0.06 };
+
+      // ─── Leaf ─────────────────────────────────────────
+      let leaf = null;
+      let leafTimer = 8 + rng() * 15;
+
+      function spawnLeaf(w, h) {
+        const startSide = rng() > 0.5;
+        leaf = {
+          x: startSide ? -20 : w + 20,
+          y: h * (0.1 + rng() * 0.3),
+          vx: startSide ? 8 + rng() * 12 : -(8 + rng() * 12),
+          vy: 5 + rng() * 8,
+          rot: rng() * Math.PI * 2,
+          spin: (rng() - 0.5) * 1.5,
+          wobblePhase: rng() * Math.PI * 2,
+          size: 4 + rng() * 4,
+        };
+      }
+
+      // ─── Cloud shadow ─────────────────────────────────
+      let cloudX = -0.3;
+      let cloudSpeed = 0.008 + rng() * 0.005;
+
+      // ─── Rake animation phase ─────────────────────────
+      let rakePhase = 0;
+
+      // ─── Drawing: Sand Background ─────────────────────
+      function drawSand(ctx, w, h, time) {
+        const t = time / 1000;
+        // Base sand fill
+        const grad = ctx.createLinearGradient(0, 0, w * 0.3, h);
+        grad.addColorStop(0, rgb(SAND_LIGHT));
+        grad.addColorStop(0.5, rgb(SAND_BASE));
+        grad.addColorStop(1, rgb(SAND_DARK));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Subtle grain texture
+        const grainRng = mulberry32(7);
+        ctx.globalAlpha = 0.04;
+        for (let i = 0; i < 600; i++) {
+          const gx = grainRng() * w;
+          const gy = grainRng() * h;
+          const gb = grainRng() > 0.5 ? 255 : 0;
+          ctx.fillStyle = `rgb(${gb},${gb},${gb})`;
+          ctx.fillRect(gx, gy, 1, 1);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // ─── Drawing: Raked Lines ─────────────────────────
+      function drawRakeLines(ctx, w, h, time) {
+        const t = time / 1000;
+        const phase = t * 0.015; // very slow animation
+
+        ctx.lineWidth = 1;
+        ctx.lineCap = 'round';
+
+        // Compute stone centers in pixel coords for rake avoidance
+        const stoneCenters = STONE_DEFS.map(s => ({
+          x: s.fx * w, y: s.fy * h,
+          rw: s.rw * w, rh: s.rh * h,
+          influence: Math.max(s.rw * w, s.rh * h) * 3.5,
+        }));
+
+        // Draw concentric rings around stones
+        for (const sc of stoneCenters) {
+          const maxRings = Math.floor(sc.influence / 6);
+          for (let ring = 1; ring <= maxRings; ring++) {
+            const radius = (Math.max(sc.rw, sc.rh) + ring * 6) * (1 + 0.002 * Math.sin(phase * 4 + ring * 0.3));
+            const alpha = clamp(0.18 - ring * 0.006, 0.03, 0.18);
+
+            // Alternate light/dark for rake groove illusion
+            const isGroove = ring % 2 === 0;
+            if (isGroove) {
+              ctx.strokeStyle = `rgba(${SAND_DARK[0]},${SAND_DARK[1]},${SAND_DARK[2]},${alpha})`;
+            } else {
+              ctx.strokeStyle = `rgba(${SAND_LIGHT[0]},${SAND_LIGHT[1]},${SAND_LIGHT[2]},${alpha * 0.7})`;
+            }
+
+            ctx.beginPath();
+            // Draw elliptical ring
+            const segments = 64;
+            for (let i = 0; i <= segments; i++) {
+              const angle = (i / segments) * Math.PI * 2;
+              const rx = radius * 1.3;
+              const ry = radius * 0.9;
+              const px = sc.x + Math.cos(angle) * rx;
+              const py = sc.y + Math.sin(angle) * ry;
+
+              // Check if this point is inside any stone — skip if so
+              let insideStone = false;
+              for (const s2 of stoneCenters) {
+                const ddx = (px - s2.x) / (s2.rw * 1.1);
+                const ddy = (py - s2.y) / (s2.rh * 1.1);
+                if (ddx * ddx + ddy * ddy < 1) { insideStone = true; break; }
+              }
+              if (insideStone) {
+                ctx.moveTo(px, py);
+                continue;
+              }
+
+              if (i === 0) ctx.moveTo(px, py);
+              else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+          }
+        }
+
+        // Parallel rake lines in open areas
+        const lineSpacing = 8;
+        const numLines = Math.ceil(h / lineSpacing);
+
+        for (let i = 0; i < numLines; i++) {
+          const baseY = i * lineSpacing;
+          const waveOffset = Math.sin(phase + i * 0.08) * 0.5;
+          const y = baseY + waveOffset;
+
+          const isGroove = i % 2 === 0;
+          const alpha = 0.09;
+          if (isGroove) {
+            ctx.strokeStyle = `rgba(${SAND_DARK[0]},${SAND_DARK[1]},${SAND_DARK[2]},${alpha})`;
+          } else {
+            ctx.strokeStyle = `rgba(${SAND_LIGHT[0]},${SAND_LIGHT[1]},${SAND_LIGHT[2]},${alpha * 0.6})`;
+          }
+
+          ctx.beginPath();
+          let drawing = false;
+
+          for (let x = 0; x <= w; x += 4) {
+            // Curve around stones
+            let deflectionY = 0;
+            let nearStone = false;
+
+            for (const sc of stoneCenters) {
+              const dx = x - sc.x;
+              const dy = y - sc.y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              const inf = sc.influence;
+
+              if (dist < inf) {
+                nearStone = true;
+                break;
+              }
+              // Subtle deflection near stone influence zones
+              if (dist < inf * 1.8) {
+                const strength = 1 - (dist - inf) / (inf * 0.8);
+                deflectionY += (dy > 0 ? 1 : -1) * strength * 4;
+              }
+            }
+
+            if (nearStone) {
+              drawing = false;
+              continue;
+            }
+
+            const py = y + deflectionY + Math.sin(x * 0.003 + phase) * 1.2;
+            if (!drawing) {
+              ctx.moveTo(x, py);
+              drawing = true;
+            } else {
+              ctx.lineTo(x, py);
+            }
+          }
+          ctx.stroke();
+        }
+      }
+
+      // ─── Drawing: Stones ──────────────────────────────
+      function drawStones(ctx, w, h, time) {
+        const t = time / 1000;
+
+        for (const s of STONE_DEFS) {
+          const cx = s.fx * w;
+          const cy = s.fy * h;
+          const rw = s.rw * w;
+          const rh = s.rh * h;
+
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(s.rot);
+
+          // Shadow beneath stone
+          ctx.fillStyle = `rgba(${SHADOW_CLR[0]},${SHADOW_CLR[1]},${SHADOW_CLR[2]},0.25)`;
+          ctx.beginPath();
+          ctx.ellipse(rw * 0.15, rh * 0.4, rw * 1.15, rh * 0.9, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Stone body gradient
+          const stoneGrad = ctx.createRadialGradient(-rw * 0.2, -rh * 0.3, 0, 0, 0, Math.max(rw, rh));
+          stoneGrad.addColorStop(0, rgb(STONE_WARM));
+          stoneGrad.addColorStop(0.5, rgb(STONE_MID));
+          stoneGrad.addColorStop(1, rgb(STONE_DARK));
+          ctx.fillStyle = stoneGrad;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, rw, rh, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Texture noise dots
+          const dotsToShow = Math.min(STONE_DOTS.length, Math.floor(rw * rh * 0.15));
+          for (let i = 0; i < dotsToShow; i++) {
+            const dot = STONE_DOTS[i];
+            const dx = dot.dx * rw * 0.85;
+            const dy = dot.dy * rh * 0.85;
+            // Only draw dots inside the ellipse
+            if ((dx * dx) / (rw * rw) + (dy * dy) / (rh * rh) > 0.85) continue;
+            const brightness = 40 + dot.br * 50;
+            ctx.fillStyle = `rgba(${brightness | 0},${brightness | 0},${(brightness * 0.9) | 0},0.3)`;
+            ctx.fillRect(dx - 0.5, dy - 0.5, 1.5, 1.5);
+          }
+
+          // Subtle highlight on top
+          ctx.fillStyle = `rgba(180,175,165,0.12)`;
+          ctx.beginPath();
+          ctx.ellipse(-rw * 0.15, -rh * 0.25, rw * 0.5, rh * 0.35, -0.2, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+
+          // Moss patch near stone
+          if (s.moss) {
+            drawMoss(ctx, cx, cy, rw, rh, s.rot, t);
+          }
+        }
+      }
+
+      // ─── Drawing: Moss ────────────────────────────────
+      function drawMoss(ctx, cx, cy, rw, rh, rot, t) {
+        const mossRng = mulberry32(cx * 100 + cy);
+        const numPatches = 3 + (mossRng() * 4) | 0;
+
+        for (let i = 0; i < numPatches; i++) {
+          const angle = rot + Math.PI * 0.4 + mossRng() * Math.PI * 0.8;
+          const dist = Math.max(rw, rh) * (1.1 + mossRng() * 0.5);
+          const mx = cx + Math.cos(angle) * dist;
+          const my = cy + Math.sin(angle) * dist * 0.7;
+          const mr = 3 + mossRng() * 6;
+
+          const pulse = 0.85 + 0.15 * Math.sin(t * 0.3 + i * 1.7);
+          const color = mossRng() > 0.5 ? MOSS_DARK : MOSS_LIGHT;
+
+          const grad = ctx.createRadialGradient(mx, my, 0, mx, my, mr);
+          grad.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${0.5 * pulse})`);
+          grad.addColorStop(0.6, `rgba(${color[0]},${color[1]},${color[2]},${0.25 * pulse})`);
+          grad.addColorStop(1, `rgba(${color[0]},${color[1]},${color[2]},0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(mx, my, mr, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── Drawing: Pool ────────────────────────────────
+      function drawPool(ctx, w, h, time) {
+        const t = time / 1000;
+        const cx = POOL.fx * w;
+        const cy = POOL.fy * h;
+        const rx = POOL.rw * w;
+        const ry = POOL.rh * h;
+
+        // Pool base
+        const poolGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
+        poolGrad.addColorStop(0, `rgba(${POOL_COLOR[0]},${POOL_COLOR[1]},${POOL_COLOR[2]},0.35)`);
+        poolGrad.addColorStop(0.7, `rgba(${POOL_COLOR[0]},${POOL_COLOR[1]},${POOL_COLOR[2]},0.2)`);
+        poolGrad.addColorStop(1, `rgba(${POOL_COLOR[0]},${POOL_COLOR[1]},${POOL_COLOR[2]},0)`);
+        ctx.fillStyle = poolGrad;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Ripple rings
+        const numRipples = 3;
+        for (let i = 0; i < numRipples; i++) {
+          const ripplePhase = (t * 0.15 + i * 0.33) % 1;
+          const rippleR = ripplePhase * Math.max(rx, ry) * 0.8;
+          const alpha = (1 - ripplePhase) * 0.08;
+
+          ctx.strokeStyle = `rgba(200,210,215,${alpha})`;
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.ellipse(cx - rx * 0.1, cy - ry * 0.1, rippleR * 1.2, rippleR * 0.8, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // ─── Drawing: Falling Leaf ────────────────────────
+      function updateLeaf(dt, w, h, time) {
+        const t = time / 1000;
+
+        if (!leaf) {
+          leafTimer -= dt;
+          if (leafTimer <= 0) {
+            spawnLeaf(w, h);
+          }
+          return;
+        }
+
+        leaf.x += leaf.vx * dt;
+        leaf.y += leaf.vy * dt;
+        leaf.rot += leaf.spin * dt;
+
+        // Gentle side-to-side wobble
+        leaf.x += Math.sin(t * 1.5 + leaf.wobblePhase) * 12 * dt;
+
+        // Remove when off-screen
+        if (leaf.y > h + 30 || leaf.x < -40 || leaf.x > w + 40) {
+          leaf = null;
+          leafTimer = 12 + rng() * 20;
+        }
+      }
+
+      function drawLeaf(ctx, time) {
+        if (!leaf) return;
+        const t = time / 1000;
+
+        ctx.save();
+        ctx.translate(leaf.x, leaf.y);
+        ctx.rotate(leaf.rot);
+
+        const s = leaf.size;
+        const alpha = 0.7;
+
+        // Leaf body
+        ctx.fillStyle = `rgba(${LEAF_COLOR[0]},${LEAF_COLOR[1]},${LEAF_COLOR[2]},${alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, s, s * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Center vein
+        ctx.strokeStyle = `rgba(${LEAF_COLOR[0] - 30},${LEAF_COLOR[1] - 20},${LEAF_COLOR[2] - 10},${alpha * 0.5})`;
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.7, 0);
+        ctx.lineTo(s * 0.7, 0);
+        ctx.stroke();
+
+        // Shadow beneath the leaf on the sand
+        ctx.fillStyle = `rgba(0,0,0,0.06)`;
+        ctx.beginPath();
+        ctx.ellipse(3, 4, s * 0.9, s * 0.35, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+
+      // ─── Drawing: Cloud Shadow ────────────────────────
+      function drawCloudShadow(ctx, w, h, time) {
+        const t = time / 1000;
+
+        cloudX += cloudSpeed * (1 / 60); // roughly per frame
+        if (cloudX > 1.5) {
+          cloudX = -0.5;
+          cloudSpeed = 0.005 + rng() * 0.008;
+        }
+
+        const cx = cloudX * w;
+        const cy = h * 0.4 + Math.sin(t * 0.05) * h * 0.05;
+        const rx = w * 0.25;
+        const ry = h * 0.18;
+
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
+        grad.addColorStop(0, `rgba(0,0,0,0.04)`);
+        grad.addColorStop(0.6, `rgba(0,0,0,0.02)`);
+        grad.addColorStop(1, `rgba(0,0,0,0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ─── Drawing: Border / edge fade ──────────────────
+      function drawEdgeFade(ctx, w, h) {
+        // Subtle dark vignette at edges for framing
+        const size = Math.max(w, h) * 0.6;
+        const grad = ctx.createRadialGradient(w / 2, h / 2, size * 0.5, w / 2, h / 2, size);
+        grad.addColorStop(0, `rgba(0,0,0,0)`);
+        grad.addColorStop(1, `rgba(0,0,0,0.15)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'density',
+          colorScheme: 'mono',
+          background: '#0a0908',
+          sourceOpacity: 0,
+        },
+        layers: [
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'mono',
+            blendMode: 'add',
+            opacity: 0.15,
+          },
+          {
+            fontSize: 10,
+            charset: 'density',
+            edgeDetect: true,
+            edgeThreshold: 0.15,
+            edgeCharset: 'box-light',
+            blendMode: 'add',
+            opacity: 0.12,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          drawSand(ctx, w, h, time);
+          drawRakeLines(ctx, w, h, time);
+          drawPool(ctx, w, h, time);
+          drawCloudShadow(ctx, w, h, time);
+          drawStones(ctx, w, h, time);
+          updateLeaf(dt, w, h, time);
+          drawLeaf(ctx, time);
+          drawEdgeFade(ctx, w, h);
+        },
+        onResize(ctx, w, h) {
+          // Layout is fractional so it adapts automatically
+        },
+      });
+    </script>
+  </body>
+</html>

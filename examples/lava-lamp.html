@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Lava Lamp</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp } from './utils.js';
+
+      // ─── Offscreen Canvas for Metaball Rendering ────
+      const offscreen = document.createElement('canvas');
+      const offCtx = offscreen.getContext('2d');
+      let offW = 0, offH = 0;
+      let imgData = null;
+
+      const SCALE = 0.3; // render at 30% resolution
+
+      // ─── Lamp Container Geometry ────────────────────
+      // Returns the left and right x boundaries of the lamp at a given y (0=top, 1=bottom)
+      // Classic lava lamp: wide base, narrow waist, wider top cap, tapering neck
+      function lampRadius(t) {
+        // t: 0 = top, 1 = bottom
+        // base (bottom): wide
+        // lower body: tapers inward
+        // waist (middle): narrow
+        // upper body: widens
+        // top cap: rounded dome
+
+        if (t > 0.92) {
+          // base platform — flat wide
+          const s = (t - 0.92) / 0.08;
+          return lerp(0.38, 0.42, s);
+        }
+        if (t > 0.85) {
+          // base-to-body transition
+          const s = (t - 0.85) / 0.07;
+          return lerp(0.34, 0.38, s * s);
+        }
+        if (t > 0.55) {
+          // lower body — wide, slight taper up
+          const s = (t - 0.55) / 0.30;
+          return lerp(0.28, 0.34, s * s);
+        }
+        if (t > 0.35) {
+          // waist — narrowest
+          const s = (t - 0.35) / 0.20;
+          const mid = 0.26;
+          return lerp(0.28, mid, Math.sin(s * Math.PI));
+        }
+        if (t > 0.15) {
+          // upper body
+          const s = (t - 0.15) / 0.20;
+          return lerp(0.30, 0.28, s);
+        }
+        if (t > 0.08) {
+          // neck to cap
+          const s = (t - 0.08) / 0.07;
+          return lerp(0.14, 0.30, Math.sqrt(s));
+        }
+        // top cap / dome
+        const s = t / 0.08;
+        return lerp(0.04, 0.14, Math.sqrt(s));
+      }
+
+      // Check if a normalized point (0-1, 0-1) is inside the lamp
+      function isInsideLamp(nx, ny) {
+        const r = lampRadius(ny);
+        const dx = Math.abs(nx - 0.5);
+        return dx < r;
+      }
+
+      // ─── Blob Setup ─────────────────────────────────
+      const NUM_BLOBS = 10;
+      const blobs = [];
+
+      function initBlobs() {
+        blobs.length = 0;
+        for (let i = 0; i < NUM_BLOBS; i++) {
+          blobs.push({
+            // normalized coordinates (0-1)
+            x: 0.5 + (Math.random() - 0.5) * 0.25,
+            y: 0.3 + Math.random() * 0.55,
+            vx: (Math.random() - 0.5) * 0.01,
+            vy: (Math.random() - 0.5) * 0.01,
+            radius: 0.035 + Math.random() * 0.035, // normalized radius
+            heat: Math.random(),
+          });
+        }
+      }
+      initBlobs();
+
+      // ─── Blob Physics ───────────────────────────────
+      function updateBlobs(dt) {
+        for (const blob of blobs) {
+          // Heat based on vertical position: bottom is hot, top is cold
+          // ny=1 is bottom, ny=0 is top
+          const heatTarget = blob.y > 0.7 ? 1.0 : blob.y < 0.25 ? 0.0 : 0.5;
+          blob.heat = lerp(blob.heat, heatTarget, dt * 0.8);
+
+          // Buoyancy: hot blobs rise (negative vy), cold blobs sink
+          const buoyancy = (blob.heat - 0.45) * -0.06;
+          blob.vy += buoyancy * dt;
+
+          // Random horizontal drift
+          blob.vx += (Math.random() - 0.5) * 0.02 * dt;
+
+          // Gentle attraction toward center x
+          blob.vx += (0.5 - blob.x) * 0.01 * dt;
+
+          // Damping
+          blob.vx *= 0.995;
+          blob.vy *= 0.995;
+
+          // Clamp velocity
+          const maxV = 0.08;
+          blob.vx = clamp(blob.vx, -maxV, maxV);
+          blob.vy = clamp(blob.vy, -maxV, maxV);
+
+          // Move
+          blob.x += blob.vx * dt;
+          blob.y += blob.vy * dt;
+
+          // Bounce off lamp container walls
+          const r = blob.radius * 0.6;
+          const wallR = lampRadius(blob.y);
+
+          // Horizontal containment
+          const leftWall = 0.5 - wallR + r;
+          const rightWall = 0.5 + wallR - r;
+          if (blob.x < leftWall) {
+            blob.x = leftWall;
+            blob.vx = Math.abs(blob.vx) * 0.5;
+          }
+          if (blob.x > rightWall) {
+            blob.x = rightWall;
+            blob.vx = -Math.abs(blob.vx) * 0.5;
+          }
+
+          // Vertical containment
+          if (blob.y < 0.10 + r) {
+            blob.y = 0.10 + r;
+            blob.vy = Math.abs(blob.vy) * 0.3;
+            blob.heat = 0; // cool at top
+          }
+          if (blob.y > 0.88 - r) {
+            blob.y = 0.88 - r;
+            blob.vy = -Math.abs(blob.vy) * 0.3;
+            blob.heat = 1; // heat at bottom
+          }
+        }
+      }
+
+      // ─── Color Helpers ──────────────────────────────
+      function blobColor(ny) {
+        // Bottom: deep red, Top: bright orange/yellow
+        // ny: 0=top, 1=bottom
+        const t = 1 - ny; // invert so 0=bottom, 1=top
+        const r = lerp(180, 255, t);
+        const g = lerp(20, 200, t * t);
+        const b = lerp(5, 30, t);
+        return [r, g, b];
+      }
+
+      // ─── Rendering ─────────────────────────────────
+      function renderLamp(ctx, width, height) {
+        // Resize offscreen if needed
+        const w = Math.ceil(width * SCALE);
+        const h = Math.ceil(height * SCALE);
+        if (w !== offW || h !== offH) {
+          offW = w;
+          offH = h;
+          offscreen.width = w;
+          offscreen.height = h;
+          imgData = offCtx.createImageData(w, h);
+        }
+
+        const data = imgData.data;
+        const aspect = width / height;
+
+        // Precompute blob positions in pixel space
+        const blobsPx = blobs.map(b => ({
+          px: b.x * w,
+          py: b.y * h,
+          r2: (b.radius * h) * (b.radius * h), // radius squared in pixel units
+          ny: b.y,
+        }));
+
+        // Metaball threshold
+        const threshold = 1.0;
+
+        for (let py = 0; py < h; py++) {
+          const ny = py / h; // normalized y
+
+          for (let px = 0; px < w; px++) {
+            const nx = px / w; // normalized x
+            const pi = (py * w + px) << 2;
+
+            // Background: deep warm dark
+            let r = 10, g = 0, b = 8;
+
+            // Check if inside lamp
+            if (isInsideLamp(nx, ny)) {
+              // Compute metaball field
+              let field = 0;
+              let weightedNy = 0;
+              let totalWeight = 0;
+
+              for (const blob of blobsPx) {
+                const dx = px - blob.px;
+                const dy = py - blob.py;
+                const d2 = dx * dx + dy * dy;
+                const contribution = blob.r2 / (d2 + 1);
+                field += contribution;
+                if (contribution > 0.01) {
+                  weightedNy += blob.ny * contribution;
+                  totalWeight += contribution;
+                }
+              }
+
+              if (field > threshold) {
+                // Inside a blob — color based on weighted y position
+                const blobY = totalWeight > 0 ? weightedNy / totalWeight : ny;
+                const [cr, cg, cb] = blobColor(blobY);
+
+                // Intensity based on how far above threshold
+                const intensity = clamp((field - threshold) / (threshold * 2), 0, 1);
+                const glow = 0.7 + 0.3 * intensity;
+
+                r = cr * glow;
+                g = cg * glow;
+                b = cb * glow;
+              } else if (field > threshold * 0.4) {
+                // Edge glow around blobs
+                const edgeT = (field - threshold * 0.4) / (threshold * 0.6);
+                const blobY = totalWeight > 0 ? weightedNy / totalWeight : ny;
+                const [cr, cg, cb] = blobColor(blobY);
+
+                r = lerp(25, cr * 0.5, edgeT);
+                g = lerp(5, cg * 0.3, edgeT);
+                b = lerp(18, cb * 0.3, edgeT);
+              } else {
+                // Inside lamp but not in blob — dark liquid
+                // Slight warm tint with subtle variation
+                r = 25 + Math.sin(ny * 6) * 5;
+                g = 5;
+                b = 18;
+              }
+
+              // Lamp glass inner highlight (near edges)
+              const wallR = lampRadius(ny);
+              const distFromCenter = Math.abs(nx - 0.5);
+              const edgeDist = wallR - distFromCenter;
+              if (edgeDist < 0.03 && edgeDist > 0) {
+                const edgeT = 1 - edgeDist / 0.03;
+                const highlight = edgeT * edgeT * 30;
+                r = Math.min(255, r + highlight * 0.8);
+                g = Math.min(255, g + highlight * 0.5);
+                b = Math.min(255, b + highlight * 0.9);
+              }
+            } else {
+              // Outside lamp — ambient glow
+              const wallR = lampRadius(ny);
+              const distFromCenter = Math.abs(nx - 0.5);
+              const distFromWall = distFromCenter - wallR;
+
+              if (distFromWall < 0.08 && ny > 0.05 && ny < 0.95) {
+                const glowT = 1 - distFromWall / 0.08;
+                const glowIntensity = glowT * glowT * 0.4;
+
+                // Glow color based on nearby blob brightness
+                let nearField = 0;
+                let nearNy = ny;
+                let nearWeight = 0;
+                for (const blob of blobsPx) {
+                  const dx = px - blob.px;
+                  const dy = py - blob.py;
+                  const d2 = dx * dx + dy * dy;
+                  const c = blob.r2 / (d2 + 1);
+                  nearField += c;
+                  nearNy += blob.ny * c;
+                  nearWeight += c;
+                }
+                if (nearWeight > 0) nearNy /= nearWeight;
+
+                const [cr, cg, cb] = blobColor(nearNy);
+                const gMul = glowIntensity * clamp(nearField * 0.3, 0.1, 0.6);
+                r = cr * gMul;
+                g = cg * gMul * 0.5;
+                b = cb * gMul * 0.3;
+              }
+
+              // Glass outline
+              if (Math.abs(distFromWall) < 0.008 && ny > 0.03 && ny < 0.94) {
+                r = Math.min(255, r + 40);
+                g = Math.min(255, g + 25);
+                b = Math.min(255, b + 50);
+              }
+            }
+
+            data[pi]     = clamp(r, 0, 255) | 0;
+            data[pi + 1] = clamp(g, 0, 255) | 0;
+            data[pi + 2] = clamp(b, 0, 255) | 0;
+            data[pi + 3] = 255;
+          }
+        }
+
+        // Draw offscreen buffer then scale up
+        offCtx.putImageData(imgData, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(offscreen, 0, 0, width, height);
+      }
+
+      // ─── Draw Glass Container Overlay ───────────────
+      function drawGlassOverlay(ctx, width, height) {
+        ctx.save();
+
+        // Draw glass container outline
+        ctx.beginPath();
+        const steps = 80;
+        // Right side
+        for (let i = 0; i <= steps; i++) {
+          const ny = i / steps;
+          const r = lampRadius(ny);
+          const x = (0.5 + r) * width;
+          const y = ny * height;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        // Left side (reversed)
+        for (let i = steps; i >= 0; i--) {
+          const ny = i / steps;
+          const r = lampRadius(ny);
+          const x = (0.5 - r) * width;
+          const y = ny * height;
+          ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+
+        // Glass border with gradient
+        const grad = ctx.createLinearGradient(0, 0, width, 0);
+        grad.addColorStop(0, 'rgba(80, 50, 100, 0.0)');
+        grad.addColorStop(0.3, 'rgba(120, 80, 140, 0.15)');
+        grad.addColorStop(0.5, 'rgba(100, 70, 120, 0.05)');
+        grad.addColorStop(0.7, 'rgba(140, 100, 160, 0.2)');
+        grad.addColorStop(1, 'rgba(80, 50, 100, 0.0)');
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Specular highlight on left side of glass
+        ctx.beginPath();
+        for (let i = 3; i <= steps - 3; i++) {
+          const ny = i / steps;
+          const r = lampRadius(ny);
+          const x = (0.5 - r * 0.85) * width;
+          const y = ny * height;
+          if (i === 3) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        const specGrad = ctx.createLinearGradient(0, 0, 0, height);
+        specGrad.addColorStop(0, 'rgba(200, 180, 220, 0.0)');
+        specGrad.addColorStop(0.2, 'rgba(200, 180, 220, 0.06)');
+        specGrad.addColorStop(0.5, 'rgba(200, 180, 220, 0.03)');
+        specGrad.addColorStop(0.8, 'rgba(200, 180, 220, 0.06)');
+        specGrad.addColorStop(1, 'rgba(200, 180, 220, 0.0)');
+        ctx.strokeStyle = specGrad;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      // ─── Create App ─────────────────────────────────
+      createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'blocks',
+          colorScheme: 'fire',
+          background: '#0a0008',
+          sourceOpacity: 0,
+        },
+        layers: [
+          {
+            fontSize: 5,
+            charset: 'braille',
+            colorScheme: 'vapor',
+            blendMode: 'add',
+            opacity: 0.3,
+          },
+        ],
+        draw(ctx, { time, dt, width, height }) {
+          // Clear
+          ctx.fillStyle = '#0a0008';
+          ctx.fillRect(0, 0, width, height);
+
+          // Update blob physics
+          updateBlobs(dt);
+
+          // Render metaballs to offscreen, then scale up
+          renderLamp(ctx, width, height);
+
+          // Glass overlay on top
+          drawGlassOverlay(ctx, width, height);
+        },
+        onResize(ctx, w, h) {
+          // Reset offscreen dimensions on resize
+          offW = 0;
+          offH = 0;
+        },
+      });
+    </script>
+  </body>
+</html>
