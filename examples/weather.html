@@ -1,0 +1,996 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Weather Machine</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb, lerpColor, mulberry32 } from './utils.js';
+
+      // ─── Weather States ────────────────────────────────
+      const WEATHER = {
+        CLEAR: 0,
+        CLOUDY: 1,
+        RAIN: 2,
+        THUNDER: 3,
+        SNOW: 4,
+        FOG: 5,
+      };
+
+      const WEATHER_NAMES = ['Clear', 'Cloudy', 'Rain', 'Thunderstorm', 'Snow', 'Fog'];
+
+      // ─── Weather Parameters ────────────────────────────
+      // Each weather state defines target values for every animatable parameter.
+      // During transitions all values are lerped between previous and next state.
+      const WEATHER_PARAMS = [
+        // 0: Clear (Sunny)
+        {
+          skyTop: [70, 130, 210],
+          skyBot: [140, 190, 240],
+          groundBase: [45, 90, 35],
+          groundDark: [30, 65, 25],
+          hillColor1: [35, 75, 30],
+          hillColor2: [40, 85, 35],
+          hillColor3: [50, 100, 42],
+          sunBrightness: 1.0,
+          sunColor: [255, 240, 180],
+          sunGlowRadius: 120,
+          cloudCount: 0,
+          cloudOpacity: 0,
+          fogDensity: 0,
+          rainRate: 0,
+          snowRate: 0,
+          dustRate: 2,
+          fogBlobRate: 0,
+          fontSize: 8,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          pattern: null,
+          patternMix: 0,
+          crtEnabled: false,
+          crtGlow: 0,
+          crtScanlines: 0,
+          crtFlicker: 0,
+          crtDistortion: 0,
+          edgeOpacity: 0.15,
+          overlayOpacity: 0.05,
+          overlayPattern: null,
+          overlayPatternMix: 0,
+        },
+        // 1: Cloudy
+        {
+          skyTop: [80, 95, 120],
+          skyBot: [110, 120, 135],
+          groundBase: [38, 72, 32],
+          groundDark: [25, 55, 22],
+          hillColor1: [30, 62, 28],
+          hillColor2: [34, 70, 32],
+          hillColor3: [42, 82, 38],
+          sunBrightness: 0.3,
+          sunColor: [220, 210, 180],
+          sunGlowRadius: 80,
+          cloudCount: 8,
+          cloudOpacity: 0.7,
+          fogDensity: 0,
+          rainRate: 0,
+          snowRate: 0,
+          dustRate: 0.5,
+          fogBlobRate: 0,
+          fontSize: 9,
+          charset: 'density',
+          colorScheme: 'mono',
+          pattern: 'breathing',
+          patternMix: 0.15,
+          crtEnabled: true,
+          crtGlow: 0,
+          crtScanlines: 0.15,
+          crtFlicker: 0,
+          crtDistortion: 0,
+          edgeOpacity: 0.2,
+          overlayOpacity: 0.1,
+          overlayPattern: 'breathing',
+          overlayPatternMix: 0.2,
+        },
+        // 2: Rain
+        {
+          skyTop: [40, 48, 58],
+          skyBot: [60, 68, 78],
+          groundBase: [28, 50, 30],
+          groundDark: [18, 38, 20],
+          hillColor1: [22, 45, 26],
+          hillColor2: [26, 52, 30],
+          hillColor3: [32, 60, 36],
+          sunBrightness: 0.05,
+          sunColor: [180, 175, 170],
+          sunGlowRadius: 40,
+          cloudCount: 12,
+          cloudOpacity: 0.9,
+          fogDensity: 0.05,
+          rainRate: 120,
+          snowRate: 0,
+          dustRate: 0,
+          fogBlobRate: 0,
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          pattern: 'waves',
+          patternMix: 0.12,
+          crtEnabled: true,
+          crtGlow: 0.15,
+          crtScanlines: 0.2,
+          crtFlicker: 0.02,
+          crtDistortion: 0,
+          edgeOpacity: 0.1,
+          overlayOpacity: 0.15,
+          overlayPattern: 'waves',
+          overlayPatternMix: 0.3,
+        },
+        // 3: Thunderstorm
+        {
+          skyTop: [15, 15, 22],
+          skyBot: [25, 28, 38],
+          groundBase: [18, 35, 22],
+          groundDark: [10, 22, 14],
+          hillColor1: [14, 30, 18],
+          hillColor2: [18, 35, 22],
+          hillColor3: [22, 42, 28],
+          sunBrightness: 0,
+          sunColor: [100, 100, 110],
+          sunGlowRadius: 20,
+          cloudCount: 16,
+          cloudOpacity: 0.95,
+          fogDensity: 0.08,
+          rainRate: 200,
+          snowRate: 0,
+          dustRate: 0,
+          fogBlobRate: 0,
+          fontSize: 8,
+          charset: 'density',
+          colorScheme: 'ocean',
+          pattern: 'waves',
+          patternMix: 0.2,
+          crtEnabled: true,
+          crtGlow: 0.3,
+          crtScanlines: 0.3,
+          crtFlicker: 0.08,
+          crtDistortion: 0.05,
+          edgeOpacity: 0.25,
+          overlayOpacity: 0.2,
+          overlayPattern: 'plasma',
+          overlayPatternMix: 0.25,
+        },
+        // 4: Snow
+        {
+          skyTop: [160, 165, 175],
+          skyBot: [190, 195, 200],
+          groundBase: [180, 185, 195],
+          groundDark: [150, 155, 165],
+          hillColor1: [140, 148, 160],
+          hillColor2: [155, 162, 172],
+          hillColor3: [170, 176, 185],
+          sunBrightness: 0.2,
+          sunColor: [220, 225, 235],
+          sunGlowRadius: 70,
+          cloudCount: 6,
+          cloudOpacity: 0.5,
+          fogDensity: 0.1,
+          rainRate: 0,
+          snowRate: 40,
+          dustRate: 0,
+          fogBlobRate: 0,
+          fontSize: 10,
+          charset: 'minimal',
+          colorScheme: 'vapor',
+          pattern: 'diamond',
+          patternMix: 0.08,
+          crtEnabled: true,
+          crtGlow: 0.2,
+          crtScanlines: 0.05,
+          crtFlicker: 0,
+          crtDistortion: 0,
+          edgeOpacity: 0.1,
+          overlayOpacity: 0.15,
+          overlayPattern: 'diamond',
+          overlayPatternMix: 0.15,
+        },
+        // 5: Fog
+        {
+          skyTop: [120, 125, 130],
+          skyBot: [135, 138, 140],
+          groundBase: [100, 105, 108],
+          groundDark: [90, 95, 98],
+          hillColor1: [95, 100, 104],
+          hillColor2: [105, 110, 114],
+          hillColor3: [115, 118, 122],
+          sunBrightness: 0.08,
+          sunColor: [180, 180, 180],
+          sunGlowRadius: 100,
+          cloudCount: 4,
+          cloudOpacity: 0.3,
+          fogDensity: 0.6,
+          rainRate: 0,
+          snowRate: 0,
+          dustRate: 0,
+          fogBlobRate: 3,
+          fontSize: 14,
+          charset: 'blocks',
+          colorScheme: 'mono',
+          pattern: 'breathing',
+          patternMix: 0.45,
+          crtEnabled: true,
+          crtGlow: 0.1,
+          crtScanlines: 0.05,
+          crtFlicker: 0.01,
+          crtDistortion: 0.08,
+          edgeOpacity: 0.05,
+          overlayOpacity: 0.35,
+          overlayPattern: 'breathing',
+          overlayPatternMix: 0.5,
+        },
+      ];
+
+      // ─── Transition State ──────────────────────────────
+      let currentWeather = WEATHER.CLEAR;
+      let prevWeather = WEATHER.CLEAR;
+      let transitionT = 1; // 0 = at prevWeather, 1 = at currentWeather
+      const TRANSITION_SPEED = 0.5; // completes in ~2 seconds
+
+      // Snapshot slot for mid-transition switching
+      const snapshotSlot = {};
+      for (const key of Object.keys(WEATHER_PARAMS[0])) {
+        const v = WEATHER_PARAMS[0][key];
+        snapshotSlot[key] = Array.isArray(v) ? [...v] : v;
+      }
+      let usingSnapshot = false;
+
+      // Interpolated parameter state
+      const wp = {};
+      for (const key of Object.keys(WEATHER_PARAMS[0])) {
+        const v = WEATHER_PARAMS[0][key];
+        wp[key] = Array.isArray(v) ? [...v] : v;
+      }
+
+      function lerpParam(key, from, to, t) {
+        const a = from[key];
+        const b = to[key];
+        if (Array.isArray(a)) return lerpColor(a, b, t);
+        if (typeof a === 'number') return lerp(a, b, t);
+        // For non-numeric values (strings, bools, null) snap at halfway
+        return t < 0.5 ? a : b;
+      }
+
+      function updateWeatherParams(dt) {
+        if (transitionT < 1) {
+          transitionT = clamp(transitionT + TRANSITION_SPEED * dt, 0, 1);
+        }
+
+        const t = smoothstep(0, 1, transitionT);
+        const from = usingSnapshot ? snapshotSlot : WEATHER_PARAMS[prevWeather];
+        const to = WEATHER_PARAMS[currentWeather];
+
+        for (const key of Object.keys(to)) {
+          wp[key] = lerpParam(key, from, to, t);
+        }
+      }
+
+      function switchWeather(index) {
+        if (index === currentWeather && transitionT >= 1) return;
+
+        // If mid-transition, snapshot the current interpolated state
+        if (transitionT < 1) {
+          for (const key of Object.keys(wp)) {
+            snapshotSlot[key] = Array.isArray(wp[key]) ? [...wp[key]] : wp[key];
+          }
+          usingSnapshot = true;
+        } else {
+          prevWeather = currentWeather;
+          usingSnapshot = false;
+        }
+
+        currentWeather = index;
+        transitionT = 0;
+        hudAlpha = 1.2;
+      }
+
+      // ─── Landscape Geometry (generated on resize) ─────
+      const rng = mulberry32(42);
+      let trees = [];
+      const hills = [];
+
+      function initLandscape(w, h) {
+        trees = [];
+        hills.length = 0;
+
+        // Generate 3 hill layers
+        for (let layer = 0; layer < 3; layer++) {
+          const points = [];
+          const baseY = h * (0.52 + layer * 0.1);
+          const amp = 30 + layer * 15;
+          const freq1 = 0.003 + layer * 0.001;
+          const freq2 = 0.008 - layer * 0.001;
+          const seed = layer * 137;
+          for (let x = 0; x <= w; x += 3) {
+            const y = baseY
+              + Math.sin(x * freq1 + seed) * amp
+              + Math.sin(x * freq2 + seed * 2.3) * (amp * 0.5)
+              + Math.sin(x * 0.015 + seed * 0.7) * (amp * 0.25);
+            points.push({ x, y });
+          }
+          hills.push({ points, baseY, layer });
+        }
+
+        // Generate trees on the hills
+        for (let i = 0; i < 15; i++) {
+          const x = rng() * w;
+          const hillLayer = Math.floor(rng() * 3);
+          const hillPts = hills[hillLayer].points;
+          const idx = clamp(Math.round(x / 3), 0, hillPts.length - 1);
+          const baseY = hillPts[idx].y;
+          trees.push({
+            x,
+            baseY,
+            height: 25 + rng() * 45,
+            width: 12 + rng() * 18,
+            layer: hillLayer,
+          });
+        }
+        trees.sort((a, b) => a.baseY - b.baseY);
+      }
+
+      // ─── Clouds ────────────────────────────────────────
+      const MAX_CLOUDS = 20;
+      const clouds = [];
+
+      function initClouds(w) {
+        clouds.length = 0;
+        for (let i = 0; i < MAX_CLOUDS; i++) {
+          clouds.push({
+            x: rng() * w * 1.5 - w * 0.25,
+            y: 0.05 + rng() * 0.22,
+            w: 80 + rng() * 200,
+            h: 30 + rng() * 50,
+            speed: 8 + rng() * 20,
+            opacity: 0.4 + rng() * 0.5,
+            layers: Math.floor(2 + rng() * 3),
+            offsets: Array.from({ length: 5 }, () => ({
+              dx: (rng() - 0.5) * 0.8,
+              dy: (rng() - 0.5) * 0.4,
+              sw: 0.5 + rng() * 0.5,
+              sh: 0.4 + rng() * 0.6,
+            })),
+          });
+        }
+      }
+
+      // ─── Particles ─────────────────────────────────────
+      const rainPool = new ParticlePool({ maxParticles: 3000, gravity: 0, drag: 1 });
+      const snowPool = new ParticlePool({ maxParticles: 1500, gravity: 0, drag: 1 });
+      const dustPool = new ParticlePool({ maxParticles: 200, gravity: 0, drag: 0.999 });
+      const fogPool = new ParticlePool({ maxParticles: 100, gravity: 0, drag: 1 });
+
+      function spawnRain(dt, w, h, rate) {
+        if (rate <= 0) return;
+        const count = Math.floor(rate * dt + (Math.random() < (rate * dt % 1) ? 1 : 0));
+        const windAngle = rate > 150 ? 0.25 : 0.12;
+        rainPool.emit(count, () => ({
+          x: Math.random() * (w + 100) - 50,
+          y: -10 - Math.random() * 40,
+          vx: 30 * windAngle + (Math.random() - 0.5) * 15,
+          vy: 500 + Math.random() * 300,
+          life: 1.5 + Math.random() * 0.8,
+          size: 1 + Math.random() * 1.5,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      function spawnSnow(dt, w, h, rate) {
+        if (rate <= 0) return;
+        const count = Math.floor(rate * dt + (Math.random() < (rate * dt % 1) ? 1 : 0));
+        snowPool.emit(count, () => ({
+          x: Math.random() * (w + 60) - 30,
+          y: -10 - Math.random() * 30,
+          vx: (Math.random() - 0.5) * 20,
+          vy: 30 + Math.random() * 40,
+          life: 6 + Math.random() * 6,
+          size: 1.5 + Math.random() * 3,
+          phase: Math.random() * Math.PI * 2,
+          wobbleFreq: 0.8 + Math.random() * 1.5,
+          wobbleAmp: 20 + Math.random() * 40,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      function spawnDust(dt, w, h, rate) {
+        if (rate <= 0) return;
+        const count = Math.floor(rate * dt + (Math.random() < (rate * dt % 1) ? 1 : 0));
+        dustPool.emit(count, () => ({
+          x: Math.random() * w,
+          y: Math.random() * h * 0.7,
+          vx: (Math.random() - 0.3) * 15,
+          vy: -3 + Math.random() * 6,
+          life: 4 + Math.random() * 5,
+          size: 1 + Math.random() * 2,
+          phase: Math.random() * Math.PI * 2,
+          gravity: -2,
+          drag: 0.998,
+        }));
+      }
+
+      function spawnFogBlobs(dt, w, h, rate) {
+        if (rate <= 0) return;
+        const count = Math.floor(rate * dt + (Math.random() < (rate * dt % 1) ? 1 : 0));
+        fogPool.emit(count, () => ({
+          x: Math.random() > 0.5 ? -80 : w + 80,
+          y: h * 0.2 + Math.random() * h * 0.6,
+          vx: (Math.random() - 0.5) * 25,
+          vy: (Math.random() - 0.5) * 8,
+          life: 8 + Math.random() * 10,
+          size: 60 + Math.random() * 120,
+          alpha: 0.05 + Math.random() * 0.08,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      // ─── Lightning System ──────────────────────────────
+      let lightningTimer = 0;
+      let lightningFlash = 0;
+      let lightningBolts = [];
+      let nextLightningTime = 3 + Math.random() * 5;
+
+      function updateLightning(dt, w, h) {
+        if (currentWeather !== WEATHER.THUNDER && transitionT >= 1) {
+          lightningFlash = Math.max(0, lightningFlash - dt * 4);
+          lightningBolts = [];
+          return;
+        }
+
+        const thunderAmount = currentWeather === WEATHER.THUNDER ? transitionT : 0;
+        if (thunderAmount < 0.3) {
+          lightningFlash = Math.max(0, lightningFlash - dt * 4);
+          return;
+        }
+
+        lightningTimer += dt;
+        lightningFlash = Math.max(0, lightningFlash - dt * 3.5);
+
+        if (lightningTimer >= nextLightningTime) {
+          lightningTimer = 0;
+          nextLightningTime = 2.5 + Math.random() * 5;
+          lightningFlash = 0.8 + Math.random() * 0.2;
+
+          lightningBolts = [];
+          const startX = w * (0.2 + Math.random() * 0.6);
+          const startY = 0;
+          const endY = h * (0.4 + Math.random() * 0.3);
+          let cx = startX, cy = startY;
+          const steps = 8 + Math.floor(Math.random() * 8);
+          const stepY = (endY - startY) / steps;
+
+          for (let i = 0; i < steps; i++) {
+            const nx = cx + (Math.random() - 0.5) * 80;
+            const ny = cy + stepY + (Math.random() - 0.5) * 10;
+            lightningBolts.push({ x1: cx, y1: cy, x2: nx, y2: ny });
+
+            if (Math.random() < 0.3 && i > 2) {
+              const bx = nx + (Math.random() - 0.5) * 60;
+              const by = ny + stepY * (0.5 + Math.random());
+              lightningBolts.push({ x1: nx, y1: ny, x2: bx, y2: by });
+            }
+
+            cx = nx;
+            cy = ny;
+          }
+        }
+      }
+
+      // ─── Snow Accumulation ─────────────────────────────
+      let snowAccumulation = 0;
+
+      // ─── Drawing Functions ─────────────────────────────
+
+      function drawSky(ctx, w, h) {
+        const grad = ctx.createLinearGradient(0, 0, 0, h * 0.6);
+        grad.addColorStop(0, rgb(wp.skyTop));
+        grad.addColorStop(1, rgb(wp.skyBot));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawSun(ctx, w, h) {
+        if (wp.sunBrightness < 0.02) return;
+        const sunX = w * 0.75;
+        const sunY = h * 0.18;
+        const r = wp.sunGlowRadius;
+        const b = wp.sunBrightness;
+
+        const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, r);
+        glow.addColorStop(0, rgb(wp.sunColor, 0.9 * b));
+        glow.addColorStop(0.3, rgb(wp.sunColor, 0.3 * b));
+        glow.addColorStop(1, rgb(wp.sunColor, 0));
+        ctx.fillStyle = glow;
+        ctx.fillRect(sunX - r, sunY - r, r * 2, r * 2);
+
+        if (b > 0.1) {
+          ctx.fillStyle = rgb(wp.sunColor, Math.min(b, 0.95));
+          ctx.beginPath();
+          ctx.arc(sunX, sunY, 16 * Math.sqrt(b), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawHills(ctx, w, h) {
+        for (let i = 0; i < 3; i++) {
+          const hill = hills[i];
+          if (!hill) continue;
+
+          const colorKey = 'hillColor' + (i + 1);
+          const color = wp[colorKey];
+
+          const snowMix = clamp(snowAccumulation * (1 - i * 0.2), 0, 1);
+          const finalColor = lerpColor(color, [200, 205, 215], snowMix);
+
+          const fogAmount = wp.fogDensity * (1 - i * 0.25);
+          const fogColor = lerpColor(wp.skyBot, [140, 142, 145], 0.5);
+          const fadedColor = lerpColor(finalColor, fogColor, fogAmount);
+
+          ctx.fillStyle = rgb(fadedColor);
+          ctx.beginPath();
+          ctx.moveTo(0, h);
+
+          for (const pt of hill.points) {
+            ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.lineTo(w, h);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      function drawGround(ctx, w, h) {
+        const groundY = h * 0.82;
+        const grad = ctx.createLinearGradient(0, groundY, 0, h);
+
+        const snowMix = clamp(snowAccumulation, 0, 1);
+        const baseColor = lerpColor(wp.groundBase, [195, 200, 210], snowMix);
+        const darkColor = lerpColor(wp.groundDark, [170, 175, 185], snowMix);
+
+        const fogColor = lerpColor(wp.skyBot, [130, 132, 135], 0.5);
+        const fadedBase = lerpColor(baseColor, fogColor, wp.fogDensity * 0.3);
+        const fadedDark = lerpColor(darkColor, fogColor, wp.fogDensity * 0.2);
+
+        grad.addColorStop(0, rgb(fadedBase));
+        grad.addColorStop(1, rgb(fadedDark));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, groundY, w, h - groundY);
+      }
+
+      function drawTrees(ctx, w, h, time) {
+        const t = time / 1000;
+
+        for (const tree of trees) {
+          const fogFade = wp.fogDensity * (0.3 + tree.layer * 0.3);
+          if (fogFade > 0.9) continue;
+
+          const windStrength = 1 + wp.rainRate * 0.003;
+          const sway = Math.sin(t * 0.6 + tree.x * 0.01) * 3 * windStrength;
+
+          // Trunk
+          const trunkW = tree.width * 0.15;
+          const trunkColor = lerpColor([40, 30, 20], wp.skyBot, fogFade);
+          ctx.fillStyle = rgb(trunkColor, 1 - fogFade * 0.5);
+          ctx.fillRect(
+            tree.x - trunkW / 2 + sway * 0.3,
+            tree.baseY - tree.height * 0.4,
+            trunkW,
+            tree.height * 0.4
+          );
+
+          // Foliage (pine triangle layers)
+          const snowMix = clamp(snowAccumulation * 0.8, 0, 1);
+          for (let layer = 0; layer < 3; layer++) {
+            const ly = tree.baseY - tree.height * (0.3 + layer * 0.22);
+            const lw = tree.width * (1 - layer * 0.25);
+            const baseGreen = [15 + layer * 8, 55 + layer * 10, 12 + layer * 5];
+            const snowGreen = lerpColor(baseGreen, [180, 190, 200], snowMix);
+            const foliageColor = lerpColor(snowGreen, wp.skyBot, fogFade);
+
+            ctx.fillStyle = rgb(foliageColor, 1 - fogFade * 0.5);
+            ctx.beginPath();
+            ctx.moveTo(tree.x + sway, ly - tree.height * 0.2);
+            ctx.lineTo(tree.x + lw / 2 + sway * 0.7, ly);
+            ctx.lineTo(tree.x - lw / 2 + sway * 0.7, ly);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      }
+
+      function drawClouds(ctx, w, h, dt) {
+        const visibleCount = Math.ceil(wp.cloudCount);
+        if (visibleCount <= 0) return;
+
+        for (let i = 0; i < visibleCount; i++) {
+          const cloud = clouds[i];
+          if (!cloud) continue;
+
+          cloud.x += cloud.speed * dt;
+          if (cloud.x > w + cloud.w) cloud.x = -cloud.w;
+
+          const cy = cloud.y * h;
+          const alpha = wp.cloudOpacity * cloud.opacity;
+          if (alpha < 0.01) continue;
+
+          for (let j = 0; j < cloud.layers; j++) {
+            const off = cloud.offsets[j];
+            const cx = cloud.x + off.dx * cloud.w;
+            const ely = cy + off.dy * cloud.h;
+            const ew = cloud.w * off.sw;
+            const eh = cloud.h * off.sh;
+
+            const brightness = lerp(160, 220, 1 - off.dy);
+            const stormDarken = clamp(wp.rainRate / 200, 0, 1);
+            const r = brightness * (1 - stormDarken * 0.5);
+            const g = brightness * (1 - stormDarken * 0.45);
+            const b = brightness * (1 - stormDarken * 0.3);
+
+            ctx.fillStyle = 'rgba(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ',' + (alpha * 0.5) + ')';
+            ctx.beginPath();
+            ctx.ellipse(cx, ely, ew / 2, eh / 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      function drawRain(ctx, w, h) {
+        rainPool.forEach((p) => {
+          const alpha = clamp(p.life / 0.3, 0, 0.6);
+          ctx.strokeStyle = 'rgba(160,180,210,' + alpha + ')';
+          ctx.lineWidth = p.size * 0.5;
+          ctx.beginPath();
+          const trailLen = 12 + p.vy * 0.015;
+          const dx = p.vx * 0.015;
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - dx, p.y - trailLen);
+          ctx.stroke();
+        });
+
+        // Puddle highlights at bottom
+        if (wp.rainRate > 20) {
+          const puddleAlpha = clamp(wp.rainRate / 200, 0, 0.3);
+          for (let i = 0; i < 8; i++) {
+            const px = (i / 8 + 0.06) * w;
+            const py = h * 0.88 + Math.sin(i * 2.3) * 10;
+            const pw = 30 + i * 12;
+            const grad = ctx.createRadialGradient(px, py, 0, px, py, pw);
+            grad.addColorStop(0, 'rgba(120,140,170,' + puddleAlpha + ')');
+            grad.addColorStop(1, 'rgba(80,100,130,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(px - pw, py - pw * 0.3, pw * 2, pw * 0.6);
+          }
+        }
+      }
+
+      function drawSnow(ctx, time) {
+        const t = time / 1000;
+        snowPool.forEach((p) => {
+          p.vx += Math.sin(t * p.wobbleFreq + p.phase) * p.wobbleAmp * 0.016;
+
+          const alpha = clamp(p.life / 1.5, 0, 0.85);
+          const size = p.size;
+          ctx.fillStyle = 'rgba(240,245,255,' + alpha + ')';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+          ctx.fill();
+
+          if (size > 2) {
+            ctx.fillStyle = 'rgba(220,230,250,' + (alpha * 0.2) + ')';
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, size * 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
+      }
+
+      function drawDust(ctx) {
+        dustPool.forEach((p) => {
+          const alpha = clamp(p.life / 2, 0, 0.25);
+          ctx.fillStyle = 'rgba(200,190,150,' + alpha + ')';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawFogBlobs(ctx, w, h) {
+        fogPool.forEach((p) => {
+          const lifeRatio = p.life > 2 ? 1 : p.life / 2;
+          const alpha = p.alpha * lifeRatio;
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+          grad.addColorStop(0, 'rgba(160,165,170,' + alpha + ')');
+          grad.addColorStop(0.5, 'rgba(150,155,158,' + (alpha * 0.5) + ')');
+          grad.addColorStop(1, 'rgba(140,142,145,0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+        });
+      }
+
+      function drawFogOverlay(ctx, w, h, time) {
+        if (wp.fogDensity < 0.01) return;
+        const t = time / 1000;
+
+        for (let i = 0; i < 4; i++) {
+          const bandY = h * (0.3 + i * 0.15) + Math.sin(t * 0.2 + i * 1.7) * 20;
+          const bandH = h * (0.15 + i * 0.05);
+          const alpha = wp.fogDensity * (0.15 + i * 0.08);
+          const drift = Math.sin(t * 0.1 + i * 2.3) * 30;
+
+          const grad = ctx.createLinearGradient(0, bandY - bandH / 2, 0, bandY + bandH / 2);
+          grad.addColorStop(0, 'rgba(150,155,160,0)');
+          grad.addColorStop(0.5, 'rgba(150,155,160,' + alpha + ')');
+          grad.addColorStop(1, 'rgba(150,155,160,0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(-30 + drift, bandY - bandH / 2, w + 60, bandH);
+        }
+
+        ctx.fillStyle = 'rgba(140,145,150,' + (wp.fogDensity * 0.25) + ')';
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawLightning(ctx, w, h) {
+        if (lightningFlash < 0.01) return;
+
+        ctx.fillStyle = 'rgba(220,225,255,' + (lightningFlash * 0.4) + ')';
+        ctx.fillRect(0, 0, w, h);
+
+        if (lightningFlash > 0.3) {
+          for (const bolt of lightningBolts) {
+            ctx.strokeStyle = 'rgba(255,255,255,' + lightningFlash + ')';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(bolt.x1, bolt.y1);
+            ctx.lineTo(bolt.x2, bolt.y2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(180,180,255,' + (lightningFlash * 0.5) + ')';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(bolt.x1, bolt.y1);
+            ctx.lineTo(bolt.x2, bolt.y2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(120,120,220,' + (lightningFlash * 0.15) + ')';
+            ctx.lineWidth = 16;
+            ctx.beginPath();
+            ctx.moveTo(bolt.x1, bolt.y1);
+            ctx.lineTo(bolt.x2, bolt.y2);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // ─── HUD ───────────────────────────────────────────
+      let hudAlpha = 1.5;
+      let hintAlpha = 1.0;
+      const HINT_FADE_DELAY = 5;
+      let hintTimer = 0;
+
+      function drawHUD(ctx, w, h, dt) {
+        const nameAlpha = clamp(hudAlpha, 0, 1);
+        if (nameAlpha > 0.01) {
+          ctx.save();
+          const fs = clamp(Math.round(w * 0.018), 14, 28);
+          ctx.font = 'bold ' + fs + 'px monospace';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = 'rgba(255,255,255,' + (nameAlpha * 0.7) + ')';
+          ctx.fillText(WEATHER_NAMES[currentWeather], 20, 20);
+
+          if (transitionT < 1) {
+            const barW = 80;
+            const barH = 3;
+            const barX = 20;
+            const barY = 20 + fs + 6;
+            ctx.fillStyle = 'rgba(255,255,255,' + (nameAlpha * 0.2) + ')';
+            ctx.fillRect(barX, barY, barW, barH);
+            ctx.fillStyle = 'rgba(255,255,255,' + (nameAlpha * 0.6) + ')';
+            ctx.fillRect(barX, barY, barW * transitionT, barH);
+          }
+          ctx.restore();
+        }
+
+        if (transitionT >= 1) {
+          hudAlpha = Math.max(0, hudAlpha - dt * 0.3);
+        }
+
+        hintTimer += dt;
+        if (hintTimer > HINT_FADE_DELAY) {
+          hintAlpha = Math.max(0, hintAlpha - dt * 0.4);
+        }
+        if (hintAlpha > 0.01) {
+          ctx.save();
+          ctx.font = clamp(Math.round(w * 0.012), 10, 16) + 'px monospace';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = 'rgba(255,255,255,' + (hintAlpha * 0.35) + ')';
+          ctx.fillText('1-6: Change Weather', 20, h - 20);
+          ctx.restore();
+        }
+      }
+
+      // ─── ASCII Settings Applicator ─────────────────────
+      let prevCharset = null;
+      let prevColorScheme = null;
+      let prevPattern = undefined;
+
+      function applyAsciiSettings(ascii) {
+        ascii.set({
+          fontSize: Math.round(wp.fontSize),
+          crtEnabled: wp.crtEnabled,
+          crtGlow: wp.crtGlow,
+          crtScanlines: wp.crtScanlines,
+          crtFlicker: wp.crtFlicker + (lightningFlash > 0.3 ? lightningFlash * 0.2 : 0),
+          crtDistortion: wp.crtDistortion,
+        });
+
+        // Discrete settings: only change at threshold to avoid flickering
+        const t = smoothstep(0, 1, transitionT);
+        if (t > 0.5 || transitionT >= 1) {
+          const target = WEATHER_PARAMS[currentWeather];
+          if (prevCharset !== target.charset) {
+            ascii.set('charset', target.charset);
+            prevCharset = target.charset;
+          }
+          if (prevColorScheme !== target.colorScheme) {
+            ascii.set('colorScheme', target.colorScheme);
+            prevColorScheme = target.colorScheme;
+          }
+          if (prevPattern !== target.pattern) {
+            ascii.set('pattern', target.pattern);
+            prevPattern = target.pattern;
+          }
+        }
+
+        ascii.set('patternMix', wp.patternMix);
+
+        // Lightning: temporarily flash to neon color scheme
+        if (lightningFlash > 0.5 && currentWeather === WEATHER.THUNDER) {
+          ascii.set('colorScheme', 'neon');
+          prevColorScheme = null;
+        }
+
+        // Update extra layers
+        const layers = ascii.layers;
+        if (layers.length >= 3) {
+          // Layer 1 (index 1): edge detection
+          layers[1].set('opacity', wp.edgeOpacity);
+
+          // Layer 2 (index 2): additive weather overlay
+          layers[2].set('opacity', wp.overlayOpacity);
+          if (wp.overlayPattern && t > 0.5) {
+            layers[2].set('pattern', wp.overlayPattern);
+          }
+          layers[2].set('patternMix', wp.overlayPatternMix);
+        }
+      }
+
+      // ─── Main Draw Loop ────────────────────────────────
+      function draw(ctx, { time, dt, width: w, height: h }) {
+        updateWeatherParams(dt);
+
+        // Snow accumulation
+        if (wp.snowRate > 5) {
+          snowAccumulation = clamp(snowAccumulation + dt * 0.04, 0, 1);
+        } else {
+          snowAccumulation = clamp(snowAccumulation - dt * 0.08, 0, 1);
+        }
+
+        updateLightning(dt, w, h);
+
+        // Spawn particles
+        spawnRain(dt, w, h, wp.rainRate);
+        spawnSnow(dt, w, h, wp.snowRate);
+        spawnDust(dt, w, h, wp.dustRate);
+        spawnFogBlobs(dt, w, h, wp.fogBlobRate);
+
+        // Cull offscreen particles
+        rainPool.forEach((p) => {
+          if (p.y > h + 20 || p.x < -50 || p.x > w + 50) p.life = 0;
+        });
+        snowPool.forEach((p) => {
+          if (p.y > h + 20 || p.x < -80 || p.x > w + 80) p.life = 0;
+        });
+        dustPool.forEach((p) => {
+          if (p.y < -30 || p.y > h + 30 || p.x < -30 || p.x > w + 30) p.life = 0;
+        });
+        fogPool.forEach((p) => {
+          if (p.x < -200 || p.x > w + 200 || p.y < -200 || p.y > h + 200) p.life = 0;
+        });
+
+        rainPool.update(dt);
+        snowPool.update(dt);
+        dustPool.update(dt);
+        fogPool.update(dt);
+
+        // Draw scene
+        drawSky(ctx, w, h);
+        drawSun(ctx, w, h);
+        drawHills(ctx, w, h);
+        drawGround(ctx, w, h);
+        drawTrees(ctx, w, h, time);
+        drawClouds(ctx, w, h, dt);
+        drawFogOverlay(ctx, w, h, time);
+        drawFogBlobs(ctx, w, h);
+        drawRain(ctx, w, h);
+        drawSnow(ctx, time);
+        drawDust(ctx);
+        drawLightning(ctx, w, h);
+        drawHUD(ctx, w, h, dt);
+      }
+
+      // ─── App ───────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          background: '#08090e',
+          sourceOpacity: 0,
+        },
+        layers: [
+          // Layer 1: edge detection for landscape outlines
+          {
+            fontSize: 7,
+            charset: 'density',
+            edgeDetect: true,
+            edgeCharset: 'box-light',
+            colorScheme: 'mono',
+            blendMode: 'add',
+            opacity: 0.15,
+          },
+          // Layer 2: additive blend for weather overlay
+          {
+            fontSize: 12,
+            charset: 'blocks',
+            colorScheme: 'mono',
+            blendMode: 'add',
+            opacity: 0.05,
+            pattern: null,
+            patternMix: 0,
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) {
+          initLandscape(w, h);
+          initClouds(w);
+        },
+        onKeydown(e) {
+          const num = parseInt(e.key);
+          if (num >= 1 && num <= 6) {
+            switchWeather(num - 1);
+          }
+        },
+      });
+
+      // Apply ASCII settings each frame via render event
+      app.ascii.on('render', () => {
+        applyAsciiSettings(app.ascii);
+      });
+    </script>
+  </body>
+</html>

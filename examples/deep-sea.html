@@ -1,0 +1,1024 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Deep Sea</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb } from './utils.js';
+
+      // ─── Depth State ──────────────────────────────────
+      let depth = 0;            // 0 = surface, 1 = hadal zone
+      let targetDepth = 0;
+      let spaceHeld = false;
+      let hasInteracted = false;
+      let hintAlpha = 1;
+
+      const DESCENT_SPEED = 0.06;   // depth units per second when diving
+      const ASCENT_SPEED = 0.03;    // float-up speed
+      const SCROLL_STEP = 0.03;     // per wheel tick
+      const MAX_DEPTH_METERS = 11000;
+
+      // ─── Zone Boundaries ──────────────────────────────
+      // Each zone blends into the next across a transition band
+      const ZONE_SUNLIGHT  = [0, 0.2];
+      const ZONE_TWILIGHT  = [0.2, 0.5];
+      const ZONE_MIDNIGHT  = [0.5, 0.8];
+      const ZONE_HADAL     = [0.8, 1.0];
+
+      function zoneWeight(d, lo, hi) {
+        // Returns 0-1 weight for how much we're "in" this zone
+        const pad = 0.08;
+        const fadeIn  = smoothstep(lo - pad, lo + pad, d);
+        const fadeOut = 1 - smoothstep(hi - pad, hi + pad, d);
+        return clamp(fadeIn * fadeOut, 0, 1);
+      }
+
+      // ─── Color Palettes ───────────────────────────────
+      const WATER_SURFACE  = [20, 80, 160];
+      const WATER_TWILIGHT = [8, 25, 70];
+      const WATER_MIDNIGHT = [2, 5, 15];
+      const WATER_HADAL    = [1, 1, 3];
+
+      const CAUSTIC_COLOR   = [80, 180, 255];
+      const JELLY_COLORS    = [[120, 60, 200], [80, 200, 220], [200, 80, 180], [60, 220, 160]];
+      const BIOLUM_COLORS   = [[0, 255, 120], [80, 200, 255], [255, 40, 200], [200, 255, 0]];
+      const VENT_COLORS     = [[255, 80, 20], [255, 160, 40], [255, 200, 60], [200, 40, 10]];
+
+      // ─── Particle Systems ─────────────────────────────
+      const bubbles     = new ParticlePool({ maxParticles: 300, gravity: -80, drag: 0.995 });
+      const marineSnow  = new ParticlePool({ maxParticles: 400, gravity: 15, drag: 0.999 });
+      const fish        = new ParticlePool({ maxParticles: 60, gravity: 0, drag: 1 });
+      const jellyfish   = new ParticlePool({ maxParticles: 20, gravity: 0, drag: 1 });
+      const biolumFlash = new ParticlePool({ maxParticles: 80, gravity: 0, drag: 1 });
+      const ventParticles = new ParticlePool({ maxParticles: 500, gravity: -120, drag: 0.99 });
+      const creatures   = new ParticlePool({ maxParticles: 30, gravity: 0, drag: 1 });
+
+      let w = 0, h = 0;
+
+      // ─── Fish Schools ─────────────────────────────────
+      // Schools are attractors that fish follow
+      const schools = [];
+      function initSchools() {
+        schools.length = 0;
+        for (let i = 0; i < 4; i++) {
+          schools.push({
+            x: Math.random() * w,
+            y: Math.random() * h,
+            vx: (Math.random() - 0.5) * 40,
+            vy: (Math.random() - 0.5) * 20,
+            phase: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+
+      function updateSchools(dt, time) {
+        const t = time / 1000;
+        for (const s of schools) {
+          s.vx += Math.sin(t * 0.3 + s.phase) * 30 * dt;
+          s.vy += Math.cos(t * 0.2 + s.phase * 1.3) * 15 * dt;
+          s.vx = clamp(s.vx, -60, 60);
+          s.vy = clamp(s.vy, -30, 30);
+          s.x += s.vx * dt;
+          s.y += s.vy * dt;
+          // Wrap
+          if (s.x < -50) s.x = w + 50;
+          if (s.x > w + 50) s.x = -50;
+          if (s.y < h * 0.1) s.vy += 20 * dt;
+          if (s.y > h * 0.8) s.vy -= 20 * dt;
+        }
+      }
+
+      // ─── Hydrothermal Vents ───────────────────────────
+      const vents = [];
+      function initVents() {
+        vents.length = 0;
+        const count = 3 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < count; i++) {
+          vents.push({
+            x: w * (0.15 + Math.random() * 0.7),
+            baseY: h * (0.85 + Math.random() * 0.12),
+            width: 15 + Math.random() * 25,
+            intensity: 0.5 + Math.random() * 0.5,
+          });
+        }
+      }
+
+      // ─── Anglerfish ───────────────────────────────────
+      const anglers = [];
+      function initAnglers() {
+        anglers.length = 0;
+        for (let i = 0; i < 3; i++) {
+          anglers.push({
+            x: Math.random() * w,
+            y: h * (0.3 + Math.random() * 0.4),
+            vx: (Math.random() > 0.5 ? 1 : -1) * (8 + Math.random() * 12),
+            size: 20 + Math.random() * 15,
+            lurePhase: Math.random() * Math.PI * 2,
+            bodyColor: [15, 10, 8],
+          });
+        }
+      }
+
+      // ─── Spawn Functions ──────────────────────────────
+      function spawnBubbles(dt) {
+        const rate = lerp(8, 0.3, depth);
+        const count = Math.random() < rate * dt ? 1 : 0;
+        bubbles.emit(count, () => ({
+          x: Math.random() * w,
+          y: h + 5,
+          vx: (Math.random() - 0.5) * 10,
+          vy: -40 - Math.random() * 60,
+          life: 4 + Math.random() * 6,
+          size: 1 + Math.random() * 3 * (1 - depth * 0.7),
+          wobblePhase: Math.random() * Math.PI * 2,
+          wobbleFreq: 1.5 + Math.random() * 2,
+          gravity: -60 - Math.random() * 40,
+          drag: 0.995,
+        }));
+      }
+
+      function spawnMarineSnow(dt) {
+        const rate = depth < 0.1 ? 2 : depth < 0.6 ? 8 : 4;
+        const count = Math.random() < rate * dt ? 1 : 0;
+        marineSnow.emit(count, () => ({
+          x: Math.random() * w,
+          y: -5,
+          vx: (Math.random() - 0.5) * 6,
+          vy: 8 + Math.random() * 15,
+          life: 10 + Math.random() * 10,
+          size: 0.5 + Math.random() * 1.5,
+          alpha: 0.2 + Math.random() * 0.4,
+          gravity: 10 + Math.random() * 10,
+          drag: 0.999,
+        }));
+      }
+
+      function spawnFish(dt) {
+        if (depth > 0.35) return;
+        const rate = lerp(3, 0, smoothstep(0, 0.35, depth));
+        if (Math.random() > rate * dt) return;
+        const school = schools[(Math.random() * schools.length) | 0];
+        if (!school) return;
+        const dir = school.vx >= 0 ? 1 : -1;
+        fish.emit(1, () => ({
+          x: school.x + (Math.random() - 0.5) * 80,
+          y: school.y + (Math.random() - 0.5) * 60,
+          vx: dir * (20 + Math.random() * 30),
+          vy: (Math.random() - 0.5) * 10,
+          life: 6 + Math.random() * 5,
+          size: 3 + Math.random() * 4,
+          schoolIdx: (Math.random() * schools.length) | 0,
+          color: [100 + Math.random() * 80 | 0, 160 + Math.random() * 80 | 0, 200 + Math.random() * 55 | 0],
+          tailPhase: Math.random() * Math.PI * 2,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      function spawnJellyfish(dt) {
+        if (depth < 0.12 || depth > 0.65) return;
+        const rate = zoneWeight(depth, 0.2, 0.5) * 0.4;
+        if (Math.random() > rate * dt) return;
+        const color = JELLY_COLORS[(Math.random() * JELLY_COLORS.length) | 0];
+        jellyfish.emit(1, () => ({
+          x: Math.random() * w,
+          y: h + 20,
+          vx: (Math.random() - 0.5) * 8,
+          vy: -15 - Math.random() * 10,
+          life: 15 + Math.random() * 10,
+          size: 12 + Math.random() * 20,
+          color,
+          pulsePhase: Math.random() * Math.PI * 2,
+          pulseFreq: 0.6 + Math.random() * 0.8,
+          tentaclePhase: Math.random() * Math.PI * 2,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      function spawnBiolumFlashes(dt) {
+        if (depth < 0.4) return;
+        const rate = zoneWeight(depth, 0.5, 0.8) * 3;
+        if (Math.random() > rate * dt) return;
+        const color = BIOLUM_COLORS[(Math.random() * BIOLUM_COLORS.length) | 0];
+        biolumFlash.emit(1, () => ({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          vx: 0,
+          vy: 0,
+          life: 0.5 + Math.random() * 1.5,
+          maxLife: 0.5 + Math.random() * 1.5,
+          size: 15 + Math.random() * 40,
+          color,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      function spawnVentParticles(dt) {
+        if (depth < 0.7) return;
+        const strength = zoneWeight(depth, 0.8, 1.0);
+        for (const vent of vents) {
+          const rate = strength * vent.intensity * 20;
+          const count = Math.random() < rate * dt ? 1 + (Math.random() < 0.3 ? 1 : 0) : 0;
+          ventParticles.emit(count, () => {
+            const color = VENT_COLORS[(Math.random() * VENT_COLORS.length) | 0];
+            return {
+              x: vent.x + (Math.random() - 0.5) * vent.width,
+              y: vent.baseY,
+              vx: (Math.random() - 0.5) * 20,
+              vy: -80 - Math.random() * 100,
+              life: 2 + Math.random() * 3,
+              size: 2 + Math.random() * 4,
+              color,
+              gravity: -100 - Math.random() * 60,
+              drag: 0.985,
+            };
+          });
+        }
+      }
+
+      function spawnDeepCreatures(dt) {
+        if (depth < 0.55) return;
+        const rate = zoneWeight(depth, 0.5, 0.8) * 0.2 + zoneWeight(depth, 0.8, 1.0) * 0.15;
+        if (Math.random() > rate * dt) return;
+        const type = Math.random();
+        creatures.emit(1, () => ({
+          x: Math.random() > 0.5 ? -30 : w + 30,
+          y: h * (0.2 + Math.random() * 0.6),
+          vx: (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * 12),
+          vy: (Math.random() - 0.5) * 5,
+          life: 12 + Math.random() * 8,
+          size: 4 + Math.random() * 8,
+          type: type < 0.4 ? 'worm' : type < 0.7 ? 'squid' : 'blob',
+          color: BIOLUM_COLORS[(Math.random() * BIOLUM_COLORS.length) | 0],
+          phase: Math.random() * Math.PI * 2,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      // ─── Update Helpers ───────────────────────────────
+      function updateFish(dt, time) {
+        const t = time / 1000;
+        fish.forEach((p) => {
+          const school = schools[p.schoolIdx];
+          if (school) {
+            // Steer toward school center
+            const dx = school.x - p.x;
+            const dy = school.y - p.y;
+            p.vx += dx * 0.5 * dt;
+            p.vy += dy * 0.5 * dt;
+            p.vx += school.vx * 0.3 * dt;
+          }
+          p.vx = clamp(p.vx, -50, 50);
+          p.vy = clamp(p.vy, -20, 20);
+          // Kill if offscreen
+          if (p.x < -100 || p.x > w + 100 || p.y < -50 || p.y > h + 50) p.life = 0;
+        });
+      }
+
+      function updateJellyfish(dt, time) {
+        const t = time / 1000;
+        jellyfish.forEach((p) => {
+          // Gentle pulsing propulsion
+          const pulse = Math.sin(t * p.pulseFreq + p.pulsePhase);
+          if (pulse > 0.8) p.vy -= 8 * dt; // thrust up
+          p.vy = clamp(p.vy, -20, 5);
+          p.vx += Math.sin(t * 0.3 + p.pulsePhase) * 3 * dt;
+          if (p.y < -50) p.life = 0;
+        });
+      }
+
+      function updateAnglers(dt, time) {
+        const t = time / 1000;
+        for (const a of anglers) {
+          a.x += a.vx * dt;
+          if (a.x < -60) a.x = w + 60;
+          if (a.x > w + 60) a.x = -60;
+          a.y += Math.sin(t * 0.4 + a.lurePhase) * 8 * dt;
+        }
+      }
+
+      // ─── Drawing Functions ────────────────────────────
+      function drawWaterBackground(ctx, time) {
+        const t = time / 1000;
+
+        // Base water color interpolated by depth
+        let r, g, b;
+        if (depth < 0.2) {
+          const t2 = depth / 0.2;
+          r = lerp(WATER_SURFACE[0], WATER_TWILIGHT[0], t2);
+          g = lerp(WATER_SURFACE[1], WATER_TWILIGHT[1], t2);
+          b = lerp(WATER_SURFACE[2], WATER_TWILIGHT[2], t2);
+        } else if (depth < 0.5) {
+          const t2 = (depth - 0.2) / 0.3;
+          r = lerp(WATER_TWILIGHT[0], WATER_MIDNIGHT[0], t2);
+          g = lerp(WATER_TWILIGHT[1], WATER_MIDNIGHT[1], t2);
+          b = lerp(WATER_TWILIGHT[2], WATER_MIDNIGHT[2], t2);
+        } else {
+          const t2 = (depth - 0.5) / 0.5;
+          r = lerp(WATER_MIDNIGHT[0], WATER_HADAL[0], t2);
+          g = lerp(WATER_MIDNIGHT[1], WATER_HADAL[1], t2);
+          b = lerp(WATER_MIDNIGHT[2], WATER_HADAL[2], t2);
+        }
+
+        // Gradient: slightly lighter at top
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        const topBoost = clamp(1 - depth * 1.5, 0, 1);
+        grad.addColorStop(0, `rgb(${r + topBoost * 15 | 0},${g + topBoost * 30 | 0},${b + topBoost * 40 | 0})`);
+        grad.addColorStop(1, `rgb(${r | 0},${g | 0},${b | 0})`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawCaustics(ctx, time) {
+        if (depth > 0.35) return;
+        const t = time / 1000;
+        const intensity = 1 - smoothstep(0, 0.35, depth);
+
+        // Animated light beams from above
+        for (let i = 0; i < 6; i++) {
+          const baseX = (w / 6) * (i + 0.5);
+          const sway = Math.sin(t * 0.5 + i * 1.7) * 40;
+          const beamWidth = 30 + Math.sin(t * 0.8 + i * 2.3) * 15;
+
+          const grad = ctx.createLinearGradient(baseX + sway, 0, baseX + sway, h * 0.7);
+          const a = intensity * (0.06 + 0.03 * Math.sin(t * 1.2 + i * 0.9));
+          grad.addColorStop(0, `rgba(${CAUSTIC_COLOR[0]},${CAUSTIC_COLOR[1]},${CAUSTIC_COLOR[2]},${a})`);
+          grad.addColorStop(0.5, `rgba(${CAUSTIC_COLOR[0]},${CAUSTIC_COLOR[1]},${CAUSTIC_COLOR[2]},${a * 0.4})`);
+          grad.addColorStop(1, `rgba(${CAUSTIC_COLOR[0]},${CAUSTIC_COLOR[1]},${CAUSTIC_COLOR[2]},0)`);
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(baseX + sway - beamWidth * 0.3, 0);
+          ctx.lineTo(baseX + sway + beamWidth * 0.3, 0);
+          ctx.lineTo(baseX + sway + beamWidth, h * 0.7);
+          ctx.lineTo(baseX + sway - beamWidth, h * 0.7);
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        // Caustic ripple pattern on "floor"
+        for (let i = 0; i < 12; i++) {
+          const cx = w * (0.1 + 0.8 * ((i * 0.618) % 1));
+          const cy = h * (0.3 + 0.5 * Math.sin(t * 0.2 + i * 1.1));
+          const size = 20 + 15 * Math.sin(t * 1.5 + i * 2.7);
+          const a = intensity * (0.04 + 0.02 * Math.sin(t * 2 + i));
+
+          const cGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, size);
+          cGrad.addColorStop(0, `rgba(120,220,255,${a})`);
+          cGrad.addColorStop(1, `rgba(120,220,255,0)`);
+          ctx.fillStyle = cGrad;
+          ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
+        }
+      }
+
+      function drawFish(ctx, time) {
+        const t = time / 1000;
+        fish.forEach((p) => {
+          const dir = p.vx >= 0 ? 1 : -1;
+          const tailWag = Math.sin(t * 8 + p.tailPhase) * 3;
+          const c = p.color;
+          const s = p.size;
+
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.scale(dir, 1);
+
+          // Body
+          ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, s * 1.5, s * 0.6, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Tail
+          ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.8)`;
+          ctx.beginPath();
+          ctx.moveTo(-s * 1.2, 0);
+          ctx.lineTo(-s * 2.2, -s * 0.5 + tailWag);
+          ctx.lineTo(-s * 2.2, s * 0.5 + tailWag);
+          ctx.closePath();
+          ctx.fill();
+
+          // Eye
+          ctx.fillStyle = 'rgba(220,240,255,0.9)';
+          ctx.beginPath();
+          ctx.arc(s * 0.7, -s * 0.1, s * 0.18, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        });
+      }
+
+      function drawJellyfish(ctx, time) {
+        const t = time / 1000;
+        jellyfish.forEach((p) => {
+          const c = p.color;
+          const s = p.size;
+          const pulse = 0.8 + 0.2 * Math.sin(t * p.pulseFreq * Math.PI * 2 + p.pulsePhase);
+          const alpha = clamp(p.life < 2 ? p.life / 2 : 1, 0, 1) * 0.6;
+
+          // Bell
+          const bellW = s * pulse;
+          const bellH = s * 0.65 * (2 - pulse);
+
+          const bellGrad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, s);
+          bellGrad.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.6})`);
+          bellGrad.addColorStop(0.5, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.3})`);
+          bellGrad.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+          ctx.fillStyle = bellGrad;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, bellW, bellH, 0, Math.PI, 0);
+          ctx.fill();
+
+          // Inner glow
+          ctx.fillStyle = `rgba(${Math.min(c[0]+80,255)},${Math.min(c[1]+80,255)},${Math.min(c[2]+80,255)},${alpha * 0.3})`;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y - bellH * 0.2, bellW * 0.5, bellH * 0.4, 0, Math.PI, 0);
+          ctx.fill();
+
+          // Tentacles
+          ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.4})`;
+          ctx.lineWidth = 1;
+          const numTentacles = 5;
+          for (let i = 0; i < numTentacles; i++) {
+            const tx = p.x + (i - (numTentacles - 1) / 2) * (bellW * 0.35);
+            ctx.beginPath();
+            ctx.moveTo(tx, p.y);
+            const tentLen = s * (1.2 + 0.4 * Math.sin(t * 1.5 + p.tentaclePhase + i));
+            for (let j = 1; j <= 8; j++) {
+              const ty = p.y + (j / 8) * tentLen;
+              const wavex = Math.sin(t * 2 + p.tentaclePhase + i * 0.8 + j * 0.5) * 4;
+              ctx.lineTo(tx + wavex, ty);
+            }
+            ctx.stroke();
+          }
+        });
+      }
+
+      function drawAnglerfish(ctx, time) {
+        if (depth < 0.4) return;
+        const t = time / 1000;
+        const vis = zoneWeight(depth, 0.5, 0.8);
+        if (vis < 0.01) return;
+
+        for (const a of anglers) {
+          const alpha = vis * 0.8;
+
+          // Dark body (barely visible)
+          ctx.fillStyle = `rgba(8,5,3,${alpha * 0.7})`;
+          ctx.beginPath();
+          const dir = a.vx >= 0 ? 1 : -1;
+          ctx.save();
+          ctx.translate(a.x, a.y);
+          ctx.scale(dir, 1);
+          ctx.ellipse(0, 0, a.size, a.size * 0.6, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Mouth
+          ctx.fillStyle = `rgba(20,5,5,${alpha})`;
+          ctx.beginPath();
+          ctx.ellipse(a.size * 0.7, a.size * 0.1, a.size * 0.3, a.size * 0.25, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Teeth (small dots)
+          ctx.fillStyle = `rgba(180,180,170,${alpha * 0.6})`;
+          for (let i = 0; i < 5; i++) {
+            const angle = -0.4 + i * 0.2;
+            const tx = a.size * 0.7 + Math.cos(angle) * a.size * 0.28;
+            const ty = a.size * 0.1 + Math.sin(angle) * a.size * 0.23;
+            ctx.beginPath();
+            ctx.arc(tx, ty, 1, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Lure stalk
+          const lureX = a.size * 0.3;
+          const lureY = -a.size * 0.6;
+          const lureEndX = lureX + Math.sin(t * 1.5 + a.lurePhase) * 8;
+          const lureEndY = lureY - a.size * 0.5 + Math.cos(t * 2 + a.lurePhase) * 4;
+          ctx.strokeStyle = `rgba(40,30,25,${alpha * 0.5})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(a.size * 0.2, -a.size * 0.4);
+          ctx.quadraticCurveTo(lureX, lureY, lureEndX, lureEndY);
+          ctx.stroke();
+
+          // Lure glow
+          const lureGlow = 0.5 + 0.5 * Math.sin(t * 3 + a.lurePhase);
+          const lureGrad = ctx.createRadialGradient(lureEndX, lureEndY, 0, lureEndX, lureEndY, 15 + lureGlow * 10);
+          lureGrad.addColorStop(0, `rgba(100,255,180,${alpha * lureGlow * 0.8})`);
+          lureGrad.addColorStop(0.3, `rgba(50,200,120,${alpha * lureGlow * 0.3})`);
+          lureGrad.addColorStop(1, `rgba(0,100,60,0)`);
+          ctx.fillStyle = lureGrad;
+          ctx.fillRect(lureEndX - 25, lureEndY - 25, 50, 50);
+
+          // Eye
+          ctx.fillStyle = `rgba(200,180,50,${alpha * 0.6})`;
+          ctx.beginPath();
+          ctx.arc(a.size * 0.3, -a.size * 0.15, 2, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        }
+      }
+
+      function drawBioluminescence(ctx, time) {
+        biolumFlash.forEach((p) => {
+          const lifeRatio = p.life / (p.maxLife || 1);
+          // Flash in then fade out
+          const flash = lifeRatio > 0.5
+            ? smoothstep(1, 0.5, lifeRatio)
+            : smoothstep(0, 0.5, lifeRatio);
+          const c = p.color;
+          const a = flash * 0.3;
+
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+          grad.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${a})`);
+          grad.addColorStop(0.4, `rgba(${c[0]},${c[1]},${c[2]},${a * 0.4})`);
+          grad.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+        });
+      }
+
+      function drawVents(ctx, time) {
+        if (depth < 0.7) return;
+        const t = time / 1000;
+        const vis = zoneWeight(depth, 0.8, 1.0);
+        if (vis < 0.01) return;
+
+        // Vent bases
+        for (const vent of vents) {
+          // Rocky chimney shape
+          const chW = vent.width * 1.5;
+          const chH = 20 + vent.width * 0.8;
+          ctx.fillStyle = `rgba(30,15,8,${vis * 0.8})`;
+          ctx.beginPath();
+          ctx.moveTo(vent.x - chW * 0.6, vent.baseY);
+          ctx.lineTo(vent.x - chW * 0.3, vent.baseY - chH);
+          ctx.lineTo(vent.x + chW * 0.3, vent.baseY - chH);
+          ctx.lineTo(vent.x + chW * 0.6, vent.baseY);
+          ctx.closePath();
+          ctx.fill();
+
+          // Hot glow at opening
+          const glow = 0.6 + 0.4 * Math.sin(t * 2 + vent.x * 0.1);
+          const glowGrad = ctx.createRadialGradient(
+            vent.x, vent.baseY - chH, 0,
+            vent.x, vent.baseY - chH, chW * 0.8
+          );
+          glowGrad.addColorStop(0, `rgba(255,100,20,${vis * glow * 0.5})`);
+          glowGrad.addColorStop(0.4, `rgba(255,60,10,${vis * glow * 0.2})`);
+          glowGrad.addColorStop(1, `rgba(200,30,0,0)`);
+          ctx.fillStyle = glowGrad;
+          ctx.fillRect(vent.x - chW, vent.baseY - chH - chW, chW * 2, chW * 2);
+        }
+
+        // Vent particles
+        ventParticles.forEach((p) => {
+          const c = p.color;
+          const alpha = clamp(p.life / 2, 0, 1) * vis;
+          ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.6})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Glow around particle
+          const gRad = p.size * 3;
+          const gGrad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gRad);
+          gGrad.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.15})`);
+          gGrad.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+          ctx.fillStyle = gGrad;
+          ctx.fillRect(p.x - gRad, p.y - gRad, gRad * 2, gRad * 2);
+        });
+
+        // Tube worms near vents
+        for (const vent of vents) {
+          const numWorms = 6;
+          for (let i = 0; i < numWorms; i++) {
+            const wx = vent.x + (i - numWorms / 2) * 8 + Math.sin(t + i) * 2;
+            const wy = vent.baseY;
+            const wh = 10 + i * 3 + Math.sin(t * 0.8 + i * 1.5) * 3;
+
+            // Tube
+            ctx.strokeStyle = `rgba(120,80,60,${vis * 0.6})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(wx, wy);
+            ctx.lineTo(wx + Math.sin(t * 0.5 + i) * 3, wy - wh);
+            ctx.stroke();
+
+            // Red tip (plume)
+            const tipGlow = 0.5 + 0.5 * Math.sin(t * 2 + i * 0.7);
+            ctx.fillStyle = `rgba(255,${40 + tipGlow * 40 | 0},${20 + tipGlow * 20 | 0},${vis * 0.7})`;
+            ctx.beginPath();
+            ctx.arc(wx + Math.sin(t * 0.5 + i) * 3, wy - wh, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      function drawDeepCreatures(ctx, time) {
+        const t = time / 1000;
+        creatures.forEach((p) => {
+          const c = p.color;
+          const alpha = clamp(p.life < 2 ? p.life / 2 : 1, 0, 1) * 0.7;
+
+          if (p.type === 'squid') {
+            // Bioluminescent squid
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            const dir = p.vx >= 0 ? 1 : -1;
+            ctx.scale(dir, 1);
+
+            // Mantle
+            const pulseW = p.size * (0.8 + 0.2 * Math.sin(t * 3 + p.phase));
+            ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.5})`;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, pulseW * 1.5, pulseW * 0.6, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Glow
+            const gGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, p.size * 2);
+            gGrad.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.2})`);
+            gGrad.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+            ctx.fillStyle = gGrad;
+            ctx.fillRect(-p.size * 2, -p.size * 2, p.size * 4, p.size * 4);
+
+            // Tentacles
+            ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.3})`;
+            ctx.lineWidth = 0.8;
+            for (let i = 0; i < 4; i++) {
+              ctx.beginPath();
+              ctx.moveTo(-pulseW * 1.3, (i - 1.5) * 2);
+              ctx.quadraticCurveTo(
+                -pulseW * 2, (i - 1.5) * 3 + Math.sin(t * 2 + p.phase + i) * 3,
+                -pulseW * 2.5 + Math.sin(t * 1.5 + i) * 4, (i - 1.5) * 4
+              );
+              ctx.stroke();
+            }
+            ctx.restore();
+          } else if (p.type === 'worm') {
+            // Undulating worm
+            ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.5})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            const segments = 10;
+            for (let i = 0; i <= segments; i++) {
+              const frac = i / segments;
+              const sx = p.x - frac * p.size * 4 * (p.vx >= 0 ? 1 : -1);
+              const sy = p.y + Math.sin(t * 3 + p.phase + frac * 4) * p.size * 0.8;
+              if (i === 0) ctx.moveTo(sx, sy);
+              else ctx.lineTo(sx, sy);
+            }
+            ctx.stroke();
+
+            // Head glow
+            const gGrad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 1.5);
+            gGrad.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.3})`);
+            gGrad.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+            ctx.fillStyle = gGrad;
+            ctx.fillRect(p.x - p.size * 1.5, p.y - p.size * 1.5, p.size * 3, p.size * 3);
+          } else {
+            // Blob / jellyblob
+            const pulse = 0.7 + 0.3 * Math.sin(t * 2 + p.phase);
+            const gGrad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 2 * pulse);
+            gGrad.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.4})`);
+            gGrad.addColorStop(0.5, `rgba(${c[0]},${c[1]},${c[2]},${alpha * 0.15})`);
+            gGrad.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+            ctx.fillStyle = gGrad;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * 2 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
+      }
+
+      function drawBubbles(ctx) {
+        bubbles.forEach((p) => {
+          const alpha = clamp(p.life / 2, 0, 1) * (1 - depth * 0.6);
+          ctx.strokeStyle = `rgba(150,200,255,${alpha * 0.5})`;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.stroke();
+          // Highlight
+          ctx.fillStyle = `rgba(200,230,255,${alpha * 0.3})`;
+          ctx.beginPath();
+          ctx.arc(p.x - p.size * 0.3, p.y - p.size * 0.3, p.size * 0.3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawMarineSnow(ctx) {
+        marineSnow.forEach((p) => {
+          const brightness = depth > 0.5 ? 40 : 120;
+          ctx.fillStyle = `rgba(${brightness},${brightness + 20},${brightness + 40},${p.alpha})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawDepthGauge(ctx, time) {
+        const t = time / 1000;
+        const meters = Math.round(depth * MAX_DEPTH_METERS);
+        const gaugeX = w - 35;
+        const gaugeTop = h * 0.1;
+        const gaugeBot = h * 0.9;
+        const gaugeH = gaugeBot - gaugeTop;
+
+        // Gauge background
+        ctx.fillStyle = 'rgba(255,255,255,0.04)';
+        ctx.fillRect(gaugeX - 2, gaugeTop, 4, gaugeH);
+
+        // Filled portion
+        const fillH = depth * gaugeH;
+        const fillGrad = ctx.createLinearGradient(0, gaugeTop, 0, gaugeBot);
+        fillGrad.addColorStop(0, 'rgba(60,160,255,0.4)');
+        fillGrad.addColorStop(0.3, 'rgba(40,80,180,0.4)');
+        fillGrad.addColorStop(0.6, 'rgba(20,200,120,0.3)');
+        fillGrad.addColorStop(1, 'rgba(255,80,20,0.4)');
+        ctx.fillStyle = fillGrad;
+        ctx.fillRect(gaugeX - 2, gaugeTop, 4, fillH);
+
+        // Current depth marker
+        const markerY = gaugeTop + fillH;
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.beginPath();
+        ctx.moveTo(gaugeX - 8, markerY);
+        ctx.lineTo(gaugeX - 2, markerY - 3);
+        ctx.lineTo(gaugeX - 2, markerY + 3);
+        ctx.closePath();
+        ctx.fill();
+
+        // Depth text
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fillText(`${meters}m`, gaugeX - 12, markerY + 4);
+
+        // Zone labels
+        const zones = [
+          { name: 'SUNLIGHT', d: 0.1, color: 'rgba(100,200,255,0.3)' },
+          { name: 'TWILIGHT', d: 0.35, color: 'rgba(60,80,180,0.3)' },
+          { name: 'MIDNIGHT', d: 0.65, color: 'rgba(40,200,120,0.3)' },
+          { name: 'HADAL', d: 0.9, color: 'rgba(255,80,20,0.3)' },
+        ];
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'right';
+        for (const z of zones) {
+          const zy = gaugeTop + z.d * gaugeH;
+          ctx.fillStyle = z.color;
+          ctx.fillText(z.name, gaugeX - 12, zy);
+          // Tick mark
+          ctx.fillRect(gaugeX - 5, zy - 0.5, 10, 1);
+        }
+      }
+
+      function drawHint(ctx, time) {
+        if (hasInteracted && hintAlpha <= 0) return;
+        if (hasInteracted) {
+          hintAlpha = Math.max(0, hintAlpha - 0.02);
+        } else {
+          // Pulse the hint
+          const pulse = 0.5 + 0.5 * Math.sin(time / 1000 * 2);
+          hintAlpha = 0.4 + pulse * 0.3;
+        }
+        if (hintAlpha <= 0) return;
+
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = `rgba(150,200,255,${hintAlpha})`;
+        ctx.fillText('Hold SPACE to dive', w / 2, h - 40);
+        ctx.font = '10px monospace';
+        ctx.fillStyle = `rgba(150,200,255,${hintAlpha * 0.6})`;
+        ctx.fillText('or scroll', w / 2, h - 24);
+      }
+
+      // Surface shimmer overlay
+      function drawSurfaceShimmer(ctx, time) {
+        if (depth > 0.15) return;
+        const t = time / 1000;
+        const vis = 1 - smoothstep(0, 0.15, depth);
+
+        // Wavy surface line at top
+        ctx.strokeStyle = `rgba(180,220,255,${vis * 0.15})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let x = 0; x < w; x += 4) {
+          const y = 15 + Math.sin(x * 0.02 + t * 1.5) * 5 + Math.sin(x * 0.035 + t * 0.8) * 3;
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      // ─── ASCII Config Updates ─────────────────────────
+      function updateAsciiConfig(app) {
+        // Color scheme transitions
+        let scheme, bg;
+        if (depth < 0.25) {
+          scheme = 'ocean';
+          const dark = smoothstep(0, 0.25, depth);
+          const r = lerp(5, 2, dark) | 0;
+          const g = lerp(15, 5, dark) | 0;
+          const b = lerp(35, 15, dark) | 0;
+          bg = `rgb(${r},${g},${b})`;
+        } else if (depth < 0.55) {
+          scheme = 'vapor';
+          const dark = smoothstep(0.25, 0.55, depth);
+          const r = lerp(2, 1, dark) | 0;
+          const g = lerp(5, 2, dark) | 0;
+          const b = lerp(15, 5, dark) | 0;
+          bg = `rgb(${r},${g},${b})`;
+        } else if (depth < 0.82) {
+          scheme = 'neon';
+          const dark = smoothstep(0.55, 0.82, depth);
+          const r = lerp(1, 0, dark) | 0;
+          const g = lerp(2, 0, dark) | 0;
+          const b = lerp(5, 1, dark) | 0;
+          bg = `rgb(${r},${g},${b})`;
+        } else {
+          scheme = 'fire';
+          bg = '#000001';
+        }
+
+        app.ascii.set('colorScheme', scheme);
+        app.ascii.set('background', bg);
+
+        // CRT glow in bioluminescent zone
+        const crtStrength = zoneWeight(depth, 0.5, 0.8);
+        app.ascii.set('crtEnabled', crtStrength > 0.1);
+        app.ascii.set('crtGlow', crtStrength * 0.4);
+        app.ascii.set('crtScanlines', crtStrength * 0.15);
+        app.ascii.set('crtFlicker', crtStrength * 0.05);
+
+        // Font size: slightly larger in the deep (pressure feel)
+        const fontSize = lerp(6, 8, smoothstep(0, 1, depth));
+        app.ascii.set('fontSize', fontSize);
+      }
+
+      // ─── Main Draw ────────────────────────────────────
+      let globalTime = 0;
+      let app;
+
+      function draw(ctx, { time, dt, width: cw, height: ch }) {
+        w = cw;
+        h = ch;
+        globalTime = time;
+
+        // Update depth
+        if (spaceHeld) {
+          targetDepth = clamp(targetDepth + DESCENT_SPEED * dt, 0, 1);
+        } else if (targetDepth > 0) {
+          targetDepth = clamp(targetDepth - ASCENT_SPEED * dt, 0, 1);
+        }
+        depth = lerp(depth, targetDepth, 1 - Math.pow(0.03, dt));
+
+        // Update ASCII config based on depth
+        updateAsciiConfig(app);
+
+        // Spawn particles
+        spawnBubbles(dt);
+        spawnMarineSnow(dt);
+        spawnFish(dt);
+        spawnJellyfish(dt);
+        spawnBiolumFlashes(dt);
+        spawnVentParticles(dt);
+        spawnDeepCreatures(dt);
+
+        // Update particle systems
+        updateSchools(dt, time);
+        updateFish(dt, time);
+        updateJellyfish(dt, time);
+        updateAnglers(dt, time);
+
+        // Apply bubble wobble
+        bubbles.forEach((p) => {
+          const t = time / 1000;
+          p.vx += Math.sin(t * p.wobbleFreq + p.wobblePhase) * 15 * dt;
+        });
+
+        bubbles.update(dt, (p) => {});
+        marineSnow.update(dt);
+        fish.update(dt);
+        jellyfish.update(dt);
+        biolumFlash.update(dt);
+        ventParticles.update(dt);
+        creatures.update(dt);
+
+        // ── Render ──
+        drawWaterBackground(ctx, time);
+        drawSurfaceShimmer(ctx, time);
+        drawCaustics(ctx, time);
+        drawMarineSnow(ctx);
+        drawFish(ctx, time);
+        drawJellyfish(ctx, time);
+        drawBioluminescence(ctx, time);
+        drawAnglerfish(ctx, time);
+        drawDeepCreatures(ctx, time);
+        drawVents(ctx, time);
+        drawBubbles(ctx);
+        drawDepthGauge(ctx, time);
+        drawHint(ctx, time);
+      }
+
+      // ─── App ──────────────────────────────────────────
+      app = createApp({
+        asciiConfig: {
+          fontSize: 6,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          background: '#050f23',
+          sourceOpacity: 0,
+          opacity: 0.9,
+        },
+        layers: [
+          {
+            fontSize: 12,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            blendMode: 'add',
+            opacity: 0.1,
+          },
+          {
+            fontSize: 7,
+            charset: 'density',
+            edgeDetect: true,
+            edgeCharset: 'box-light',
+            colorScheme: 'ocean',
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        draw,
+        onResize(ctx, cw, ch) {
+          w = cw;
+          h = ch;
+          initSchools();
+          initVents();
+          initAnglers();
+        },
+      });
+
+      // ─── Input Handling ───────────────────────────────
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          spaceHeld = true;
+          if (!hasInteracted) hasInteracted = true;
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        if (e.code === 'Space') {
+          spaceHeld = false;
+        }
+      });
+
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const dir = e.deltaY > 0 ? 1 : -1;
+        targetDepth = clamp(targetDepth + dir * SCROLL_STEP, 0, 1);
+        if (!hasInteracted) hasInteracted = true;
+      }, { passive: false });
+
+      // Touch support: drag up/down
+      let touchStartY = 0;
+      let touchStartDepth = 0;
+      window.addEventListener('touchstart', (e) => {
+        touchStartY = e.touches[0].clientY;
+        touchStartDepth = targetDepth;
+        if (!hasInteracted) hasInteracted = true;
+      }, { passive: true });
+
+      window.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        const dy = e.touches[0].clientY - touchStartY;
+        targetDepth = clamp(touchStartDepth - dy / (h || 500), 0, 1);
+      }, { passive: false });
+
+      // Initialize on first frame
+      initSchools();
+      initVents();
+      initAnglers();
+    </script>
+  </body>
+</html>

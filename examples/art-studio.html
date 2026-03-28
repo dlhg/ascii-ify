@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Art Studio</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb, lerpColor, getCanvasPos } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const COLOR_SCHEMES = ['rainbow', 'neon', 'fire', 'ocean', 'acid', 'vapor', 'mono', 'sakura'];
+      const CHARSETS = ['density', 'blocks', 'braille', 'minimal', 'binary'];
+      const GRAVITY_MODES = ['none', 'down', 'up', 'radial-in', 'radial-out'];
+      const SYMMETRY_COUNTS = [4, 6, 8];
+      const AGENT_TYPES = ['spirograph', 'walker', 'orbit', 'pulse'];
+      const MAX_AGENTS = 8;
+      const TWO_PI = Math.PI * 2;
+
+      // ─── State ──────────────────────────────────────────
+      let mode = 'draw';           // 'draw' | 'symmetry' | 'generative'
+      let gravityMode = 0;         // index into GRAVITY_MODES
+      let symmetryIdx = 0;         // index into SYMMETRY_COUNTS
+      let brushRadius = 15;        // scroll adjusts 5..60
+      let globalHue = 0;           // cycles 0-360
+      let mouseX = 0, mouseY = 0;
+      let mouseDown = false;
+      let prevMouseX = 0, prevMouseY = 0;
+      let hasInteracted = false;
+      let promptAlpha = 1;
+      let sizeIndicatorTimer = 0;
+
+      // Snapshot state
+      let snapshotActive = false;
+      let colorSchemeIdx = 0;      // index into COLOR_SCHEMES
+      let charsetIdx = 2;          // start on 'braille'
+
+      // Persistent canvas — accumulates strokes
+      let persistCanvas = null;
+      let persistCtx = null;
+
+      // Particle pool for draw/symmetry modes
+      const pool = new ParticlePool({ maxParticles: 4000, gravity: 0, drag: 0.97 });
+
+      // Generative agents
+      const agents = [];
+
+      // ─── Persistent Canvas Setup ────────────────────────
+      function initPersistCanvas(w, h) {
+        persistCanvas = document.createElement('canvas');
+        persistCanvas.width = w;
+        persistCanvas.height = h;
+        persistCtx = persistCanvas.getContext('2d');
+        persistCtx.fillStyle = '#000';
+        persistCtx.fillRect(0, 0, w, h);
+      }
+
+      // ─── Color Helpers ──────────────────────────────────
+      function hslStr(h, s, l, a) {
+        return a !== undefined
+          ? `hsla(${h | 0}, ${s | 0}%, ${l | 0}%, ${a})`
+          : `hsl(${h | 0}, ${s | 0}%, ${l | 0}%)`;
+      }
+
+      // ─── Gravity Application ────────────────────────────
+      function applyGravity(p, cx, cy, dt) {
+        const strength = 200;
+        switch (GRAVITY_MODES[gravityMode]) {
+          case 'down':
+            p.vy += strength * dt;
+            break;
+          case 'up':
+            p.vy -= strength * dt;
+            break;
+          case 'radial-in': {
+            const dx = cx - p.x;
+            const dy = cy - p.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            p.vx += (dx / d) * strength * dt;
+            p.vy += (dy / d) * strength * dt;
+            break;
+          }
+          case 'radial-out': {
+            const dx2 = p.x - cx;
+            const dy2 = p.y - cy;
+            const d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2) + 1;
+            p.vx += (dx2 / d2) * strength * dt;
+            p.vy += (dy2 / d2) * strength * dt;
+            break;
+          }
+          // 'none' — do nothing
+        }
+      }
+
+      // ─── Draw Mode: Emit Particles ──────────────────────
+      function emitDrawParticles(x, y, hue) {
+        pool.emit(3, () => {
+          const angle = Math.random() * TWO_PI;
+          const speed = 30 + Math.random() * 80;
+          const ox = (Math.random() - 0.5) * brushRadius;
+          const oy = (Math.random() - 0.5) * brushRadius;
+          return {
+            x: x + ox,
+            y: y + oy,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 1.5 + Math.random() * 2.5,
+            hue: hue + (Math.random() - 0.5) * 25,
+            size: 1.5 + Math.random() * 3,
+            drag: 0.97,
+          };
+        });
+      }
+
+      // ─── Symmetry Mode: Emit Mirrored ──────────────────
+      function emitSymmetryParticles(x, y, hue, cx, cy) {
+        const count = SYMMETRY_COUNTS[symmetryIdx];
+        const angleStep = TWO_PI / count;
+
+        // Offset from center
+        const dx = x - cx;
+        const dy = y - cy;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        const baseAngle = Math.atan2(dy, dx);
+
+        for (let i = 0; i < count; i++) {
+          const a = baseAngle + angleStep * i;
+          const mirrorX = cx + Math.cos(a) * r;
+          const mirrorY = cy + Math.sin(a) * r;
+
+          // Complementary hue offset per mirror
+          const mirrorHue = hue + (360 / count) * i;
+
+          pool.emit(2, () => {
+            const pa = Math.random() * TWO_PI;
+            const speed = 20 + Math.random() * 60;
+            return {
+              x: mirrorX + (Math.random() - 0.5) * brushRadius * 0.5,
+              y: mirrorY + (Math.random() - 0.5) * brushRadius * 0.5,
+              vx: Math.cos(pa) * speed,
+              vy: Math.sin(pa) * speed,
+              life: 1.5 + Math.random() * 2,
+              hue: mirrorHue + (Math.random() - 0.5) * 15,
+              size: 1 + Math.random() * 2.5,
+              drag: 0.96,
+            };
+          });
+        }
+      }
+
+      // ─── Generative Agents ──────────────────────────────
+      function createAgent(x, y) {
+        if (agents.length >= MAX_AGENTS) return;
+
+        const type = AGENT_TYPES[Math.random() * AGENT_TYPES.length | 0];
+        const lifetime = 10 + Math.random() * 10;
+        const hue = Math.random() * 360;
+
+        const agent = {
+          type,
+          x, y,
+          spawnX: x, spawnY: y,
+          hue,
+          age: 0,
+          lifetime,
+          prevX: x,
+          prevY: y,
+          // Spirograph params
+          R: 40 + Math.random() * 60,
+          r: 15 + Math.random() * 30,
+          d: 20 + Math.random() * 40,
+          spiroSpeed: 1.5 + Math.random() * 2,
+          // Walker params
+          walkAngle: Math.random() * TWO_PI,
+          walkSpeed: 40 + Math.random() * 60,
+          walkMomentum: 0.92 + Math.random() * 0.06,
+          walkVx: 0,
+          walkVy: 0,
+          // Orbit params
+          orbitAngle: Math.random() * TWO_PI,
+          orbitSpeed: 1 + Math.random() * 2,
+          orbitGrowth: 0.3 + Math.random() * 0.5,
+          // Pulse params
+          pulseTimer: 0,
+          pulseInterval: 0.4 + Math.random() * 0.6,
+          pulseRings: [],
+        };
+
+        agents.push(agent);
+      }
+
+      function updateAgent(agent, dt, w, h) {
+        agent.age += dt;
+        agent.prevX = agent.x;
+        agent.prevY = agent.y;
+
+        const lifeRatio = agent.age / agent.lifetime;
+        const fadeAlpha = lifeRatio > 0.8 ? 1 - (lifeRatio - 0.8) / 0.2 : 1;
+
+        switch (agent.type) {
+          case 'spirograph': {
+            const t = agent.age * agent.spiroSpeed;
+            const R = agent.R;
+            const rr = agent.r;
+            const d = agent.d;
+            agent.x = agent.spawnX + (R - rr) * Math.cos(t) + d * Math.cos(((R - rr) / rr) * t);
+            agent.y = agent.spawnY + (R - rr) * Math.sin(t) + d * Math.sin(((R - rr) / rr) * t);
+            break;
+          }
+          case 'walker': {
+            agent.walkAngle += (Math.random() - 0.5) * 1.5;
+            const targetVx = Math.cos(agent.walkAngle) * agent.walkSpeed;
+            const targetVy = Math.sin(agent.walkAngle) * agent.walkSpeed;
+            agent.walkVx = agent.walkVx * agent.walkMomentum + targetVx * (1 - agent.walkMomentum);
+            agent.walkVy = agent.walkVy * agent.walkMomentum + targetVy * (1 - agent.walkMomentum);
+            agent.x += agent.walkVx * dt;
+            agent.y += agent.walkVy * dt;
+
+            // Soft bounce off edges
+            if (agent.x < 30 || agent.x > w - 30) {
+              agent.walkVx *= -0.8;
+              agent.walkAngle = Math.PI - agent.walkAngle;
+              agent.x = clamp(agent.x, 30, w - 30);
+            }
+            if (agent.y < 30 || agent.y > h - 30) {
+              agent.walkVy *= -0.8;
+              agent.walkAngle = -agent.walkAngle;
+              agent.y = clamp(agent.y, 30, h - 30);
+            }
+            break;
+          }
+          case 'orbit': {
+            agent.orbitAngle += agent.orbitSpeed * dt;
+            const radius = agent.age * agent.orbitGrowth * 20;
+            agent.x = agent.spawnX + Math.cos(agent.orbitAngle) * radius;
+            agent.y = agent.spawnY + Math.sin(agent.orbitAngle) * radius;
+            break;
+          }
+          case 'pulse': {
+            agent.pulseTimer += dt;
+            if (agent.pulseTimer >= agent.pulseInterval) {
+              agent.pulseTimer -= agent.pulseInterval;
+              agent.pulseRings.push({ radius: 0, maxRadius: 50 + Math.random() * 80, alpha: 1 });
+            }
+            for (let i = agent.pulseRings.length - 1; i >= 0; i--) {
+              const ring = agent.pulseRings[i];
+              ring.radius += 80 * dt;
+              ring.alpha = 1 - ring.radius / ring.maxRadius;
+              if (ring.alpha <= 0) {
+                agent.pulseRings.splice(i, 1);
+              }
+            }
+            break;
+          }
+        }
+
+        return fadeAlpha;
+      }
+
+      function drawAgentToPersist(agent, fadeAlpha) {
+        if (!persistCtx) return;
+        const alpha = fadeAlpha * 0.8;
+
+        switch (agent.type) {
+          case 'spirograph':
+          case 'walker':
+          case 'orbit': {
+            const dx = agent.x - agent.prevX;
+            const dy = agent.y - agent.prevY;
+            const segLen = Math.sqrt(dx * dx + dy * dy);
+            if (segLen < 0.5) break;
+
+            persistCtx.strokeStyle = hslStr(agent.hue + agent.age * 5, 85, 55, alpha);
+            persistCtx.lineWidth = 2 + Math.sin(agent.age * 3) * 1;
+            persistCtx.lineCap = 'round';
+            persistCtx.beginPath();
+            persistCtx.moveTo(agent.prevX, agent.prevY);
+            persistCtx.lineTo(agent.x, agent.y);
+            persistCtx.stroke();
+
+            // Small glow dot at current pos
+            persistCtx.fillStyle = hslStr(agent.hue + agent.age * 5, 90, 70, alpha * 0.6);
+            persistCtx.beginPath();
+            persistCtx.arc(agent.x, agent.y, 3, 0, TWO_PI);
+            persistCtx.fill();
+            break;
+          }
+          case 'pulse': {
+            for (const ring of agent.pulseRings) {
+              if (ring.alpha <= 0) continue;
+              persistCtx.strokeStyle = hslStr(agent.hue + ring.radius, 80, 55, ring.alpha * alpha * 0.7);
+              persistCtx.lineWidth = 2;
+              persistCtx.beginPath();
+              persistCtx.arc(agent.x, agent.y, ring.radius, 0, TWO_PI);
+              persistCtx.stroke();
+            }
+            break;
+          }
+        }
+      }
+
+      // ─── Draw Particles to Persistent Canvas ───────────
+      function drawParticleToPersist(p) {
+        if (!persistCtx) return;
+        const alpha = clamp(p.life / 2, 0.1, 0.9) * 0.6;
+        persistCtx.fillStyle = hslStr(p.hue, 85, 55, alpha);
+        persistCtx.beginPath();
+        persistCtx.arc(p.x, p.y, p.size * 0.7, 0, TWO_PI);
+        persistCtx.fill();
+      }
+
+      // ─── HUD Drawing ───────────────────────────────────
+      function drawHUD(ctx, w, h, time) {
+        ctx.save();
+
+        // Mode name — top-left
+        ctx.font = '14px monospace';
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        let modeName = 'Draw';
+        if (mode === 'symmetry') modeName = 'Symmetry-' + SYMMETRY_COUNTS[symmetryIdx];
+        if (mode === 'generative') modeName = 'Generative';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.fillText(modeName, 14, 14);
+
+        // Mode-specific hints — top-right
+        ctx.textAlign = 'right';
+        ctx.font = '11px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+        let hint = '';
+        if (mode === 'draw') {
+          hint = 'Gravity: ' + GRAVITY_MODES[gravityMode] + ' (G) \u00B7 Brush: ' + (brushRadius | 0) + ' (scroll)';
+        } else if (mode === 'symmetry') {
+          hint = 'Folds: ' + SYMMETRY_COUNTS[symmetryIdx] + ' (S) \u00B7 Brush: ' + (brushRadius | 0) + ' (scroll)';
+        } else if (mode === 'generative') {
+          hint = 'Click to seed agents (' + agents.length + '/' + MAX_AGENTS + ')';
+        }
+        ctx.fillText(hint, w - 14, 16);
+
+        // Snapshot overlay
+        if (snapshotActive) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+          ctx.fillRect(0, h / 2 - 30, w, 60);
+
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = '16px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+          ctx.fillText('SNAPSHOT', w / 2, h / 2 - 8);
+
+          ctx.font = '12px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+          ctx.fillText(
+            '\u2190\u2192 Color: ' + COLOR_SCHEMES[colorSchemeIdx] + '  \u00B7  \u2191\u2193 Charset: ' + CHARSETS[charsetIdx] + '  \u00B7  SPACE resume',
+            w / 2,
+            h / 2 + 14,
+          );
+        }
+
+        // Bottom instructions
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.font = '11px monospace';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.fillText(
+          '1/2/3: Mode \u00B7 C: Clear \u00B7 SPACE: Snapshot \u00B7 P: Panel \u00B7 E: Toggle',
+          w / 2,
+          h - 14,
+        );
+
+        // Welcome prompt (fades after first interaction)
+        if (promptAlpha > 0.005) {
+          if (hasInteracted) promptAlpha *= 0.94;
+          const pulse = 0.7 + 0.3 * Math.sin(time * 0.003);
+          const a = promptAlpha * pulse;
+          const gHue = (time * 0.04) % 360;
+
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = 'bold 64px monospace';
+          ctx.shadowColor = hslStr(gHue, 80, 60, a * 0.6);
+          ctx.shadowBlur = 30;
+          ctx.fillStyle = hslStr(gHue, 70, 75, a * 0.8);
+          ctx.fillText('Draw', w / 2, h / 2);
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = 'rgba(255, 255, 255, ' + (a * 0.9) + ')';
+          ctx.fillText('Draw', w / 2, h / 2);
+        }
+
+        ctx.restore();
+      }
+
+      // ─── Clearing ───────────────────────────────────────
+      let clearFade = 0;
+
+      function clearCanvas() {
+        clearFade = 1;
+        pool.clear();
+        agents.length = 0;
+      }
+
+      // ─── createApp ────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'rainbow',
+          background: '#050510',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          {
+            fontSize: 18,
+            charset: 'blocks',
+            colorScheme: 'rainbow',
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        onResize(ctx, w, h) {
+          initPersistCanvas(w, h);
+        },
+        onKeydown(e) {
+          const key = e.key;
+
+          // Mode selection
+          if (key === '1') { mode = 'draw'; }
+          if (key === '2') { mode = 'symmetry'; }
+          if (key === '3') { mode = 'generative'; }
+
+          // Gravity cycle (draw mode)
+          if ((key === 'g' || key === 'G') && mode === 'draw') {
+            gravityMode = (gravityMode + 1) % GRAVITY_MODES.length;
+          }
+
+          // Symmetry cycle
+          if ((key === 's' || key === 'S') && mode === 'symmetry') {
+            symmetryIdx = (symmetryIdx + 1) % SYMMETRY_COUNTS.length;
+          }
+
+          // Clear
+          if (key === 'c' || key === 'C') {
+            clearCanvas();
+          }
+
+          // Snapshot toggle
+          if (key === ' ') {
+            e.preventDefault();
+            snapshotActive = !snapshotActive;
+          }
+
+          // Snapshot navigation
+          if (snapshotActive) {
+            if (key === 'ArrowRight') {
+              colorSchemeIdx = (colorSchemeIdx + 1) % COLOR_SCHEMES.length;
+              app.ascii.set('colorScheme', COLOR_SCHEMES[colorSchemeIdx]);
+              try { app.ascii.setLayer(0, { colorScheme: COLOR_SCHEMES[colorSchemeIdx] }); } catch (_) {}
+            }
+            if (key === 'ArrowLeft') {
+              colorSchemeIdx = (colorSchemeIdx - 1 + COLOR_SCHEMES.length) % COLOR_SCHEMES.length;
+              app.ascii.set('colorScheme', COLOR_SCHEMES[colorSchemeIdx]);
+              try { app.ascii.setLayer(0, { colorScheme: COLOR_SCHEMES[colorSchemeIdx] }); } catch (_) {}
+            }
+            if (key === 'ArrowDown') {
+              charsetIdx = (charsetIdx + 1) % CHARSETS.length;
+              app.ascii.set('charset', CHARSETS[charsetIdx]);
+            }
+            if (key === 'ArrowUp') {
+              charsetIdx = (charsetIdx - 1 + CHARSETS.length) % CHARSETS.length;
+              app.ascii.set('charset', CHARSETS[charsetIdx]);
+            }
+          }
+        },
+        draw(ctx, { time, dt, width, height }) {
+          const w = width;
+          const h = height;
+          const cx = w / 2;
+          const cy = h / 2;
+          const t = time * 0.001;
+
+          // Ensure persistent canvas matches size
+          if (!persistCanvas || persistCanvas.width !== w || persistCanvas.height !== h) {
+            initPersistCanvas(w, h);
+          }
+
+          // ── If snapshot is active, just composite persistent canvas + HUD ──
+          if (snapshotActive) {
+            ctx.drawImage(persistCanvas, 0, 0);
+            drawHUD(ctx, w, h, time);
+            return;
+          }
+
+          // ── Global hue rotation (~30 second full cycle) ──
+          globalHue = (t * 12) % 360;
+
+          // ── Fade persistent canvas slightly ──
+          persistCtx.fillStyle = 'rgba(0, 0, 0, 0.002)';
+          persistCtx.fillRect(0, 0, w, h);
+
+          // ── Clear fade (C key) ──
+          if (clearFade > 0) {
+            persistCtx.fillStyle = 'rgba(0, 0, 0, ' + (clearFade * 0.15) + ')';
+            persistCtx.fillRect(0, 0, w, h);
+            clearFade -= dt * 2;
+            if (clearFade < 0.01) {
+              clearFade = 0;
+              persistCtx.fillStyle = '#000';
+              persistCtx.fillRect(0, 0, w, h);
+            }
+          }
+
+          // ── Mode-specific emission ──
+          if (mouseDown && mode === 'draw') {
+            emitDrawParticles(mouseX, mouseY, globalHue);
+          }
+          if (mouseDown && mode === 'symmetry') {
+            emitSymmetryParticles(mouseX, mouseY, globalHue, cx, cy);
+          }
+
+          // ── Update particles with custom gravity ──
+          pool.forEach((p) => {
+            if (mode === 'draw' || mode === 'symmetry') {
+              applyGravity(p, cx, cy, dt);
+            }
+          });
+          pool.update(dt);
+
+          // ── Draw active particles to persistent canvas ──
+          pool.forEach((p) => {
+            drawParticleToPersist(p);
+          });
+
+          // ── Update and draw generative agents ──
+          for (let i = agents.length - 1; i >= 0; i--) {
+            const agent = agents[i];
+            const fadeAlpha = updateAgent(agent, dt, w, h);
+            drawAgentToPersist(agent, fadeAlpha);
+            if (agent.age >= agent.lifetime) {
+              agents.splice(i, 1);
+            }
+          }
+
+          // ── Composite: persistent canvas first ──
+          ctx.fillStyle = '#050510';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(persistCanvas, 0, 0);
+
+          // ── Overlay live particles with glow ──
+          ctx.globalCompositeOperation = 'lighter';
+          pool.forEach((p) => {
+            const lifeAlpha = clamp(p.life / 2, 0, 1);
+            const ph = ((p.hue % 360) + 360) % 360;
+            const size = p.size * lifeAlpha + 0.5;
+
+            ctx.fillStyle = hslStr(ph, 90, 60, lifeAlpha * 0.9);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, size, 0, TWO_PI);
+            ctx.fill();
+
+            if (lifeAlpha > 0.4) {
+              ctx.fillStyle = hslStr(ph, 80, 70, (lifeAlpha - 0.4) * 0.3);
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, size * 3, 0, TWO_PI);
+              ctx.fill();
+            }
+          });
+
+          // ── Draw active agent heads ──
+          for (const agent of agents) {
+            const fadeAlpha = agent.age >= agent.lifetime * 0.8
+              ? 1 - (agent.age - agent.lifetime * 0.8) / (agent.lifetime * 0.2)
+              : 1;
+            const ah = (agent.hue + agent.age * 5) % 360;
+
+            if (agent.type === 'pulse') {
+              ctx.fillStyle = hslStr(ah, 90, 65, fadeAlpha * 0.8);
+              ctx.beginPath();
+              ctx.arc(agent.x, agent.y, 4 + Math.sin(agent.age * 8) * 2, 0, TWO_PI);
+              ctx.fill();
+
+              for (const ring of agent.pulseRings) {
+                if (ring.alpha <= 0) continue;
+                ctx.strokeStyle = hslStr(ah + ring.radius, 85, 60, ring.alpha * fadeAlpha * 0.5);
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(agent.x, agent.y, ring.radius, 0, TWO_PI);
+                ctx.stroke();
+              }
+            } else {
+              ctx.fillStyle = hslStr(ah, 95, 75, fadeAlpha * 0.9);
+              ctx.beginPath();
+              ctx.arc(agent.x, agent.y, 4, 0, TWO_PI);
+              ctx.fill();
+
+              ctx.fillStyle = hslStr(ah, 80, 60, fadeAlpha * 0.2);
+              ctx.beginPath();
+              ctx.arc(agent.x, agent.y, 12, 0, TWO_PI);
+              ctx.fill();
+            }
+          }
+          ctx.globalCompositeOperation = 'source-over';
+
+          // ── Brush indicator ──
+          if (sizeIndicatorTimer > 0) {
+            sizeIndicatorTimer -= dt;
+            const ia = clamp(sizeIndicatorTimer / 0.5, 0, 1) * 0.4;
+            ctx.strokeStyle = 'rgba(255, 255, 255, ' + ia + ')';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(mouseX, mouseY, brushRadius, 0, TWO_PI);
+            ctx.stroke();
+          }
+
+          // ── HUD ──
+          drawHUD(ctx, w, h, time);
+        },
+      });
+
+      // Initialize persistent canvas
+      initPersistCanvas(app.width, app.height);
+
+      // ─── Mouse Input ──────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        const pos = getCanvasPos(app.canvas, e);
+        prevMouseX = mouseX;
+        prevMouseY = mouseY;
+        mouseX = pos.x;
+        mouseY = pos.y;
+      });
+
+      window.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        const pos = getCanvasPos(app.canvas, e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        mouseDown = true;
+        if (!hasInteracted) hasInteracted = true;
+
+        if (mode === 'generative') {
+          createAgent(pos.x, pos.y);
+        }
+      });
+
+      window.addEventListener('mouseup', (e) => {
+        if (e.button === 0) mouseDown = false;
+      });
+
+      // Scroll: brush size
+      app.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        brushRadius -= e.deltaY * 0.08;
+        brushRadius = clamp(brushRadius, 5, 60);
+        sizeIndicatorTimer = 0.8;
+      }, { passive: false });
+
+      // ─── Touch Input ──────────────────────────────────
+      window.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const pos = getCanvasPos(app.canvas, e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        mouseDown = true;
+        if (!hasInteracted) hasInteracted = true;
+
+        if (mode === 'generative') {
+          createAgent(pos.x, pos.y);
+        }
+      }, { passive: false });
+
+      window.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        const pos = getCanvasPos(app.canvas, e);
+        prevMouseX = mouseX;
+        prevMouseY = mouseY;
+        mouseX = pos.x;
+        mouseY = pos.y;
+      }, { passive: false });
+
+      window.addEventListener('touchend', () => {
+        mouseDown = false;
+      });
+    </script>
+  </body>
+</html>

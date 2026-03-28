@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Campfire</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb, lerpColor, mulberry32, getCanvasPos } from './utils.js';
+
+      // ─── Seeded RNG ───────────────────────────────────
+      const rng = mulberry32(42);
+
+      // ─── Palette ──────────────────────────────────────
+      const WHITE_HOT  = [255, 255, 220];
+      const YELLOW     = [255, 220, 80];
+      const ORANGE     = [255, 140, 30];
+      const RED        = [220, 50, 10];
+      const DARK_RED   = [80, 15, 5];
+      const EMBER_GLOW = [255, 100, 20];
+      const SMOKE_GRAY = [80, 75, 85];
+      const LOG_BROWN  = [50, 28, 12];
+      const LOG_EDGE   = [180, 80, 15];
+      const GROUND_DARK = [18, 14, 10];
+      const GROUND_MID  = [30, 22, 14];
+      const ROCK_COLOR  = [35, 30, 28];
+      const TREE_DARK   = [8, 12, 8];
+      const STAR_COLOR  = [200, 210, 240];
+
+      // ─── Scene Layout (fractions of canvas) ───────────
+      const FIRE_Y = 0.68;       // fire base vertical position
+      const FIRE_WIDTH = 0.12;   // half-width of fire spawn area
+      const GROUND_Y = 0.75;     // ground line
+      const HORIZON_Y = 0.35;    // horizon
+
+      // ─── Stars ────────────────────────────────────────
+      let stars = [];
+
+      function generateStars(w, h) {
+        stars = [];
+        const count = Math.floor((w * h) / 3500);
+        for (let i = 0; i < count; i++) {
+          stars.push({
+            x: rng() * w,
+            y: rng() * h * HORIZON_Y * 1.1,
+            size: 0.4 + rng() * 1.2,
+            brightness: 0.15 + rng() * 0.55,
+            twinkleSpeed: 0.3 + rng() * 2.5,
+            twinklePhase: rng() * Math.PI * 2,
+          });
+        }
+      }
+
+      // ─── Trees ────────────────────────────────────────
+      let trees = [];
+
+      function generateTrees(w, h) {
+        trees = [];
+        const groundY = h * GROUND_Y;
+        const positions = [0.06, 0.15, 0.82, 0.95];
+        for (const fx of positions) {
+          const x = w * fx;
+          const scale = 0.5 + rng() * 0.5;
+          const treeH = h * (0.18 + rng() * 0.14) * scale;
+          const layers = 3 + Math.floor(rng() * 2);
+          trees.push({ x, baseY: groundY, height: treeH, layers, scale });
+        }
+      }
+
+      // ─── Rocks ────────────────────────────────────────
+      let rocks = [];
+
+      function generateRocks(w, h) {
+        rocks = [];
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        // Semicircle of rocks around the fire pit
+        const count = 5 + Math.floor(rng() * 3);
+        for (let i = 0; i < count; i++) {
+          const angle = Math.PI * 0.15 + (i / (count - 1)) * Math.PI * 0.7;
+          const radius = w * 0.065 + rng() * w * 0.02;
+          rocks.push({
+            x: fireX + Math.cos(angle) * radius * (rng() > 0.5 ? 1 : -1) * (i < count / 2 ? -1 : 1),
+            y: fireY + Math.abs(Math.sin(angle)) * radius * 0.35 + h * 0.03,
+            rx: 6 + rng() * 10,
+            ry: 4 + rng() * 6,
+            shade: 0.7 + rng() * 0.3,
+          });
+        }
+        // Place rocks in an arc
+        rocks = [];
+        for (let i = 0; i < count; i++) {
+          const t = i / (count - 1);
+          const angle = -Math.PI * 0.8 + t * Math.PI * 1.6;
+          const r = w * 0.07 + rng() * w * 0.015;
+          rocks.push({
+            x: fireX + Math.cos(angle) * r,
+            y: fireY + Math.sin(angle) * r * 0.25 + h * 0.045,
+            rx: 5 + rng() * 9,
+            ry: 3 + rng() * 5,
+            shade: 0.6 + rng() * 0.4,
+          });
+        }
+      }
+
+      // ─── Logs ─────────────────────────────────────────
+      function drawLogs(ctx, w, h, time) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const t = time * 0.001;
+        const pulse = 0.7 + 0.3 * Math.sin(t * 3.2);
+        const pulse2 = 0.7 + 0.3 * Math.sin(t * 2.7 + 1.3);
+
+        const logs = [
+          { x: fireX - w * 0.04, y: fireY + h * 0.015, angle: -0.35, len: w * 0.065, width: h * 0.012 },
+          { x: fireX + w * 0.035, y: fireY + h * 0.018, angle: 0.4, len: w * 0.06, width: h * 0.011 },
+          { x: fireX - w * 0.005, y: fireY + h * 0.025, angle: 0.05, len: w * 0.055, width: h * 0.01 },
+        ];
+
+        for (const log of logs) {
+          ctx.save();
+          ctx.translate(log.x, log.y);
+          ctx.rotate(log.angle);
+
+          // Log body — dark brown
+          ctx.fillStyle = rgb(LOG_BROWN);
+          ctx.fillRect(-log.len * 0.5, -log.width * 0.5, log.len, log.width);
+
+          // Glowing edges where fire meets log
+          const edgePulse = log.angle > 0 ? pulse : pulse2;
+          const glowAlpha = 0.3 + edgePulse * 0.4;
+          const edgeGrad = ctx.createLinearGradient(
+            -log.len * 0.3, 0, log.len * 0.1, 0
+          );
+          edgeGrad.addColorStop(0, `rgba(180, 80, 15, ${glowAlpha})`);
+          edgeGrad.addColorStop(0.5, `rgba(255, 120, 20, ${glowAlpha * 0.7})`);
+          edgeGrad.addColorStop(1, `rgba(80, 25, 5, 0)`);
+          ctx.fillStyle = edgeGrad;
+          ctx.fillRect(-log.len * 0.3, -log.width * 0.6, log.len * 0.5, log.width * 1.2);
+
+          ctx.restore();
+        }
+      }
+
+      // ─── Particle Pools ───────────────────────────────
+      const flames = new ParticlePool({ maxParticles: 600, gravity: 0, drag: 0.99 });
+      const embers = new ParticlePool({ maxParticles: 200, gravity: 0, drag: 0.998 });
+      const smoke  = new ParticlePool({ maxParticles: 80, gravity: 0, drag: 0.995 });
+
+      // ─── Wind ─────────────────────────────────────────
+      let windX = 0;
+      let windTarget = 5;
+      let windTimer = 0;
+
+      function updateWind(dt) {
+        windTimer -= dt;
+        if (windTimer <= 0) {
+          windTarget = (Math.random() - 0.5) * 30;
+          windTimer = 2 + Math.random() * 5;
+        }
+        windX = lerp(windX, windTarget, dt * 0.6);
+      }
+
+      // ─── Flame Spawning ───────────────────────────────
+      let flameAccum = 0;
+
+      function spawnFlames(dt, w, h) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const baseHalf = w * FIRE_WIDTH;
+
+        const rate = 120; // flames per second
+        flameAccum += rate * dt;
+        const count = Math.floor(flameAccum);
+        flameAccum -= count;
+
+        flames.emit(count, () => {
+          // Wider spawn at base, tapering with upward spawn offset
+          const spawnSpread = baseHalf * (0.6 + Math.random() * 0.4);
+          const xOff = (Math.random() - 0.5) * 2 * spawnSpread;
+          const life = 0.5 + Math.random() * 1.5;
+          return {
+            x: fireX + xOff,
+            y: fireY + (Math.random() - 0.5) * h * 0.01,
+            vx: (Math.random() - 0.5) * 20 + windX * 0.3,
+            vy: -(60 + Math.random() * 100),
+            life,
+            maxLife: life,
+            size: 3 + Math.random() * 5,
+            turbPhase: Math.random() * Math.PI * 2,
+            turbFreq: 3 + Math.random() * 4,
+            turbAmp: 15 + Math.random() * 25,
+            // Slight inward force to taper the flame
+            inwardForce: -xOff * 0.8,
+            gravity: 5, // slight downward to fight the strong upward velocity naturally
+            drag: 0.985 + Math.random() * 0.01,
+          };
+        });
+      }
+
+      // ─── Ember Spawning ───────────────────────────────
+      let emberAccum = 0;
+
+      function spawnEmbers(dt, w, h) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const baseHalf = w * FIRE_WIDTH * 0.6;
+
+        const rate = 8; // embers per second
+        emberAccum += rate * dt;
+        const count = Math.floor(emberAccum);
+        emberAccum -= count;
+
+        embers.emit(count, () => {
+          const life = 3 + Math.random() * 3;
+          return {
+            x: fireX + (Math.random() - 0.5) * 2 * baseHalf,
+            y: fireY - Math.random() * h * 0.08,
+            vx: (Math.random() - 0.5) * 15 + windX * 0.5,
+            vy: -(30 + Math.random() * 50),
+            life,
+            maxLife: life,
+            size: 1 + Math.random() * 2,
+            twinklePhase: Math.random() * Math.PI * 2,
+            twinkleFreq: 4 + Math.random() * 8,
+            gravity: -12 - Math.random() * 8, // float upward
+            drag: 0.994 + Math.random() * 0.004,
+          };
+        });
+      }
+
+      // ─── Smoke Spawning ───────────────────────────────
+      let smokeAccum = 0;
+
+      function spawnSmoke(dt, w, h) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+
+        const rate = 4;
+        smokeAccum += rate * dt;
+        const count = Math.floor(smokeAccum);
+        smokeAccum -= count;
+
+        smoke.emit(count, () => {
+          const life = 4 + Math.random() * 4;
+          return {
+            x: fireX + (Math.random() - 0.5) * w * 0.04,
+            y: fireY - h * 0.12 - Math.random() * h * 0.05,
+            vx: windX * 0.6 + (Math.random() - 0.5) * 5,
+            vy: -(10 + Math.random() * 15),
+            life,
+            maxLife: life,
+            size: 15 + Math.random() * 25,
+            gravity: -3, // drift up
+            drag: 0.992,
+          };
+        });
+      }
+
+      // ─── Spark Burst (click interaction) ──────────────
+      function pokefire(w, h) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const baseHalf = w * FIRE_WIDTH * 0.5;
+
+        // Burst of sparks
+        embers.emit(25 + Math.floor(Math.random() * 15), () => {
+          const life = 2 + Math.random() * 3;
+          const angle = -Math.PI * 0.5 + (Math.random() - 0.5) * Math.PI * 0.7;
+          const speed = 80 + Math.random() * 120;
+          return {
+            x: fireX + (Math.random() - 0.5) * 2 * baseHalf,
+            y: fireY - Math.random() * h * 0.04,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life,
+            maxLife: life,
+            size: 1 + Math.random() * 2.5,
+            twinklePhase: Math.random() * Math.PI * 2,
+            twinkleFreq: 6 + Math.random() * 10,
+            gravity: 30 + Math.random() * 20, // sparks arc back down
+            drag: 0.988,
+          };
+        });
+
+        // Extra flame burst
+        flames.emit(30, () => {
+          const life = 0.3 + Math.random() * 0.8;
+          const angle = -Math.PI * 0.5 + (Math.random() - 0.5) * Math.PI * 0.5;
+          const speed = 60 + Math.random() * 80;
+          return {
+            x: fireX + (Math.random() - 0.5) * 2 * baseHalf,
+            y: fireY,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life,
+            maxLife: life,
+            size: 4 + Math.random() * 6,
+            turbPhase: Math.random() * Math.PI * 2,
+            turbFreq: 5 + Math.random() * 5,
+            turbAmp: 20 + Math.random() * 30,
+            inwardForce: 0,
+            gravity: 10,
+            drag: 0.98,
+          };
+        });
+      }
+
+      // ─── Update Particles ─────────────────────────────
+      function updateParticles(dt, time, w, h) {
+        const t = time * 0.001;
+
+        // Flame turbulence
+        flames.forEach((p) => {
+          const lifeT = 1 - p.life / p.maxLife;
+          // Horizontal turbulence — sine wobble
+          p.vx += Math.sin(t * p.turbFreq + p.turbPhase) * p.turbAmp * dt;
+          // Inward tapering force — stronger as flame rises
+          p.vx += p.inwardForce * dt * lifeT;
+          // Wind
+          p.vx += windX * dt * 0.5;
+        });
+
+        flames.update(dt);
+
+        // Ember twinkle + wind
+        embers.forEach((p) => {
+          p.vx += windX * dt * 0.4;
+        });
+        embers.update(dt);
+
+        // Smoke drift + wind + expansion
+        smoke.forEach((p) => {
+          p.vx += windX * dt * 0.8;
+          const age = 1 - p.life / p.maxLife;
+          p.size += 8 * dt; // grow over time
+        });
+        smoke.update(dt);
+
+        // Kill off-screen particles
+        flames.forEach((p) => {
+          if (p.y < -20 || p.x < -50 || p.x > w + 50) p.life = 0;
+        });
+        embers.forEach((p) => {
+          if (p.y < -20 || p.y > h + 20 || p.x < -100 || p.x > w + 100) p.life = 0;
+        });
+        smoke.forEach((p) => {
+          if (p.y < -50 || p.x < -100 || p.x > w + 100) p.life = 0;
+        });
+      }
+
+      // ─── Draw Sky ─────────────────────────────────────
+      function drawSky(ctx, w, h) {
+        const horizonPx = h * HORIZON_Y;
+        const grad = ctx.createLinearGradient(0, 0, 0, h * 0.5);
+        grad.addColorStop(0, '#020208');
+        grad.addColorStop(0.5, '#050510');
+        grad.addColorStop(1, '#0a0812');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h * 0.5);
+
+        // Horizon band — slightly lighter
+        const hGrad = ctx.createLinearGradient(0, h * 0.3, 0, h * GROUND_Y);
+        hGrad.addColorStop(0, '#0a0812');
+        hGrad.addColorStop(1, '#0e0c10');
+        ctx.fillStyle = hGrad;
+        ctx.fillRect(0, h * 0.3, w, h * GROUND_Y - h * 0.3);
+      }
+
+      // ─── Draw Stars ───────────────────────────────────
+      function drawStars(ctx, time) {
+        const t = time * 0.001;
+        for (const s of stars) {
+          const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * s.twinkleSpeed + s.twinklePhase));
+          const alpha = s.brightness * twinkle;
+          ctx.fillStyle = `rgba(${STAR_COLOR[0]},${STAR_COLOR[1]},${STAR_COLOR[2]},${alpha})`;
+          ctx.fillRect(s.x - s.size * 0.5, s.y - s.size * 0.5, s.size, s.size);
+        }
+      }
+
+      // ─── Draw Ground ──────────────────────────────────
+      function drawGround(ctx, w, h) {
+        const groundTop = h * GROUND_Y;
+        const grad = ctx.createLinearGradient(0, groundTop, 0, h);
+        grad.addColorStop(0, rgb(GROUND_DARK));
+        grad.addColorStop(0.3, rgb(GROUND_MID));
+        grad.addColorStop(1, rgb([12, 9, 6]));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, groundTop, w, h - groundTop);
+      }
+
+      // ─── Draw Trees ───────────────────────────────────
+      function drawTrees(ctx, w, h, time) {
+        const t = time * 0.001;
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+
+        for (const tree of trees) {
+          const { x, baseY, height, layers, scale } = tree;
+          const trunkW = 4 + scale * 6;
+          const trunkH = height * 0.3;
+
+          // Trunk
+          ctx.fillStyle = rgb([15, 18, 12]);
+          ctx.fillRect(x - trunkW * 0.5, baseY - trunkH, trunkW, trunkH);
+
+          // Layered triangle canopy
+          for (let i = 0; i < layers; i++) {
+            const layerT = i / layers;
+            const tipY = baseY - trunkH - height * 0.7 * (1 - layerT * 0.3);
+            const baseWidth = (height * 0.35 * (1 - layerT * 0.15)) * scale;
+            const layerBase = baseY - trunkH - height * 0.15 * layerT;
+
+            // Determine firelight on near edge
+            const d = dist(x, baseY, fireX, fireY);
+            const fireLit = clamp(1 - d / (w * 0.45), 0, 1);
+            const pulse = 0.6 + 0.4 * Math.sin(t * 2.5 + x * 0.01);
+            const litR = TREE_DARK[0] + fireLit * pulse * 25;
+            const litG = TREE_DARK[1] + fireLit * pulse * 12;
+            const litB = TREE_DARK[2] + fireLit * pulse * 3;
+
+            ctx.fillStyle = `rgb(${litR | 0},${litG | 0},${litB | 0})`;
+            ctx.beginPath();
+            ctx.moveTo(x, tipY);
+            ctx.lineTo(x - baseWidth, layerBase);
+            ctx.lineTo(x + baseWidth, layerBase);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      }
+
+      // ─── Draw Rocks ───────────────────────────────────
+      function drawRocks(ctx, w, h, time) {
+        const t = time * 0.001;
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+
+        for (const rock of rocks) {
+          const d = dist(rock.x, rock.y, fireX, fireY);
+          const fireLit = clamp(1 - d / (w * 0.15), 0, 1);
+          const pulse = 0.5 + 0.5 * Math.sin(t * 2.1 + rock.x * 0.05);
+          const r = ROCK_COLOR[0] + fireLit * pulse * 60;
+          const g = ROCK_COLOR[1] + fireLit * pulse * 25;
+          const b = ROCK_COLOR[2] + fireLit * pulse * 5;
+
+          ctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
+          ctx.beginPath();
+          ctx.ellipse(rock.x, rock.y, rock.rx * rock.shade, rock.ry * rock.shade, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── Draw Firelight Glow ──────────────────────────
+      function drawFirelight(ctx, w, h, time) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const t = time * 0.001;
+        const pulse = 0.85 + 0.15 * Math.sin(t * 3.7) + 0.1 * Math.sin(t * 5.3 + 1.2);
+        const radius = Math.min(w, h) * 0.45 * pulse;
+
+        const grad = ctx.createRadialGradient(fireX, fireY - h * 0.03, 0, fireX, fireY, radius);
+        grad.addColorStop(0, `rgba(255, 160, 40, ${0.08 * pulse})`);
+        grad.addColorStop(0.2, `rgba(255, 100, 20, ${0.05 * pulse})`);
+        grad.addColorStop(0.5, `rgba(180, 50, 5, ${0.025 * pulse})`);
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── Draw Fire Core Glow ──────────────────────────
+      function drawFireCore(ctx, w, h, time) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const t = time * 0.001;
+
+        // Inner white-hot core
+        const pulse1 = 0.7 + 0.3 * Math.sin(t * 4.5);
+        const pulse2 = 0.7 + 0.3 * Math.sin(t * 6.1 + 2.0);
+        const coreR = w * 0.025 * pulse1;
+
+        const core = ctx.createRadialGradient(fireX, fireY, 0, fireX, fireY, coreR * 3);
+        core.addColorStop(0, `rgba(255, 255, 210, ${0.6 * pulse2})`);
+        core.addColorStop(0.3, `rgba(255, 200, 80, ${0.35 * pulse1})`);
+        core.addColorStop(0.7, `rgba(255, 120, 20, ${0.15 * pulse1})`);
+        core.addColorStop(1, 'rgba(200, 50, 5, 0)');
+        ctx.fillStyle = core;
+        ctx.fillRect(fireX - coreR * 3, fireY - coreR * 3, coreR * 6, coreR * 6);
+      }
+
+      // ─── Draw Flame Particles ─────────────────────────
+      function drawFlames(ctx, time) {
+        flames.forEach((p) => {
+          const lifeT = 1 - p.life / p.maxLife; // 0 = new, 1 = dying
+
+          // Color progression: white-hot -> yellow -> orange -> red -> dark red
+          let color;
+          if (lifeT < 0.15) {
+            color = lerpColor(WHITE_HOT, YELLOW, lifeT / 0.15);
+          } else if (lifeT < 0.35) {
+            color = lerpColor(YELLOW, ORANGE, (lifeT - 0.15) / 0.2);
+          } else if (lifeT < 0.65) {
+            color = lerpColor(ORANGE, RED, (lifeT - 0.35) / 0.3);
+          } else {
+            color = lerpColor(RED, DARK_RED, (lifeT - 0.65) / 0.35);
+          }
+
+          // Alpha: fade in quickly, sustain, then fade out
+          const fadeIn = smoothstep(0, 0.05, 1 - lifeT);
+          const fadeOut = smoothstep(0, 0.3, p.life / p.maxLife);
+          const alpha = fadeIn * fadeOut * 0.85;
+
+          // Size shrinks as it rises
+          const size = p.size * (1 - lifeT * 0.6);
+
+          ctx.fillStyle = rgb(color, alpha);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, Math.max(0.5, size), 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // ─── Draw Embers ──────────────────────────────────
+      function drawEmbers(ctx, time) {
+        const t = time * 0.001;
+        embers.forEach((p) => {
+          const lifeT = 1 - p.life / p.maxLife;
+
+          // Twinkle effect
+          const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * p.twinkleFreq + p.twinklePhase));
+
+          // Color: bright orange-yellow fading to red
+          const color = lifeT < 0.5
+            ? lerpColor(YELLOW, EMBER_GLOW, lifeT * 2)
+            : lerpColor(EMBER_GLOW, DARK_RED, (lifeT - 0.5) * 2);
+
+          // Fade out near end of life
+          const fadeOut = p.life < 0.8 ? p.life / 0.8 : 1;
+          const alpha = twinkle * fadeOut * 0.9;
+
+          const size = p.size * (1 - lifeT * 0.3);
+
+          // Glow around ember
+          const glowR = size * 3;
+          const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowR);
+          glow.addColorStop(0, rgb(color, alpha * 0.5));
+          glow.addColorStop(1, rgb(color, 0));
+          ctx.fillStyle = glow;
+          ctx.fillRect(p.x - glowR, p.y - glowR, glowR * 2, glowR * 2);
+
+          // Core dot
+          ctx.fillStyle = rgb(color, alpha);
+          ctx.fillRect(p.x - size * 0.5, p.y - size * 0.5, size, size);
+        });
+      }
+
+      // ─── Draw Smoke ───────────────────────────────────
+      function drawSmoke(ctx, time) {
+        smoke.forEach((p) => {
+          const lifeT = 1 - p.life / p.maxLife;
+
+          // Fade in, then slowly fade out
+          const fadeIn = smoothstep(0, 0.15, lifeT);
+          const fadeOut = smoothstep(0, 0.4, p.life / p.maxLife);
+          const alpha = fadeIn * fadeOut * 0.045; // very subtle
+
+          const size = p.size;
+
+          ctx.fillStyle = `rgba(${SMOKE_GRAY[0]},${SMOKE_GRAY[1]},${SMOKE_GRAY[2]},${alpha})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // ─── Draw Ground Light Reflection ─────────────────
+      function drawGroundGlow(ctx, w, h, time) {
+        const fireX = w * 0.5;
+        const fireY = h * FIRE_Y;
+        const groundTop = h * GROUND_Y;
+        const t = time * 0.001;
+        const pulse = 0.8 + 0.2 * Math.sin(t * 3.1);
+
+        const grad = ctx.createRadialGradient(
+          fireX, groundTop, 0,
+          fireX, groundTop, w * 0.25
+        );
+        grad.addColorStop(0, `rgba(140, 60, 10, ${0.12 * pulse})`);
+        grad.addColorStop(0.5, `rgba(80, 30, 5, ${0.05 * pulse})`);
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, groundTop, w, h - groundTop);
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'fire',
+          background: '#050208',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.3,
+          crtScanlines: 0.1,
+          crtFlicker: 0.05,
+        },
+        layers: [
+          {
+            fontSize: 14,
+            charset: 'blocks',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.15,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          // Clear
+          ctx.clearRect(0, 0, w, h);
+
+          // Update systems
+          updateWind(dt);
+          spawnFlames(dt, w, h);
+          spawnEmbers(dt, w, h);
+          spawnSmoke(dt, w, h);
+          updateParticles(dt, time, w, h);
+
+          // ── Background scene ──
+          drawSky(ctx, w, h);
+          drawStars(ctx, time);
+          drawGround(ctx, w, h);
+
+          // ── Firelight illumination (behind trees/rocks) ──
+          drawFirelight(ctx, w, h, time);
+
+          // ── Scene elements ──
+          drawTrees(ctx, w, h, time);
+          drawRocks(ctx, w, h, time);
+          drawLogs(ctx, w, h, time);
+
+          // ── Fire ──
+          drawSmoke(ctx, time);
+          drawFlames(ctx, time);
+          drawFireCore(ctx, w, h, time);
+          drawEmbers(ctx, time);
+
+          // ── Ground glow ──
+          drawGroundGlow(ctx, w, h, time);
+
+          // ── Instructions ──
+          ctx.save();
+          ctx.font = '11px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+          ctx.textAlign = 'center';
+          ctx.fillText(
+            'click to poke the fire \u00B7 P panel \u00B7 E toggle',
+            w / 2, h - 14,
+          );
+          ctx.restore();
+        },
+        onResize(ctx, w, h) {
+          generateStars(w, h);
+          generateTrees(w, h);
+          generateRocks(w, h);
+        },
+      });
+
+      // Initialize scene elements
+      generateStars(app.width, app.height);
+      generateTrees(app.width, app.height);
+      generateRocks(app.width, app.height);
+
+      // ─── Click Interaction ────────────────────────────
+      app.canvas.addEventListener('pointerdown', (e) => {
+        const pos = getCanvasPos(app.canvas, e);
+        const fireX = app.width * 0.5;
+        const fireY = app.height * FIRE_Y;
+        const d = dist(pos.x, pos.y, fireX, fireY);
+
+        // Poke the fire if clicking near it
+        if (d < Math.min(app.width, app.height) * 0.2) {
+          pokefire(app.width, app.height);
+        }
+      });
+
+      app.canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+    </script>
+  </body>
+</html>

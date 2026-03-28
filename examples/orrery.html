@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Orrery</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const TWO_PI = Math.PI * 2;
+      const EARTH_YEAR_SECS = 10;       // 1 Earth year = 10 seconds at 1x
+
+      // ─── Planet Data ────────────────────────────────────
+      const PLANETS = [
+        { name: 'Mercury', au: 0.39, period: 0.24, ecc: 0.205, radius: 3,  color: [180, 180, 180], initAngle: 0.0 },
+        { name: 'Venus',   au: 0.72, period: 0.62, ecc: 0.007, radius: 5,  color: [230, 220, 180], initAngle: 1.2 },
+        { name: 'Earth',   au: 1.0,  period: 1.0,  ecc: 0.017, radius: 5,  color: [80, 160, 220],  initAngle: 2.5 },
+        { name: 'Mars',    au: 1.52, period: 1.88, ecc: 0.093, radius: 4,  color: [210, 100, 50],  initAngle: 4.1 },
+        { name: 'Jupiter', au: 5.2,  period: 11.86,ecc: 0.049, radius: 14, color: [210, 180, 130], initAngle: 0.8 },
+        { name: 'Saturn',  au: 9.5,  period: 29.46,ecc: 0.057, radius: 12, color: [220, 200, 140], initAngle: 3.5, rings: true },
+        { name: 'Uranus',  au: 19.2, period: 84,   ecc: 0.046, radius: 8,  color: [140, 220, 230], initAngle: 5.2 },
+        { name: 'Neptune', au: 30,   period: 165,   ecc: 0.010, radius: 7,  color: [60, 100, 240],  initAngle: 1.9 },
+      ];
+
+      // ─── State ──────────────────────────────────────────
+      let simTime = 0;                 // simulation time in seconds
+      let timeScale = 1;
+      const TIME_SCALES = [1, 2, 5, 10, 50, 100, 500, 1000, 5000, 10000];
+      let timeScaleIdx = 0;
+
+      // Camera
+      let camX = 0, camY = 0, camZoom = 1;
+      let targetCamX = 0, targetCamY = 0, targetCamZoom = 1;
+      let selectedPlanet = -1;         // index into PLANETS, -1 = none
+
+      // Mouse state
+      let mouseX = 0, mouseY = 0;
+      let hoveredPlanet = -1;
+      let isDragging = false;
+      let dragStartX = 0, dragStartY = 0;
+      let dragCamStartX = 0, dragCamStartY = 0;
+
+      // Background stars
+      const bgStars = [];
+      function initStars() {
+        bgStars.length = 0;
+        for (let i = 0; i < 400; i++) {
+          bgStars.push({
+            x: (Math.random() - 0.5) * 4000,
+            y: (Math.random() - 0.5) * 4000,
+            r: 0.3 + Math.random() * 1.2,
+            b: 0.15 + Math.random() * 0.6,
+            twinklePhase: Math.random() * TWO_PI,
+            twinkleSpeed: 0.3 + Math.random() * 2,
+          });
+        }
+      }
+      initStars();
+
+      // Asteroid belt
+      const NUM_ASTEROIDS = 250;
+      const asteroids = [];
+      function initAsteroids() {
+        asteroids.length = 0;
+        const minAU = 2.1, maxAU = 3.3;
+        for (let i = 0; i < NUM_ASTEROIDS; i++) {
+          const au = minAU + Math.random() * (maxAU - minAU);
+          const angle = Math.random() * TWO_PI;
+          const period = Math.pow(au, 1.5); // Kepler's 3rd law approximation
+          asteroids.push({
+            au,
+            angle,
+            period,
+            size: 0.4 + Math.random() * 1.0,
+            bright: 0.2 + Math.random() * 0.4,
+            yOffset: (Math.random() - 0.5) * 0.15, // slight vertical scatter
+          });
+        }
+      }
+      initAsteroids();
+
+      // Orbit trail history per planet
+      const TRAIL_LENGTH = 60;
+      const trails = PLANETS.map(() => []);
+
+      // ─── Scale: convert AU to pixels ────────────────────
+      // Use a compressed scale so inner and outer planets are both visible
+      function auToPixels(au, baseScale) {
+        // Hybrid: linear for inner (<2 AU), compressed log for outer
+        if (au <= 2) {
+          return au * baseScale * 0.8;
+        }
+        return (2 * 0.8 + Math.log2(au / 2) * 1.5) * baseScale;
+      }
+
+      // ─── Orbital Position ───────────────────────────────
+      function getPlanetPos(planet, time, baseScale) {
+        const angularSpeed = TWO_PI / (planet.period * EARTH_YEAR_SECS);
+        const angle = planet.initAngle + time * angularSpeed;
+        const e = planet.ecc;
+        const r = planet.au * (1 - e * e) / (1 + e * Math.cos(angle));
+        const px = auToPixels(r, baseScale);
+        return {
+          x: px * Math.cos(angle),
+          y: px * Math.sin(angle),
+          angle,
+          r,
+        };
+      }
+
+      // ─── World <-> Screen Transforms ────────────────────
+      function worldToScreen(wx, wy, cx, cy, zoom, sw, sh) {
+        return {
+          x: (wx - cx) * zoom + sw / 2,
+          y: (wy - cy) * zoom + sh / 2,
+        };
+      }
+
+      function screenToWorld(sx, sy, cx, cy, zoom, sw, sh) {
+        return {
+          x: (sx - sw / 2) / zoom + cx,
+          y: (sy - sh / 2) / zoom + cy,
+        };
+      }
+
+      // ─── Draw ───────────────────────────────────────────
+      function draw(ctx, { time, dt, width: w, height: h }) {
+        // Advance simulation time
+        simTime += dt * timeScale;
+
+        // Base scale: fit Neptune's orbit to roughly half the screen
+        const minDim = Math.min(w, h);
+        const baseScale = minDim * 0.22;
+
+        // Smooth camera interpolation
+        const camSmooth = 1 - Math.pow(0.003, dt);
+        camX = lerp(camX, targetCamX, camSmooth);
+        camY = lerp(camY, targetCamY, camSmooth);
+        camZoom = lerp(camZoom, targetCamZoom, camSmooth);
+
+        // Clear
+        ctx.fillStyle = '#020108';
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Background Stars ──
+        for (const s of bgStars) {
+          const sp = worldToScreen(s.x, s.y, camX, camY, camZoom, w, h);
+          if (sp.x < -10 || sp.x > w + 10 || sp.y < -10 || sp.y > h + 10) continue;
+          const flicker = 0.5 + 0.5 * Math.sin(time * 0.001 * s.twinkleSpeed + s.twinklePhase);
+          const alpha = s.b * flicker;
+          ctx.fillStyle = `rgba(200, 210, 240, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, s.r * Math.max(0.5, camZoom * 0.3), 0, TWO_PI);
+          ctx.fill();
+        }
+
+        // ── Sun ──
+        const sunScreen = worldToScreen(0, 0, camX, camY, camZoom, w, h);
+        const sunBaseRadius = 18 * camZoom;
+        const sunPulse = 1 + 0.08 * Math.sin(time * 0.003) + 0.04 * Math.sin(time * 0.007);
+        const sunR = sunBaseRadius * sunPulse;
+
+        // Corona glow (multiple layers)
+        for (let i = 5; i >= 0; i--) {
+          const coronaR = sunR * (1.5 + i * 1.2);
+          const alpha = 0.04 / (1 + i * 0.4);
+          const grad = ctx.createRadialGradient(
+            sunScreen.x, sunScreen.y, sunR * 0.3,
+            sunScreen.x, sunScreen.y, coronaR
+          );
+          grad.addColorStop(0, `rgba(255, 200, 60, ${alpha})`);
+          grad.addColorStop(0.3, `rgba(255, 120, 20, ${alpha * 0.6})`);
+          grad.addColorStop(0.7, `rgba(200, 50, 10, ${alpha * 0.2})`);
+          grad.addColorStop(1, 'rgba(100, 20, 5, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(sunScreen.x, sunScreen.y, coronaR, 0, TWO_PI);
+          ctx.fill();
+        }
+
+        // Sun body
+        const sunGrad = ctx.createRadialGradient(
+          sunScreen.x - sunR * 0.2, sunScreen.y - sunR * 0.2, 0,
+          sunScreen.x, sunScreen.y, sunR
+        );
+        sunGrad.addColorStop(0, '#fffaf0');
+        sunGrad.addColorStop(0.3, '#ffe870');
+        sunGrad.addColorStop(0.7, '#ffaa20');
+        sunGrad.addColorStop(1, '#dd6600');
+        ctx.fillStyle = sunGrad;
+        ctx.beginPath();
+        ctx.arc(sunScreen.x, sunScreen.y, sunR, 0, TWO_PI);
+        ctx.fill();
+
+        // Sun surface detail when zoomed in
+        if (camZoom > 1.5) {
+          ctx.globalAlpha = clamp((camZoom - 1.5) * 0.3, 0, 0.4);
+          for (let i = 0; i < 12; i++) {
+            const a = i * TWO_PI / 12 + time * 0.0004;
+            const dr = sunR * (0.3 + 0.2 * Math.sin(time * 0.002 + i * 1.3));
+            const sx = sunScreen.x + dr * Math.cos(a);
+            const sy = sunScreen.y + dr * Math.sin(a);
+            const spotR = sunR * (0.15 + 0.1 * Math.sin(time * 0.003 + i));
+            ctx.fillStyle = 'rgba(200, 80, 0, 0.3)';
+            ctx.beginPath();
+            ctx.arc(sx, sy, spotR, 0, TWO_PI);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        // ── Orbit Paths ──
+        for (let pi = 0; pi < PLANETS.length; pi++) {
+          const p = PLANETS[pi];
+          const isSelected = pi === selectedPlanet;
+          const isHovered = pi === hoveredPlanet;
+          ctx.strokeStyle = isSelected
+            ? `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0.4)`
+            : isHovered
+              ? `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0.25)`
+              : `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0.1)`;
+          ctx.lineWidth = isSelected ? 1.5 : 0.8;
+          ctx.beginPath();
+          const segments = 120;
+          for (let i = 0; i <= segments; i++) {
+            const a = (i / segments) * TWO_PI;
+            const e = p.ecc;
+            const r = p.au * (1 - e * e) / (1 + e * Math.cos(a));
+            const orbitPx = auToPixels(r, baseScale);
+            const ox = orbitPx * Math.cos(a);
+            const oy = orbitPx * Math.sin(a);
+            const sp = worldToScreen(ox, oy, camX, camY, camZoom, w, h);
+            if (i === 0) ctx.moveTo(sp.x, sp.y);
+            else ctx.lineTo(sp.x, sp.y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+
+        // ── Asteroid Belt ──
+        for (const ast of asteroids) {
+          const angularSpeed = TWO_PI / (ast.period * EARTH_YEAR_SECS);
+          const a = ast.angle + simTime * angularSpeed;
+          const r = auToPixels(ast.au, baseScale);
+          const ax = r * Math.cos(a);
+          const ay = r * Math.sin(a) + ast.yOffset * baseScale;
+          const sp = worldToScreen(ax, ay, camX, camY, camZoom, w, h);
+          if (sp.x < -5 || sp.x > w + 5 || sp.y < -5 || sp.y > h + 5) continue;
+          const alpha = ast.bright;
+          ctx.fillStyle = `rgba(160, 140, 120, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, ast.size * Math.max(0.5, camZoom * 0.5), 0, TWO_PI);
+          ctx.fill();
+        }
+
+        // ── Planets ──
+        hoveredPlanet = -1;
+        const planetScreenPositions = [];
+
+        for (let pi = 0; pi < PLANETS.length; pi++) {
+          const p = PLANETS[pi];
+          const pos = getPlanetPos(p, simTime, baseScale);
+          const sp = worldToScreen(pos.x, pos.y, camX, camY, camZoom, w, h);
+          const screenRadius = Math.max(2, p.radius * camZoom * 0.7);
+
+          planetScreenPositions.push({ x: sp.x, y: sp.y, r: screenRadius, wx: pos.x, wy: pos.y });
+
+          // Record trail point
+          const trail = trails[pi];
+          if (trail.length === 0 || dist(trail[trail.length - 1].x, trail[trail.length - 1].y, pos.x, pos.y) > 0.5) {
+            trail.push({ x: pos.x, y: pos.y });
+            if (trail.length > TRAIL_LENGTH) trail.shift();
+          }
+
+          // Draw trail
+          if (trail.length > 2) {
+            for (let ti = 1; ti < trail.length; ti++) {
+              const t0 = worldToScreen(trail[ti - 1].x, trail[ti - 1].y, camX, camY, camZoom, w, h);
+              const t1 = worldToScreen(trail[ti].x, trail[ti].y, camX, camY, camZoom, w, h);
+              const alpha = (ti / trail.length) * 0.5;
+              const lw = (ti / trail.length) * 2 * camZoom;
+              ctx.strokeStyle = `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, ${alpha})`;
+              ctx.lineWidth = Math.max(0.5, lw);
+              ctx.beginPath();
+              ctx.moveTo(t0.x, t0.y);
+              ctx.lineTo(t1.x, t1.y);
+              ctx.stroke();
+            }
+          }
+
+          // Saturn's rings - draw behind planet first
+          if (p.rings) {
+            const ringInner = screenRadius * 1.4;
+            const ringOuter = screenRadius * 2.2;
+            ctx.save();
+            ctx.translate(sp.x, sp.y);
+            // Tilt the rings
+            ctx.scale(1, 0.35);
+            // Multiple ring bands
+            for (let ri = 0; ri < 4; ri++) {
+              const rr1 = lerp(ringInner, ringOuter, ri / 4);
+              const rr2 = lerp(ringInner, ringOuter, (ri + 0.7) / 4);
+              const alpha = 0.25 + (ri % 2) * 0.15;
+              ctx.strokeStyle = `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, ${alpha})`;
+              ctx.lineWidth = Math.max(1, (rr2 - rr1));
+              ctx.beginPath();
+              ctx.arc(0, 0, (rr1 + rr2) / 2, 0, TWO_PI);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+
+          // Planet glow
+          const glowR = screenRadius * 3;
+          const glowGrad = ctx.createRadialGradient(sp.x, sp.y, screenRadius * 0.5, sp.x, sp.y, glowR);
+          glowGrad.addColorStop(0, `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0.15)`);
+          glowGrad.addColorStop(1, `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0)`);
+          ctx.fillStyle = glowGrad;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, glowR, 0, TWO_PI);
+          ctx.fill();
+
+          // Planet body
+          const planetGrad = ctx.createRadialGradient(
+            sp.x - screenRadius * 0.3, sp.y - screenRadius * 0.3, 0,
+            sp.x, sp.y, screenRadius
+          );
+          planetGrad.addColorStop(0, `rgba(${Math.min(255, p.color[0] + 60)}, ${Math.min(255, p.color[1] + 60)}, ${Math.min(255, p.color[2] + 60)}, 1)`);
+          planetGrad.addColorStop(0.7, rgb(p.color));
+          planetGrad.addColorStop(1, `rgba(${p.color[0] * 0.4 | 0}, ${p.color[1] * 0.4 | 0}, ${p.color[2] * 0.4 | 0}, 1)`);
+          ctx.fillStyle = planetGrad;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, screenRadius, 0, TWO_PI);
+          ctx.fill();
+
+          // Surface detail when zoomed in
+          if (camZoom > 2 && pi === selectedPlanet) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(sp.x, sp.y, screenRadius, 0, TWO_PI);
+            ctx.clip();
+
+            // Procedural surface bands / spots
+            if (pi === 4) {
+              // Jupiter: horizontal bands
+              for (let b = 0; b < 8; b++) {
+                const by = sp.y - screenRadius + (b / 8) * screenRadius * 2;
+                const bh = screenRadius * 2 / 8;
+                const alpha = 0.15 + 0.1 * Math.sin(b * 2.3);
+                ctx.fillStyle = b % 2 === 0
+                  ? `rgba(180, 130, 70, ${alpha})`
+                  : `rgba(200, 170, 120, ${alpha})`;
+                ctx.fillRect(sp.x - screenRadius, by, screenRadius * 2, bh);
+              }
+              // Great red spot
+              const spotAngle = simTime * 0.5;
+              const spotX = sp.x + screenRadius * 0.3 * Math.cos(spotAngle);
+              const spotY = sp.y + screenRadius * 0.2;
+              ctx.fillStyle = 'rgba(180, 80, 50, 0.4)';
+              ctx.beginPath();
+              ctx.ellipse(spotX, spotY, screenRadius * 0.2, screenRadius * 0.12, 0, 0, TWO_PI);
+              ctx.fill();
+            } else if (pi === 2) {
+              // Earth: simple continent shapes
+              const eAngle = simTime * 0.8;
+              ctx.fillStyle = 'rgba(60, 140, 60, 0.3)';
+              ctx.beginPath();
+              ctx.ellipse(sp.x + screenRadius * 0.2 * Math.cos(eAngle), sp.y - screenRadius * 0.1, screenRadius * 0.35, screenRadius * 0.25, 0.3, 0, TWO_PI);
+              ctx.fill();
+              ctx.beginPath();
+              ctx.ellipse(sp.x - screenRadius * 0.3 * Math.cos(eAngle), sp.y + screenRadius * 0.25, screenRadius * 0.2, screenRadius * 0.15, -0.2, 0, TWO_PI);
+              ctx.fill();
+              // Polar ice
+              ctx.fillStyle = 'rgba(220, 240, 255, 0.25)';
+              ctx.beginPath();
+              ctx.ellipse(sp.x, sp.y - screenRadius * 0.85, screenRadius * 0.4, screenRadius * 0.12, 0, 0, TWO_PI);
+              ctx.fill();
+            } else if (pi === 3) {
+              // Mars: rusty patches
+              for (let m = 0; m < 5; m++) {
+                const mx = sp.x + screenRadius * 0.4 * Math.cos(m * 1.8 + simTime * 0.3);
+                const my = sp.y + screenRadius * 0.3 * Math.sin(m * 2.1 + 0.5);
+                ctx.fillStyle = `rgba(${140 + m * 15}, ${50 + m * 8}, ${20}, 0.25)`;
+                ctx.beginPath();
+                ctx.arc(mx, my, screenRadius * 0.18, 0, TWO_PI);
+                ctx.fill();
+              }
+              // Polar cap
+              ctx.fillStyle = 'rgba(220, 220, 230, 0.2)';
+              ctx.beginPath();
+              ctx.ellipse(sp.x, sp.y - screenRadius * 0.8, screenRadius * 0.3, screenRadius * 0.1, 0, 0, TWO_PI);
+              ctx.fill();
+            } else {
+              // Generic: wavy surface lines
+              for (let b = 0; b < 6; b++) {
+                const by = sp.y - screenRadius + (b / 6) * screenRadius * 2;
+                ctx.strokeStyle = `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0.15)`;
+                ctx.lineWidth = 0.8;
+                ctx.beginPath();
+                for (let bx = -screenRadius; bx <= screenRadius; bx += 2) {
+                  const x = sp.x + bx;
+                  const y = by + Math.sin(bx * 0.1 + simTime * 0.5 + b) * screenRadius * 0.05;
+                  if (bx === -screenRadius) ctx.moveTo(x, y);
+                  else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+              }
+            }
+            ctx.restore();
+          }
+
+          // Planet label
+          const labelDist = screenRadius + 8;
+          ctx.font = `${Math.max(9, 11 * Math.min(camZoom, 2))}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          const labelAlpha = pi === selectedPlanet || pi === hoveredPlanet ? 0.9 : 0.55;
+          ctx.fillStyle = `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, ${labelAlpha})`;
+          ctx.fillText(p.name, sp.x, sp.y + labelDist);
+
+          // Hit test for hover
+          const md = dist(mouseScreenX, mouseScreenY, sp.x, sp.y);
+          const hitRadius = Math.max(screenRadius + 8, 15);
+          if (md < hitRadius) {
+            hoveredPlanet = pi;
+          }
+        }
+
+        // ── HUD ──
+        ctx.save();
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // Time scale
+        const timeStr = `Time: ${timeScale >= 1000 ? (timeScale / 1000) + 'k' : timeScale}x`;
+        ctx.fillStyle = 'rgba(180, 170, 150, 0.7)';
+        ctx.fillText(timeStr, 14, 14);
+
+        // Elapsed years
+        const years = simTime / EARTH_YEAR_SECS;
+        const yearStr = years < 1
+          ? `${(years * 365.25).toFixed(0)} days`
+          : `${years.toFixed(1)} years`;
+        ctx.fillStyle = 'rgba(140, 135, 125, 0.5)';
+        ctx.fillText(yearStr, 14, 32);
+
+        // Selected / hovered planet info
+        const infoIdx = selectedPlanet >= 0 ? selectedPlanet : hoveredPlanet;
+        if (infoIdx >= 0) {
+          const p = PLANETS[infoIdx];
+          ctx.fillStyle = `rgba(${p.color[0]}, ${p.color[1]}, ${p.color[2]}, 0.8)`;
+          ctx.font = '14px monospace';
+          ctx.fillText(p.name, 14, 56);
+          ctx.font = '11px monospace';
+          ctx.fillStyle = 'rgba(160, 155, 145, 0.6)';
+          ctx.fillText(`Orbit: ${p.au} AU  Period: ${p.period} yr`, 14, 74);
+        }
+
+        // Bottom hint
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(120, 115, 105, 0.35)';
+        ctx.font = '11px monospace';
+        ctx.fillText('Click planet to zoom \u2022 Scroll to zoom \u2022 +/\u2013 for time speed \u2022 Drag to pan \u2022 Esc to reset', w / 2, h - 10);
+        ctx.restore();
+      }
+
+      // ─── Mouse screen position (updated each event) ────
+      let mouseScreenX = 0, mouseScreenY = 0;
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'mono',
+          background: '#020108',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.25,
+          crtScanlines: 0.08,
+          crtFlicker: 0.02,
+        },
+        layers: [
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'fire',
+            opacity: 0.18,
+            blendMode: 'add',
+          },
+        ],
+        draw,
+        onKeydown(e) {
+          if (e.key === 'Escape') {
+            selectedPlanet = -1;
+            targetCamX = 0;
+            targetCamY = 0;
+            targetCamZoom = 1;
+          }
+          if (e.key === '+' || e.key === '=') {
+            timeScaleIdx = clamp(timeScaleIdx + 1, 0, TIME_SCALES.length - 1);
+            timeScale = TIME_SCALES[timeScaleIdx];
+          }
+          if (e.key === '-' || e.key === '_') {
+            timeScaleIdx = clamp(timeScaleIdx - 1, 0, TIME_SCALES.length - 1);
+            timeScale = TIME_SCALES[timeScaleIdx];
+          }
+          if (e.key === 'ArrowUp') {
+            timeScaleIdx = clamp(timeScaleIdx + 1, 0, TIME_SCALES.length - 1);
+            timeScale = TIME_SCALES[timeScaleIdx];
+          }
+          if (e.key === 'ArrowDown') {
+            timeScaleIdx = clamp(timeScaleIdx - 1, 0, TIME_SCALES.length - 1);
+            timeScale = TIME_SCALES[timeScaleIdx];
+          }
+        },
+      });
+
+      // ─── Mouse / Touch Interaction ─────────────────────
+      const canvas = app.canvas;
+
+      function getCanvasPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+        const clientY = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+        return {
+          x: (clientX - rect.left) * (canvas.width / rect.width),
+          y: (clientY - rect.top) * (canvas.height / rect.height),
+        };
+      }
+
+      canvas.addEventListener('mousemove', (e) => {
+        const pos = getCanvasPos(e);
+        mouseScreenX = pos.x;
+        mouseScreenY = pos.y;
+
+        if (isDragging) {
+          const dx = (pos.x - dragStartX) / camZoom;
+          const dy = (pos.y - dragStartY) / camZoom;
+          targetCamX = dragCamStartX - dx;
+          targetCamY = dragCamStartY - dy;
+          // Deselect planet when dragging
+          if (dist(pos.x, pos.y, dragStartX, dragStartY) > 10) {
+            selectedPlanet = -1;
+          }
+        }
+      });
+
+      canvas.addEventListener('mousedown', (e) => {
+        const pos = getCanvasPos(e);
+        dragStartX = pos.x;
+        dragStartY = pos.y;
+        dragCamStartX = targetCamX;
+        dragCamStartY = targetCamY;
+        isDragging = true;
+      });
+
+      window.addEventListener('mouseup', (e) => {
+        if (isDragging) {
+          const pos = getCanvasPos(e);
+          const dragDist = dist(pos.x, pos.y, dragStartX, dragStartY);
+
+          // Only process click if it wasn't a drag
+          if (dragDist < 10) {
+            if (hoveredPlanet >= 0) {
+              // Zoom to planet
+              selectedPlanet = hoveredPlanet;
+              const p = PLANETS[selectedPlanet];
+              const minDim = Math.min(canvas.width, canvas.height);
+              const baseScale = minDim * 0.22;
+              const ppos = getPlanetPos(p, simTime, baseScale);
+              targetCamX = ppos.x;
+              targetCamY = ppos.y;
+              targetCamZoom = clamp(4 / (p.radius / 5), 2.5, 6);
+            } else {
+              // Click empty space - zoom out
+              selectedPlanet = -1;
+              targetCamX = 0;
+              targetCamY = 0;
+              targetCamZoom = 1;
+            }
+          }
+        }
+        isDragging = false;
+      });
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const zoomFactor = e.deltaY > 0 ? 0.85 : 1.18;
+        targetCamZoom = clamp(targetCamZoom * zoomFactor, 0.3, 15);
+
+        // If zoomed out enough, deselect
+        if (targetCamZoom < 0.8) {
+          selectedPlanet = -1;
+        }
+      }, { passive: false });
+
+      // Touch support
+      let lastTouchDist = 0;
+
+      canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (e.touches.length === 1) {
+          const pos = getCanvasPos(e);
+          dragStartX = pos.x;
+          dragStartY = pos.y;
+          dragCamStartX = targetCamX;
+          dragCamStartY = targetCamY;
+          isDragging = true;
+          mouseScreenX = pos.x;
+          mouseScreenY = pos.y;
+        } else if (e.touches.length === 2) {
+          isDragging = false;
+          const dx = e.touches[0].clientX - e.touches[1].clientX;
+          const dy = e.touches[0].clientY - e.touches[1].clientY;
+          lastTouchDist = Math.sqrt(dx * dx + dy * dy);
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (e.touches.length === 1 && isDragging) {
+          const pos = getCanvasPos(e);
+          mouseScreenX = pos.x;
+          mouseScreenY = pos.y;
+          const dx = (pos.x - dragStartX) / camZoom;
+          const dy = (pos.y - dragStartY) / camZoom;
+          targetCamX = dragCamStartX - dx;
+          targetCamY = dragCamStartY - dy;
+        } else if (e.touches.length === 2) {
+          const dx = e.touches[0].clientX - e.touches[1].clientX;
+          const dy = e.touches[0].clientY - e.touches[1].clientY;
+          const touchDist = Math.sqrt(dx * dx + dy * dy);
+          if (lastTouchDist > 0) {
+            const scale = touchDist / lastTouchDist;
+            targetCamZoom = clamp(targetCamZoom * scale, 0.3, 15);
+          }
+          lastTouchDist = touchDist;
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchend', (e) => {
+        if (e.touches.length === 0) {
+          if (isDragging) {
+            const dragDist = dist(mouseScreenX, mouseScreenY, dragStartX, dragStartY);
+            if (dragDist < 15) {
+              if (hoveredPlanet >= 0) {
+                selectedPlanet = hoveredPlanet;
+                const p = PLANETS[selectedPlanet];
+                const minDim = Math.min(canvas.width, canvas.height);
+                const baseScale = minDim * 0.22;
+                const ppos = getPlanetPos(p, simTime, baseScale);
+                targetCamX = ppos.x;
+                targetCamY = ppos.y;
+                targetCamZoom = clamp(4 / (p.radius / 5), 2.5, 6);
+              } else {
+                selectedPlanet = -1;
+                targetCamX = 0;
+                targetCamY = 0;
+                targetCamZoom = 1;
+              }
+            }
+          }
+          isDragging = false;
+          lastTouchDist = 0;
+        }
+      });
+
+      // Keep camera following selected planet
+      function updateFollow() {
+        if (selectedPlanet >= 0) {
+          const p = PLANETS[selectedPlanet];
+          const minDim = Math.min(canvas.width, canvas.height);
+          const baseScale = minDim * 0.22;
+          const pos = getPlanetPos(p, simTime, baseScale);
+          targetCamX = pos.x;
+          targetCamY = pos.y;
+        }
+        requestAnimationFrame(updateFollow);
+      }
+      requestAnimationFrame(updateFollow);
+    </script>
+  </body>
+</html>

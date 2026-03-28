@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Rainstorm</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb, mulberry32 } from './utils.js';
+
+      // ─── Seeded RNG for deterministic buildings ──────────
+      const rng = mulberry32(42);
+
+      // ─── Wind State ──────────────────────────────────────
+      let wind = 0;
+      let targetWind = 0;
+
+      // ─── Lightning State ─────────────────────────────────
+      let lightningFlash = 0;        // 0..1 brightness
+      let lightningTimer = 6 + Math.random() * 8;
+      let lightningBolt = null;      // bolt path for rendering
+
+      // ─── Skyline ─────────────────────────────────────────
+      const buildings = [];
+      const MAX_BUILDINGS = 40;
+
+      function initBuildings(w, h) {
+        buildings.length = 0;
+        const horizon = h * 0.25;
+        const groundY = h * 0.78;
+        let x = -20;
+        for (let i = 0; i < MAX_BUILDINGS; i++) {
+          const bw = 20 + rng() * 60;
+          const bh = 30 + rng() * (groundY - horizon - 30);
+          const by = groundY - bh;
+          const windows = [];
+          const wCols = Math.floor(bw / 10);
+          const wRows = Math.floor(bh / 14);
+          for (let wy = 0; wy < wRows; wy++) {
+            for (let wx = 0; wx < wCols; wx++) {
+              if (rng() < 0.45) {
+                const warm = rng();
+                windows.push({
+                  rx: (wx + 0.5) / wCols,
+                  ry: (wy + 0.5) / wRows,
+                  brightness: 0.3 + rng() * 0.7,
+                  warm,
+                  flicker: rng() * Math.PI * 2,
+                  flickerSpeed: 0.3 + rng() * 1.5,
+                });
+              }
+            }
+          }
+          buildings.push({ x, y: by, w: bw, h: bh, groundY, windows });
+          x += bw + 2 + rng() * 8;
+        }
+        // Scale to fill width
+        const totalW = x;
+        const scale = (w + 40) / totalW;
+        for (const b of buildings) {
+          b.x = b.x * scale - 20;
+          b.w *= scale;
+          b.y = groundY - (groundY - b.y) * scale;
+          b.h *= scale;
+        }
+      }
+
+      // ─── Rain Particle Pool ──────────────────────────────
+      const rain = new ParticlePool({ maxParticles: 3000, gravity: 900, drag: 0.999 });
+      const splashes = new ParticlePool({ maxParticles: 1000, gravity: 400, drag: 0.95 });
+
+      // ─── Condensation Noise ──────────────────────────────
+      // Simple value noise for glass condensation effect
+      const NOISE_SIZE = 64;
+      const noiseGrid = new Float32Array(NOISE_SIZE * NOISE_SIZE);
+      for (let i = 0; i < noiseGrid.length; i++) noiseGrid[i] = Math.random();
+
+      function sampleNoise(x, y) {
+        const gx = ((x % NOISE_SIZE) + NOISE_SIZE) % NOISE_SIZE;
+        const gy = ((y % NOISE_SIZE) + NOISE_SIZE) % NOISE_SIZE;
+        const ix = gx | 0, iy = gy | 0;
+        const fx = gx - ix, fy = gy - iy;
+        const ix1 = (ix + 1) % NOISE_SIZE, iy1 = (iy + 1) % NOISE_SIZE;
+        const a = noiseGrid[iy * NOISE_SIZE + ix];
+        const b = noiseGrid[iy * NOISE_SIZE + ix1];
+        const c = noiseGrid[iy1 * NOISE_SIZE + ix];
+        const d = noiseGrid[iy1 * NOISE_SIZE + ix1];
+        return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+      }
+
+      // ─── Lightning Bolt Generator ────────────────────────
+      function generateBolt(w, h) {
+        const points = [];
+        let x = w * (0.2 + Math.random() * 0.6);
+        let y = 0;
+        const targetY = h * (0.3 + Math.random() * 0.3);
+        const steps = 12 + Math.floor(Math.random() * 10);
+        const stepY = targetY / steps;
+        points.push({ x, y });
+        for (let i = 0; i < steps; i++) {
+          x += (Math.random() - 0.5) * 80;
+          y += stepY * (0.7 + Math.random() * 0.6);
+          points.push({ x, y });
+        }
+        return points;
+      }
+
+      // ─── Draw Routines ───────────────────────────────────
+
+      function drawSky(ctx, w, h, t) {
+        const skyGrad = ctx.createLinearGradient(0, 0, 0, h * 0.4);
+        skyGrad.addColorStop(0, '#030508');
+        skyGrad.addColorStop(0.5, '#0a0e18');
+        skyGrad.addColorStop(1, '#0f1520');
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, w, h * 0.4);
+      }
+
+      function drawCityscape(ctx, w, h, t) {
+        if (buildings.length === 0) initBuildings(w, h);
+
+        const groundY = h * 0.78;
+
+        // Distant cloud/haze layer
+        const hazeGrad = ctx.createLinearGradient(0, 0, 0, groundY);
+        hazeGrad.addColorStop(0, 'rgba(15, 20, 35, 0)');
+        hazeGrad.addColorStop(0.6, 'rgba(15, 20, 35, 0.3)');
+        hazeGrad.addColorStop(1, 'rgba(10, 12, 20, 0.5)');
+        ctx.fillStyle = hazeGrad;
+        ctx.fillRect(0, 0, w, groundY);
+
+        // Buildings
+        for (const b of buildings) {
+          // Building body — dark silhouette
+          const bodyBright = 0.06 + lightningFlash * 0.15;
+          ctx.fillStyle = `rgba(${20 + lightningFlash * 80 | 0}, ${22 + lightningFlash * 85 | 0}, ${30 + lightningFlash * 90 | 0}, 0.95)`;
+          ctx.fillRect(b.x, b.y, b.w, b.h);
+
+          // Windows
+          for (const win of b.windows) {
+            const wx = b.x + win.rx * b.w;
+            const wy = b.y + win.ry * b.h;
+            const flick = 0.8 + 0.2 * Math.sin(t * win.flickerSpeed + win.flicker);
+            const bright = win.brightness * flick;
+            const wSize = clamp(b.w / 12, 2, 5);
+
+            // Warm window glow
+            const r = lerp(200, 255, win.warm) * bright;
+            const g = lerp(150, 210, win.warm) * bright;
+            const bVal = lerp(50, 100, win.warm) * bright;
+            ctx.fillStyle = `rgba(${r | 0}, ${g | 0}, ${bVal | 0}, ${0.6 + lightningFlash * 0.3})`;
+            ctx.fillRect(wx - wSize / 2, wy - wSize / 2, wSize, wSize);
+
+            // Window glow halo
+            ctx.fillStyle = `rgba(${r | 0}, ${g | 0}, ${bVal | 0}, ${0.08 * bright})`;
+            ctx.fillRect(wx - wSize * 1.5, wy - wSize * 1.5, wSize * 3, wSize * 3);
+          }
+        }
+
+        // City glow — warm light pollution
+        const glowGrad = ctx.createRadialGradient(
+          w * 0.5, groundY, 0,
+          w * 0.5, groundY, w * 0.5
+        );
+        glowGrad.addColorStop(0, 'rgba(80, 50, 25, 0.12)');
+        glowGrad.addColorStop(0.5, 'rgba(50, 30, 15, 0.06)');
+        glowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = glowGrad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawGround(ctx, w, h, t) {
+        const groundY = h * 0.78;
+
+        // Wet ground base
+        const groundGrad = ctx.createLinearGradient(0, groundY, 0, h);
+        groundGrad.addColorStop(0, '#0a0d14');
+        groundGrad.addColorStop(0.3, '#080b10');
+        groundGrad.addColorStop(1, '#050709');
+        ctx.fillStyle = groundGrad;
+        ctx.fillRect(0, groundY, w, h - groundY);
+
+        // Reflected city lights on wet ground
+        for (const b of buildings) {
+          for (const win of b.windows) {
+            const wx = b.x + win.rx * b.w;
+            const distFromGround = (b.y + win.ry * b.h) - groundY;
+            const reflY = groundY - distFromGround * 0.3 + Math.abs(distFromGround) * 0.6;
+            if (reflY < groundY || reflY > h) continue;
+
+            const flick = 0.7 + 0.3 * Math.sin(t * win.flickerSpeed * 0.7 + win.flicker + 1);
+            const bright = win.brightness * flick * 0.25;
+            const spread = (reflY - groundY) * 0.5 + 4;
+            const r = lerp(200, 255, win.warm) * bright;
+            const g = lerp(150, 210, win.warm) * bright;
+            const bVal = lerp(50, 100, win.warm) * bright;
+
+            // Smeared reflection
+            ctx.fillStyle = `rgba(${r | 0}, ${g | 0}, ${bVal | 0}, ${0.15 * bright})`;
+            ctx.fillRect(wx - spread, reflY, spread * 2, 3 + spread * 0.5);
+          }
+        }
+
+        // Overall wet sheen
+        const sheenGrad = ctx.createLinearGradient(0, groundY, 0, groundY + 20);
+        sheenGrad.addColorStop(0, 'rgba(60, 80, 110, 0.06)');
+        sheenGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = sheenGrad;
+        ctx.fillRect(0, groundY, w, 20);
+      }
+
+      function drawGlassCondensation(ctx, w, h, t) {
+        // Subtle glass texture — misty edges and condensation
+        // Vignette / fog on glass edges
+        const vigGrad = ctx.createRadialGradient(
+          w * 0.5, h * 0.5, Math.min(w, h) * 0.25,
+          w * 0.5, h * 0.5, Math.max(w, h) * 0.7
+        );
+        vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        vigGrad.addColorStop(0.6, 'rgba(8, 12, 20, 0.08)');
+        vigGrad.addColorStop(1, 'rgba(8, 12, 20, 0.25)');
+        ctx.fillStyle = vigGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Condensation droplets — subtle misty spots using noise
+        ctx.save();
+        ctx.globalAlpha = 0.03;
+        for (let i = 0; i < 60; i++) {
+          const nx = (i * 7.3 + t * 0.0002) % 20;
+          const ny = (i * 11.7 + t * 0.0001) % 20;
+          const n = sampleNoise(nx * 3, ny * 3);
+          const cx = (n * w + i * 37) % w;
+          const cy = (sampleNoise(nx + 5, ny + 5) * h + i * 23) % h;
+          const r = 8 + n * 25;
+          const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+          grad.addColorStop(0, 'rgba(100, 130, 170, 0.6)');
+          grad.addColorStop(1, 'rgba(100, 130, 170, 0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        }
+        ctx.restore();
+      }
+
+      function drawLightning(ctx, w, h) {
+        if (!lightningBolt || lightningFlash < 0.05) return;
+
+        // Screen flash
+        ctx.fillStyle = `rgba(200, 210, 240, ${lightningFlash * 0.3})`;
+        ctx.fillRect(0, 0, w, h);
+
+        // Draw bolt
+        ctx.save();
+        ctx.globalAlpha = lightningFlash;
+        ctx.strokeStyle = `rgba(220, 230, 255, ${lightningFlash})`;
+        ctx.lineWidth = 2 + lightningFlash * 3;
+        ctx.shadowColor = 'rgba(150, 170, 255, 0.8)';
+        ctx.shadowBlur = 20 + lightningFlash * 30;
+        ctx.beginPath();
+        ctx.moveTo(lightningBolt[0].x, lightningBolt[0].y);
+        for (let i = 1; i < lightningBolt.length; i++) {
+          ctx.lineTo(lightningBolt[i].x, lightningBolt[i].y);
+        }
+        ctx.stroke();
+
+        // Thinner bright core
+        ctx.strokeStyle = `rgba(255, 255, 255, ${lightningFlash * 0.8})`;
+        ctx.lineWidth = 1;
+        ctx.shadowBlur = 5;
+        ctx.beginPath();
+        ctx.moveTo(lightningBolt[0].x, lightningBolt[0].y);
+        for (let i = 1; i < lightningBolt.length; i++) {
+          ctx.lineTo(lightningBolt[i].x, lightningBolt[i].y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawRain(ctx, w, h) {
+        rain.forEach((p) => {
+          const len = clamp(p.speed * 0.06, 4, 25);
+          const windAngle = wind * 0.3;
+          const alpha = clamp(p.brightness * (p.life / p.maxLife), 0.1, 0.7);
+
+          ctx.strokeStyle = `rgba(${150 + lightningFlash * 100 | 0}, ${170 + lightningFlash * 80 | 0}, ${210 + lightningFlash * 45 | 0}, ${alpha})`;
+          ctx.lineWidth = p.thickness;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - windAngle * len, p.y - len);
+          ctx.stroke();
+        });
+      }
+
+      function drawSplashes(ctx, w, h) {
+        splashes.forEach((p) => {
+          const alpha = clamp(p.life / p.maxLife * 0.6, 0, 0.5);
+          const r = Math.max(0, p.size * (1 - p.life / p.maxLife));
+          ctx.fillStyle = `rgba(150, 180, 220, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // ─── Spawn Rain ──────────────────────────────────────
+      function spawnRain(w, h, dt) {
+        const count = Math.floor(18 * dt * 60); // ~18 drops per frame at 60fps
+        rain.emit(count, () => {
+          const speed = 300 + Math.random() * 500;
+          const maxLife = 1.5 + Math.random() * 2;
+          return {
+            x: Math.random() * (w + 200) - 100 - wind * 50,
+            y: -10 - Math.random() * 100,
+            vx: wind * (80 + Math.random() * 120),
+            vy: speed,
+            life: maxLife,
+            maxLife,
+            speed,
+            thickness: 0.5 + Math.random() * 1.2,
+            brightness: 0.3 + Math.random() * 0.7,
+            gravity: 600 + Math.random() * 400,
+          };
+        });
+      }
+
+      // ─── Main Draw ───────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 6,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          background: '#040609',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.25,
+          crtScanlines: 0.08,
+          crtDistortion: 0.01,
+          crtFlicker: 0.02,
+        },
+        layers: [
+          // Layer 1: Blurry city backdrop — larger chars, low opacity
+          {
+            fontSize: 16,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            opacity: 0.2,
+            blendMode: 'add',
+          },
+          // Layer 2: Edge detection for building outlines
+          {
+            fontSize: 8,
+            edgeDetect: true,
+            edgeThreshold: 0.3,
+            edgeCharset: 'box-light',
+            colorScheme: 'mono',
+            opacity: 0.12,
+            blendMode: 'add',
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          const t = time / 1000;
+
+          // ── Update wind from mouse ──
+          wind = lerp(wind, targetWind, 1 - Math.pow(0.03, dt));
+
+          // ── Update lightning ──
+          lightningTimer -= dt;
+          if (lightningTimer <= 0) {
+            lightningFlash = 1;
+            lightningBolt = generateBolt(w, h);
+            lightningTimer = 5 + Math.random() * 10;
+          }
+          if (lightningFlash > 0) {
+            // Fast initial decay, then slow fade
+            lightningFlash *= lightningFlash > 0.5 ? 0.85 : 0.94;
+            if (lightningFlash < 0.01) {
+              lightningFlash = 0;
+              lightningBolt = null;
+            }
+          }
+
+          // ── Clear ──
+          ctx.fillStyle = '#040609';
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Scene layers ──
+          drawSky(ctx, w, h, t);
+          drawCityscape(ctx, w, h, t);
+          drawGround(ctx, w, h, t);
+
+          // ── Spawn & update rain ──
+          spawnRain(w, h, dt);
+          const groundY = h * 0.78;
+
+          rain.update(dt, (p) => {
+            // Splash on death if near ground
+            if (p.y > groundY - 20) {
+              splashes.emit(1, () => ({
+                x: p.x,
+                y: groundY + Math.random() * 4,
+                vx: (Math.random() - 0.5) * 40 + wind * 20,
+                vy: -20 - Math.random() * 30,
+                life: 0.2 + Math.random() * 0.3,
+                maxLife: 0.4,
+                size: 1 + Math.random() * 2,
+                gravity: 200,
+              }));
+            }
+          });
+          splashes.update(dt);
+
+          // ── Draw rain & splashes ──
+          drawRain(ctx, w, h);
+          drawSplashes(ctx, w, h);
+
+          // ── Glass condensation overlay ──
+          drawGlassCondensation(ctx, w, h, t);
+
+          // ── Lightning overlay (on top of everything) ──
+          drawLightning(ctx, w, h);
+
+          // ── Subtle color wash at bottom for wet ground glow ──
+          const wetGrad = ctx.createLinearGradient(0, groundY, 0, h);
+          wetGrad.addColorStop(0, 'rgba(30, 50, 80, 0)');
+          wetGrad.addColorStop(0.5, 'rgba(20, 35, 60, 0.06)');
+          wetGrad.addColorStop(1, 'rgba(15, 25, 45, 0.1)');
+          ctx.fillStyle = wetGrad;
+          ctx.fillRect(0, groundY, w, h - groundY);
+        },
+        onResize(ctx, w, h) {
+          initBuildings(w, h);
+          rain.clear();
+          splashes.clear();
+        },
+      });
+
+      // ─── Mouse / Touch for Wind ──────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        const nx = e.clientX / window.innerWidth;
+        targetWind = (nx - 0.5) * 2; // -1 to 1
+      });
+      window.addEventListener('mouseleave', () => {
+        targetWind = 0;
+      });
+      window.addEventListener('touchmove', (e) => {
+        const nx = e.touches[0].clientX / window.innerWidth;
+        targetWind = (nx - 0.5) * 2;
+      });
+      window.addEventListener('touchend', () => {
+        targetWind = 0;
+      });
+    </script>
+  </body>
+</html>

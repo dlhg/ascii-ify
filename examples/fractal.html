@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Fractal Explorer</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        font: 12px/1.5 'Courier New', monospace;
+        color: rgba(200, 220, 255, 0.8);
+        background: rgba(0, 0, 0, 0.55);
+        padding: 8px 12px;
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 10;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <div id="hud"></div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, getCanvasPos } from './utils.js';
+
+      // ─── Fractal State ──────────────────────────────────────
+      let centerX = -0.5;
+      let centerY = 0.0;
+      let zoom = 1.0;
+      let maxIter = 80;
+
+      // Smooth animation targets
+      let targetCenterX = centerX;
+      let targetCenterY = centerY;
+      let targetZoom = zoom;
+
+      // Modes
+      let juliaMode = false;
+      let juliaReal = -0.7;
+      let juliaImag = 0.27015;
+      let cinematicMode = false;
+      let edgeOnlyMode = false;
+
+      // Mouse tracking for Julia mode
+      let mouseX = 0;
+      let mouseY = 0;
+
+      // Cinematic state
+      const CINEMATIC_TARGET_X = -0.7435669;
+      const CINEMATIC_TARGET_Y = 0.1314023;
+      let cinematicZoom = 1.0;
+      let cinematicTime = 0;
+
+      // Off-screen fractal canvas (reduced resolution for performance)
+      let fractalCanvas = document.createElement('canvas');
+      let fractalCtx = fractalCanvas.getContext('2d');
+      let fractalW = 0;
+      let fractalH = 0;
+      const RESOLUTION_SCALE = 0.35; // render at 35% resolution
+
+      // HUD element
+      const hud = document.getElementById('hud');
+
+      // ─── Color Palette ──────────────────────────────────────
+      // Pre-compute a vivid palette for smooth fractal coloring
+      const PALETTE_SIZE = 2048;
+      const palette = new Uint8Array(PALETTE_SIZE * 3);
+      function buildPalette() {
+        for (let i = 0; i < PALETTE_SIZE; i++) {
+          const t = i / PALETTE_SIZE;
+          // Multi-stop vivid gradient
+          let r, g, b;
+          if (t < 0.16) {
+            const s = t / 0.16;
+            r = lerp(10, 30, s);
+            g = lerp(10, 60, s);
+            b = lerp(40, 160, s);
+          } else if (t < 0.42) {
+            const s = (t - 0.16) / 0.26;
+            r = lerp(30, 255, s);
+            g = lerp(60, 200, s);
+            b = lerp(160, 60, s);
+          } else if (t < 0.6425) {
+            const s = (t - 0.42) / 0.2225;
+            r = lerp(255, 255, s);
+            g = lerp(200, 255, s);
+            b = lerp(60, 20, s);
+          } else if (t < 0.8575) {
+            const s = (t - 0.6425) / 0.215;
+            r = lerp(255, 100, s);
+            g = lerp(255, 30, s);
+            b = lerp(20, 120, s);
+          } else {
+            const s = (t - 0.8575) / 0.1425;
+            r = lerp(100, 10, s);
+            g = lerp(30, 10, s);
+            b = lerp(120, 40, s);
+          }
+          palette[i * 3] = r | 0;
+          palette[i * 3 + 1] = g | 0;
+          palette[i * 3 + 2] = b | 0;
+        }
+      }
+      buildPalette();
+
+      // ─── Fractal Computation ────────────────────────────────
+      function renderFractal(width, height, time) {
+        if (width < 1 || height < 1) return;
+
+        if (fractalCanvas.width !== width || fractalCanvas.height !== height) {
+          fractalCanvas.width = width;
+          fractalCanvas.height = height;
+        }
+
+        const imgData = fractalCtx.createImageData(width, height);
+        const data = imgData.data;
+        const scale = 1 / (zoom * width * 0.25);
+
+        // Color cycle offset based on time
+        const cycleOffset = time * 0.00005;
+
+        for (let py = 0; py < height; py++) {
+          const ci_base = centerY + (py - height * 0.5) * scale;
+          for (let px = 0; px < width; px++) {
+            const cr_base = centerX + (px - width * 0.5) * scale;
+            const idx = (py * width + px) * 4;
+
+            let zr, zi, cr, ci;
+
+            if (juliaMode) {
+              // Julia set: z starts at pixel position, c is fixed
+              zr = cr_base;
+              zi = ci_base;
+              cr = juliaReal;
+              ci = juliaImag;
+            } else {
+              // Mandelbrot: z starts at 0, c is pixel position
+              zr = 0;
+              zi = 0;
+              cr = cr_base;
+              ci = ci_base;
+            }
+
+            let iter = 0;
+            let zr2 = zr * zr;
+            let zi2 = zi * zi;
+
+            while (zr2 + zi2 <= 4.0 && iter < maxIter) {
+              zi = 2 * zr * zi + ci;
+              zr = zr2 - zi2 + cr;
+              zr2 = zr * zr;
+              zi2 = zi * zi;
+              iter++;
+            }
+
+            if (iter === maxIter) {
+              // Inside the set — black
+              data[idx] = 0;
+              data[idx + 1] = 0;
+              data[idx + 2] = 0;
+              data[idx + 3] = 255;
+            } else {
+              // Smooth coloring using escape radius
+              const log2 = Math.log(2);
+              const smooth = iter + 1 - Math.log(Math.log(zr2 + zi2) * 0.5) / log2;
+              const t = (smooth / maxIter + cycleOffset) % 1.0;
+              const palIdx = ((t * PALETTE_SIZE) | 0) % PALETTE_SIZE;
+              const pi = palIdx * 3;
+              data[idx] = palette[pi];
+              data[idx + 1] = palette[pi + 1];
+              data[idx + 2] = palette[pi + 2];
+              data[idx + 3] = 255;
+            }
+          }
+        }
+
+        fractalCtx.putImageData(imgData, 0, 0);
+      }
+
+      // ─── Draw ───────────────────────────────────────────────
+      function draw(ctx, { time, dt, width: w, height: h }) {
+        // Handle cinematic mode auto-zoom
+        if (cinematicMode) {
+          cinematicTime += dt;
+          // Slowly zoom into the spiral region
+          const zoomRate = 1.0 + dt * 0.35;
+          cinematicZoom *= zoomRate;
+          targetZoom = cinematicZoom;
+          targetCenterX = CINEMATIC_TARGET_X;
+          targetCenterY = CINEMATIC_TARGET_Y;
+
+          // Gradually increase iterations as we zoom deeper
+          maxIter = Math.min(500, 80 + Math.floor(Math.log2(cinematicZoom) * 15));
+        }
+
+        // Smooth interpolation toward targets
+        const lerpSpeed = 1 - Math.pow(0.03, dt);
+        centerX = lerp(centerX, targetCenterX, lerpSpeed);
+        centerY = lerp(centerY, targetCenterY, lerpSpeed);
+        zoom = lerp(zoom, targetZoom, lerpSpeed);
+
+        // Update Julia constant from mouse in Julia mode
+        if (juliaMode && !cinematicMode) {
+          const scale = 1 / (zoom * w * 0.25);
+          juliaReal = lerp(juliaReal, centerX + (mouseX - w * 0.5) * scale, lerpSpeed);
+          juliaImag = lerp(juliaImag, centerY + (mouseY - h * 0.5) * scale, lerpSpeed);
+        }
+
+        // Compute fractal at reduced resolution
+        fractalW = Math.max(1, (w * RESOLUTION_SCALE) | 0);
+        fractalH = Math.max(1, (h * RESOLUTION_SCALE) | 0);
+        renderFractal(fractalW, fractalH, time);
+
+        // Draw scaled-up fractal onto the main canvas
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'low';
+        ctx.drawImage(fractalCanvas, 0, 0, fractalW, fractalH, 0, 0, w, h);
+
+        // Update HUD
+        const zoomStr = zoom >= 1e6 ? zoom.toExponential(2) : zoom.toFixed(1);
+        const mode = juliaMode ? 'Julia' : 'Mandelbrot';
+        const flags = [
+          cinematicMode ? 'CINEMATIC' : null,
+          edgeOnlyMode ? 'EDGE' : null,
+        ].filter(Boolean).join(' ');
+
+        hud.textContent =
+          `${mode}${flags ? ' [' + flags + ']' : ''}\n` +
+          `Zoom: ${zoomStr}x  Iter: ${maxIter}\n` +
+          `Center: (${centerX.toPrecision(8)}, ${centerY.toPrecision(8)})\n` +
+          `─────────────────────────────\n` +
+          `Click: zoom in  Shift/Right: out\n` +
+          `Scroll: iterations  Arrows: pan\n` +
+          `J: Julia  C: Cinematic  D: Edges\n` +
+          `R: Reset  P: Panel`;
+      }
+
+      // ─── App Setup ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'braille',
+          colorScheme: 'rainbow',
+          background: '#000000',
+          sourceOpacity: 0,
+          colorCycle: true,
+          colorCycleRate: 0.3,
+        },
+        layers: [
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'rainbow',
+            edgeDetect: true,
+            edgeThreshold: 0.25,
+            edgeCharset: 'box-light',
+            blendMode: 'add',
+            opacity: 0.35,
+            zIndex: 1,
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) {
+          // Recompute on next frame automatically
+        },
+        onKeydown(e) {
+          const key = e.key.toLowerCase();
+
+          if (key === 'j') {
+            juliaMode = !juliaMode;
+            if (juliaMode) {
+              // Start Julia with an interesting constant
+              juliaReal = -0.7;
+              juliaImag = 0.27015;
+            }
+          }
+
+          if (key === 'c') {
+            cinematicMode = !cinematicMode;
+            if (cinematicMode) {
+              // Reset cinematic zoom
+              cinematicZoom = zoom;
+              cinematicTime = 0;
+              juliaMode = false;
+            }
+          }
+
+          // Use 'D' for edge-detection-only mode to avoid conflict with
+          // the boilerplate's 'E' key (which toggles ASCII on/off).
+          if (key === 'd') {
+            edgeOnlyMode = !edgeOnlyMode;
+            if (edgeOnlyMode) {
+              // Solo edge layer: make base layer transparent, boost edge layer
+              app.ascii.set('opacity', 0.05);
+              app.ascii.setLayer(0, { opacity: 1.0, edgeThreshold: 0.15 });
+            } else {
+              // Restore normal
+              app.ascii.set('opacity', 1.0);
+              app.ascii.setLayer(0, { opacity: 0.35, edgeThreshold: 0.25 });
+            }
+          }
+
+          if (key === 'r') {
+            // Reset view
+            targetCenterX = -0.5;
+            targetCenterY = 0.0;
+            targetZoom = 1.0;
+            maxIter = 80;
+            juliaMode = false;
+            cinematicMode = false;
+            edgeOnlyMode = false;
+            app.ascii.set('opacity', 1.0);
+            app.ascii.setLayer(0, { opacity: 0.35, edgeThreshold: 0.25 });
+          }
+
+          // Arrow key panning
+          const panAmount = 0.15 / zoom;
+          if (key === 'arrowleft') { targetCenterX -= panAmount; e.preventDefault(); }
+          if (key === 'arrowright') { targetCenterX += panAmount; e.preventDefault(); }
+          if (key === 'arrowup') { targetCenterY -= panAmount; e.preventDefault(); }
+          if (key === 'arrowdown') { targetCenterY += panAmount; e.preventDefault(); }
+        },
+      });
+
+      // ─── Mouse / Touch Interactions ─────────────────────────
+
+      // Track mouse position (for Julia mode)
+      window.addEventListener('mousemove', (e) => {
+        const pos = getCanvasPos(app.canvas, e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+      });
+
+      // Click to zoom in
+      app.canvas.addEventListener('click', (e) => {
+        if (cinematicMode) return;
+        const pos = getCanvasPos(app.canvas, e);
+        const w = app.canvas.width;
+        const h = app.canvas.height;
+        const scale = 1 / (zoom * w * 0.25);
+
+        if (e.shiftKey) {
+          // Zoom out
+          targetZoom = zoom / 3;
+        } else {
+          // Set new center to clicked point, zoom in
+          targetCenterX = centerX + (pos.x - w * 0.5) * scale;
+          targetCenterY = centerY + (pos.y - h * 0.5) * scale;
+          targetZoom = zoom * 3;
+        }
+      });
+
+      // Right-click to zoom out
+      app.canvas.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (cinematicMode) return;
+        targetZoom = zoom / 3;
+      });
+
+      // Scroll to adjust max iterations
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          maxIter = Math.min(1000, maxIter + 10);
+        } else {
+          maxIter = Math.max(10, maxIter - 10);
+        }
+      }, { passive: false });
+
+      // Touch: tap to zoom, pinch would be nice but keep it simple
+      app.canvas.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) {
+          const pos = getCanvasPos(app.canvas, e.touches[0]);
+          mouseX = pos.x;
+          mouseY = pos.y;
+        }
+      });
+
+      app.canvas.addEventListener('touchend', (e) => {
+        if (cinematicMode) return;
+        if (e.changedTouches.length === 1) {
+          const pos = getCanvasPos(app.canvas, e.changedTouches[0]);
+          const w = app.canvas.width;
+          const h = app.canvas.height;
+          const scale = 1 / (zoom * w * 0.25);
+          targetCenterX = centerX + (pos.x - w * 0.5) * scale;
+          targetCenterY = centerY + (pos.y - h * 0.5) * scale;
+          targetZoom = zoom * 3;
+        }
+      });
+    </script>
+  </body>
+</html>

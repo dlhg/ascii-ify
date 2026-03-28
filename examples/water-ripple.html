@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Water Ripple</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp, lerp, getCanvasPos } from './utils.js';
+
+      // ─── Ripple Simulation ──────────────────────────────
+      const CELL = 4;             // sim resolution (pixels per cell)
+      const DAMPING = 0.97;       // energy loss per step
+      const C2 = 0.22;            // wave speed squared (keep < 0.25 for stability)
+      const STEPS_PER_FRAME = 2;  // sub-steps for smoother propagation
+
+      let cols, rows;
+      let curr, prev;             // height buffers
+
+      function initSim(w, h) {
+        cols = Math.ceil(w / CELL);
+        rows = Math.ceil(h / CELL);
+        const n = cols * rows;
+        curr = new Float32Array(n);
+        prev = new Float32Array(n);
+      }
+
+      function dropAt(cx, cy, radius, strength) {
+        const r = Math.ceil(radius / CELL);
+        const gx = (cx / CELL) | 0;
+        const gy = (cy / CELL) | 0;
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const ix = gx + dx;
+            const iy = gy + dy;
+            if (ix < 0 || ix >= cols || iy < 0 || iy >= rows) continue;
+            const d = Math.sqrt(dx * dx + dy * dy) / r;
+            if (d > 1) continue;
+            // cosine bell shape
+            const amp = strength * 0.5 * (1 + Math.cos(Math.PI * d));
+            curr[iy * cols + ix] += amp;
+          }
+        }
+      }
+
+      function stepSim() {
+        const next = new Float32Array(cols * rows);
+        for (let y = 1; y < rows - 1; y++) {
+          for (let x = 1; x < cols - 1; x++) {
+            const i = y * cols + x;
+            const laplacian =
+              curr[i - 1] + curr[i + 1] +
+              curr[i - cols] + curr[i + cols] -
+              4 * curr[i];
+            next[i] = (2 * curr[i] - prev[i] + C2 * laplacian) * DAMPING;
+          }
+        }
+        prev = curr;
+        curr = next;
+      }
+
+      // ─── Rain Drops ────────────────────────────────────
+      let nextDrop = 0;
+
+      function spawnRain(t, w, h) {
+        if (t < nextDrop) return;
+        nextDrop = t + 300 + Math.random() * 700;
+        const x = Math.random() * w;
+        const y = Math.random() * h;
+        const radius = 12 + Math.random() * 28;
+        const strength = 60 + Math.random() * 100;
+        dropAt(x, y, radius, strength);
+      }
+
+      // ─── Render Sim to Canvas ──────────────────────────
+      function drawSim(ctx, w, h, t) {
+        const imageData = ctx.createImageData(w, h);
+        const data = imageData.data;
+
+        const tSec = t / 1000;
+
+        for (let py = 0; py < h; py++) {
+          const gy = clamp((py / CELL) | 0, 0, rows - 1);
+          for (let px = 0; px < w; px++) {
+            const gx = clamp((px / CELL) | 0, 0, cols - 1);
+            const i = gy * cols + gx;
+
+            // height → gradient displacement for refraction-like shading
+            const dxH = gx > 0 && gx < cols - 1 ? curr[i + 1] - curr[i - 1] : 0;
+            const dyH = gy > 0 && gy < rows - 1 ? curr[i + cols] - curr[i - cols] : 0;
+            const height = curr[i];
+
+            // base deep water color with slow drift
+            const baseR = 6 + 4 * Math.sin(tSec * 0.3 + py * 0.004);
+            const baseG = 20 + 10 * Math.sin(tSec * 0.25 + px * 0.003);
+            const baseB = 45 + 15 * Math.sin(tSec * 0.2 + (px + py) * 0.002);
+
+            // refraction tint from gradients
+            const refR = clamp(dxH * 0.8, -30, 30);
+            const refG = clamp((dxH + dyH) * 0.6, -20, 40);
+            const refB = clamp(dyH * 1.2, -20, 50);
+
+            // caustic highlights from positive height
+            const caustic = clamp(height * 0.5, 0, 1);
+            const causticR = caustic * 30;
+            const causticG = caustic * 80;
+            const causticB = caustic * 120;
+
+            // specular highlight at steep gradients
+            const grad = Math.sqrt(dxH * dxH + dyH * dyH);
+            const spec = clamp(grad * 0.03, 0, 1);
+            const specPow = spec * spec * spec;
+
+            const pi = (py * w + px) * 4;
+            data[pi]     = clamp(baseR + refR + causticR + specPow * 180, 0, 255) | 0;
+            data[pi + 1] = clamp(baseG + refG + causticG + specPow * 220, 0, 255) | 0;
+            data[pi + 2] = clamp(baseB + refB + causticB + specPow * 255, 0, 255) | 0;
+            data[pi + 3] = 255;
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: { background: '#04080e', sourceOpacity: 0 },
+        layers: [
+          // Base water with braille for fine detail
+          { fontSize: 7, charset: 'braille', colorScheme: 'ocean', opacity: 0.9 },
+          // Larger blocks for deep water texture
+          { fontSize: 14, charset: 'blocks', colorScheme: 'ocean', blendMode: 'add', opacity: 0.15 },
+          // Edge highlights to catch ripple crests
+          { fontSize: 6, charset: 'density', edgeDetect: true, edgeCharset: 'box-light', colorScheme: 'ice', blendMode: 'add', opacity: 0.3 },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          if (!curr || cols !== Math.ceil(w / CELL)) initSim(w, h);
+
+          spawnRain(time, w, h);
+
+          for (let i = 0; i < STEPS_PER_FRAME; i++) stepSim();
+
+          drawSim(ctx, w, h, time);
+        },
+        onResize(ctx, w, h) {
+          initSim(w, h);
+        },
+      });
+
+      // ─── Mouse / Touch Interaction ─────────────────────
+      const canvas = app.canvas;
+      let pointerDown = false;
+
+      function handleDrop(e) {
+        const pos = getCanvasPos(canvas, e);
+        dropAt(pos.x, pos.y, 20 + Math.random() * 15, 120 + Math.random() * 80);
+      }
+
+      canvas.addEventListener('pointerdown', (e) => { pointerDown = true; handleDrop(e); });
+      canvas.addEventListener('pointermove', (e) => { if (pointerDown) handleDrop(e); });
+      window.addEventListener('pointerup', () => { pointerDown = false; });
+      canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+    </script>
+  </body>
+</html>

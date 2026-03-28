@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Piano</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, rgb } from './utils.js';
+
+      // ─── Note / Frequency Helpers ─────────────────────────
+      // Starting from C4 (MIDI 60) — two octaves: C4..B5
+      const NOTE_NAMES = [
+        'C','C#','D','D#','E','F','F#','G','G#','A','A#','B',
+      ];
+      const TOTAL_NOTES = 24; // 2 octaves
+      const BASE_MIDI = 60;   // C4
+
+      function midiToFreq(midi) {
+        return 440 * Math.pow(2, (midi - 69) / 12);
+      }
+
+      function noteHue(noteIndex) {
+        return ((noteIndex % 12) / 12) * 360;
+      }
+
+      function noteColorRGB(noteIndex) {
+        const h = noteHue(noteIndex) / 360;
+        const s = 0.85, l = 0.6;
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs((h * 6) % 2 - 1));
+        const m = l - c / 2;
+        let r, g, b;
+        const sector = (h * 6) | 0;
+        switch (sector % 6) {
+          case 0: r = c; g = x; b = 0; break;
+          case 1: r = x; g = c; b = 0; break;
+          case 2: r = 0; g = c; b = x; break;
+          case 3: r = 0; g = x; b = c; break;
+          case 4: r = x; g = 0; b = c; break;
+          default: r = c; g = 0; b = x; break;
+        }
+        return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+      }
+
+      // ─── Piano Key Layout ─────────────────────────────────
+      const WHITE_NOTE_INDICES = [0, 2, 4, 5, 7, 9, 11]; // C D E F G A B
+      const BLACK_NOTE_OFFSETS = [1, 3, 6, 8, 10];        // C# D# F# G# A#
+
+      function isBlackKey(noteInOctave) {
+        return BLACK_NOTE_OFFSETS.includes(noteInOctave);
+      }
+
+      // Build the full key list
+      const keys = [];
+      let whiteCount = 0;
+      for (let i = 0; i < TOTAL_NOTES; i++) {
+        const noteInOctave = i % 12;
+        const black = isBlackKey(noteInOctave);
+        if (!black) whiteCount++;
+        keys.push({
+          noteIndex: i,
+          midi: BASE_MIDI + i,
+          name: NOTE_NAMES[noteInOctave] + (4 + Math.floor(i / 12)),
+          black,
+          whiteIndex: black ? -1 : whiteCount - 1,
+        });
+      }
+      const TOTAL_WHITE = whiteCount;
+
+      // ─── Keyboard Mapping ─────────────────────────────────
+      // Lower octave whites (C4-B4): z x c v b n m
+      // Lower octave blacks:         s d   g h j
+      // Upper octave whites (C5-B5): q w e r t y u
+      // Upper octave blacks:         2 3   5 6 7
+      const KEY_MAP = {};
+
+      const lowerWhites = ['z', 'x', 'c', 'v', 'b', 'n', 'm'];
+      const lowerBlacks = ['s', 'd', 'g', 'h', 'j'];
+      const upperWhites = ['q', 'w', 'e', 'r', 't', 'y', 'u'];
+      const upperBlacks = ['2', '3', '5', '6', '7'];
+
+      let wIdx = 0, bIdx = 0;
+      for (let i = 0; i < 12; i++) {
+        if (isBlackKey(i)) { KEY_MAP[lowerBlacks[bIdx++]] = i; }
+        else { KEY_MAP[lowerWhites[wIdx++]] = i; }
+      }
+      wIdx = 0; bIdx = 0;
+      for (let i = 0; i < 12; i++) {
+        if (isBlackKey(i)) { KEY_MAP[upperBlacks[bIdx++]] = 12 + i; }
+        else { KEY_MAP[upperWhites[wIdx++]] = 12 + i; }
+      }
+
+      // ─── Piano Geometry ───────────────────────────────────
+      const PIANO_HEIGHT_FRAC = 0.15;
+
+      function pianoGeometry(w, h) {
+        const pianoTop = h * (1 - PIANO_HEIGHT_FRAC);
+        const pianoH = h * PIANO_HEIGHT_FRAC;
+        const whiteW = w / TOTAL_WHITE;
+        const blackW = whiteW * 0.6;
+        const blackH = pianoH * 0.6;
+
+        const geo = [];
+        // White keys
+        let wx = 0;
+        for (const k of keys) {
+          if (!k.black) {
+            geo[k.noteIndex] = {
+              x: wx, y: pianoTop,
+              w: whiteW - 1, h: pianoH,
+              cx: wx + whiteW / 2, cy: pianoTop + pianoH / 2,
+            };
+            wx += whiteW;
+          }
+        }
+        // Black keys — positioned relative to the white key to their left
+        for (const k of keys) {
+          if (k.black) {
+            const noteInOctave = k.noteIndex % 12;
+            const octaveOff = Math.floor(k.noteIndex / 12);
+            const leftWhiteNote = noteInOctave - 1;
+            const leftGeo = geo[octaveOff * 12 + leftWhiteNote];
+            if (leftGeo) {
+              const bx = leftGeo.x + leftGeo.w + 1 - blackW / 2;
+              geo[k.noteIndex] = {
+                x: bx, y: pianoTop,
+                w: blackW, h: blackH,
+                cx: bx + blackW / 2, cy: pianoTop + blackH / 2,
+              };
+            }
+          }
+        }
+        return { geo, pianoTop, pianoH };
+      }
+
+      // ─── Audio Synthesis ──────────────────────────────────
+      let audioCtx = null;
+      const activeVoices = {};
+
+      function ensureAudio() {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+      }
+
+      function noteOn(noteIndex) {
+        ensureAudio();
+        if (activeVoices[noteIndex]) return;
+
+        const freq = midiToFreq(BASE_MIDI + noteIndex);
+        const now = audioCtx.currentTime;
+
+        // Master gain with ADSR envelope
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.18, now + 0.02);   // attack
+        gain.gain.linearRampToValueAtTime(0.12, now + 0.12);   // decay -> sustain
+        gain.connect(audioCtx.destination);
+
+        // Oscillator 1: sine (fundamental)
+        const osc1 = audioCtx.createOscillator();
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(freq, now);
+        osc1.connect(gain);
+        osc1.start(now);
+
+        // Oscillator 2: triangle for warmth, slightly lower volume
+        const gain2 = audioCtx.createGain();
+        gain2.gain.setValueAtTime(0.4, now);
+        gain2.connect(gain);
+        const osc2 = audioCtx.createOscillator();
+        osc2.type = 'triangle';
+        osc2.frequency.setValueAtTime(freq, now);
+        osc2.connect(gain2);
+        osc2.start(now);
+
+        // Oscillator 3: soft 2nd harmonic
+        const gain3 = audioCtx.createGain();
+        gain3.gain.setValueAtTime(0.08, now);
+        gain3.connect(gain);
+        const osc3 = audioCtx.createOscillator();
+        osc3.type = 'sine';
+        osc3.frequency.setValueAtTime(freq * 2, now);
+        osc3.connect(gain3);
+        osc3.start(now);
+
+        activeVoices[noteIndex] = { osc1, osc2, osc3, gain, gain2, gain3 };
+      }
+
+      function noteOff(noteIndex) {
+        const voice = activeVoices[noteIndex];
+        if (!voice) return;
+        const now = audioCtx.currentTime;
+        voice.gain.gain.cancelScheduledValues(now);
+        voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+        voice.gain.gain.linearRampToValueAtTime(0, now + 0.3);  // release
+        voice.osc1.stop(now + 0.35);
+        voice.osc2.stop(now + 0.35);
+        voice.osc3.stop(now + 0.35);
+        delete activeVoices[noteIndex];
+      }
+
+      // ─── Note State & Waterfall Columns ───────────────────
+      const pressedNotes = new Set();
+      const columns = [];
+      const COLUMN_SPEED = 180; // px/s
+      const MAX_COLUMNS = 200;
+
+      function startNote(noteIndex) {
+        if (pressedNotes.has(noteIndex)) return;
+        pressedNotes.add(noteIndex);
+        noteOn(noteIndex);
+
+        columns.push({
+          noteIndex,
+          topY: 0,
+          bottomY: 0,
+          startTime: performance.now() / 1000,
+          released: false,
+          releaseTime: 0,
+          alive: true,
+          glow: 1,
+        });
+
+        // Burst of particles on attack
+        const geo = currentGeo[noteIndex];
+        if (geo) {
+          const col = noteColorRGB(noteIndex);
+          particles.emit(22, () => ({
+            x: geo.cx + (Math.random() - 0.5) * geo.w * 0.6,
+            y: geo.y,
+            vx: (Math.random() - 0.5) * 130,
+            vy: -160 - Math.random() * 220,
+            life: 0.5 + Math.random() * 0.6,
+            size: 2 + Math.random() * 3,
+            color: col,
+          }));
+        }
+      }
+
+      function stopNote(noteIndex) {
+        if (!pressedNotes.has(noteIndex)) return;
+        pressedNotes.delete(noteIndex);
+        noteOff(noteIndex);
+
+        for (const col of columns) {
+          if (col.noteIndex === noteIndex && !col.released) {
+            col.released = true;
+            col.releaseTime = performance.now() / 1000;
+          }
+        }
+      }
+
+      // ─── Particles ────────────────────────────────────────
+      const particles = new ParticlePool({ maxParticles: 3000, gravity: 50, drag: 0.97 });
+
+      // ─── Cached Geometry ──────────────────────────────────
+      let currentGeo = [];
+      let currentPianoTop = 0;
+      let currentPianoH = 0;
+      let sustainTimer = 0;
+
+      // ─── Touch Tracking ───────────────────────────────────
+      const touchNotes = new Map();
+
+      function noteAtPosition(x, y, geo, pianoTop) {
+        if (y < pianoTop) return -1;
+        // Check black keys first (they sit on top)
+        for (const k of keys) {
+          if (!k.black) continue;
+          const g = geo[k.noteIndex];
+          if (!g) continue;
+          if (x >= g.x && x <= g.x + g.w && y >= g.y && y <= g.y + g.h) return k.noteIndex;
+        }
+        for (const k of keys) {
+          if (k.black) continue;
+          const g = geo[k.noteIndex];
+          if (!g) continue;
+          if (x >= g.x && x <= g.x + g.w && y >= g.y && y <= g.y + g.h) return k.noteIndex;
+        }
+        return -1;
+      }
+
+      // ─── createApp ────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'rainbow',
+          background: '#020210',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.3,
+          crtScanlines: 0.15,
+        },
+        layers: [
+          {
+            fontSize: 14,
+            charset: 'blocks',
+            colorScheme: 'rainbow',
+            blendMode: 'add',
+            opacity: 0.35,
+          },
+        ],
+        onResize(ctx, w, h) {
+          const r = pianoGeometry(w, h);
+          currentGeo = r.geo;
+          currentPianoTop = r.pianoTop;
+          currentPianoH = r.pianoH;
+        },
+        draw(ctx, { time, dt, width, height }) {
+          const w = width, h = height;
+          const t = time * 0.001;
+
+          if (currentGeo.length === 0) {
+            const r = pianoGeometry(w, h);
+            currentGeo = r.geo;
+            currentPianoTop = r.pianoTop;
+            currentPianoH = r.pianoH;
+          }
+
+          const pianoTop = currentPianoTop;
+          const pianoH = currentPianoH;
+
+          // ── Fade previous frame (trail effect) ──
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = 'rgba(2, 2, 16, 0.15)';
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Subtle background gradient ──
+          const bgGrad = ctx.createLinearGradient(0, 0, 0, pianoTop);
+          bgGrad.addColorStop(0, 'rgba(2, 2, 20, 0.06)');
+          bgGrad.addColorStop(1, 'rgba(4, 2, 25, 0.03)');
+          ctx.fillStyle = bgGrad;
+          ctx.fillRect(0, 0, w, pianoTop);
+
+          // ── Update waterfall columns ──
+          const now = performance.now() / 1000;
+          let cLen = columns.length;
+          for (let i = cLen - 1; i >= 0; i--) {
+            const col = columns[i];
+            const elapsed = now - col.startTime;
+
+            col.topY = pianoTop - elapsed * COLUMN_SPEED;
+
+            if (col.released) {
+              const relElapsed = now - col.releaseTime;
+              col.bottomY = pianoTop - relElapsed * COLUMN_SPEED;
+              col.glow = clamp(1 - (now - col.releaseTime) * 1.5, 0, 1);
+            } else {
+              col.bottomY = pianoTop;
+              col.glow = 0.85 + 0.15 * Math.sin(t * 6 + col.noteIndex);
+            }
+
+            if (col.bottomY < -50 || (col.released && col.glow <= 0)) {
+              columns[i] = columns[cLen - 1];
+              cLen--;
+            }
+          }
+          columns.length = cLen;
+          while (columns.length > MAX_COLUMNS) columns.shift();
+
+          // ── Draw waterfall columns (additive) ──
+          ctx.globalCompositeOperation = 'lighter';
+          for (const col of columns) {
+            const geo = currentGeo[col.noteIndex];
+            if (!geo) continue;
+
+            const colTop = Math.max(col.topY, 0);
+            const colBot = Math.min(col.bottomY, pianoTop);
+            if (colTop >= colBot) continue;
+
+            const colH = colBot - colTop;
+            const alpha = col.glow * 0.7;
+            const hue = noteHue(col.noteIndex);
+            const colW = geo.w * 0.85;
+            const cx = geo.cx;
+
+            // Outer glow
+            const glowW = colW * 2.2;
+            const gg = ctx.createLinearGradient(cx - glowW / 2, 0, cx + glowW / 2, 0);
+            gg.addColorStop(0, 'rgba(0,0,0,0)');
+            gg.addColorStop(0.3, `hsla(${hue}, 80%, 50%, ${alpha * 0.15})`);
+            gg.addColorStop(0.5, `hsla(${hue}, 85%, 60%, ${alpha * 0.3})`);
+            gg.addColorStop(0.7, `hsla(${hue}, 80%, 50%, ${alpha * 0.15})`);
+            gg.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = gg;
+            ctx.fillRect(cx - glowW / 2, colTop, glowW, colH);
+
+            // Core column gradient
+            const cg = ctx.createLinearGradient(0, colTop, 0, colBot);
+            cg.addColorStop(0, `hsla(${hue}, 90%, 70%, ${alpha * 0.3})`);
+            cg.addColorStop(0.5, `hsla(${hue}, 85%, 65%, ${alpha * 0.85})`);
+            cg.addColorStop(1, `hsla(${hue}, 90%, 75%, ${alpha})`);
+            ctx.fillStyle = cg;
+            ctx.fillRect(cx - colW / 2, colTop, colW, colH);
+
+            // Bright center line
+            const centerW = colW * 0.3;
+            ctx.fillStyle = `hsla(${hue}, 60%, 90%, ${alpha * 0.6})`;
+            ctx.fillRect(cx - centerW / 2, colTop, centerW, colH);
+
+            // Leading edge highlight
+            if (col.topY >= 0) {
+              const eg = ctx.createRadialGradient(cx, colTop, 0, cx, colTop, colW * 1.5);
+              eg.addColorStop(0, `hsla(${hue}, 70%, 90%, ${alpha * 0.5})`);
+              eg.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = eg;
+              ctx.fillRect(cx - colW * 1.5, colTop - colW, colW * 3, colW * 2);
+            }
+          }
+
+          // ── Sustained note particle stream ──
+          sustainTimer += dt;
+          if (sustainTimer > 0.06) {
+            sustainTimer = 0;
+            for (const ni of pressedNotes) {
+              const geo = currentGeo[ni];
+              if (!geo) continue;
+              const c = noteColorRGB(ni);
+              particles.emit(1, () => ({
+                x: geo.cx + (Math.random() - 0.5) * geo.w * 0.4,
+                y: geo.y - 5,
+                vx: (Math.random() - 0.5) * 40,
+                vy: -80 - Math.random() * 60,
+                life: 0.8 + Math.random() * 0.5,
+                size: 1.5 + Math.random() * 2,
+                color: c,
+              }));
+            }
+          }
+
+          // ── Update & draw particles ──
+          particles.update(dt);
+          particles.forEach((p) => {
+            const a = clamp(p.life / 1.0, 0, 1);
+            const c = p.color;
+            const s = p.size * a;
+            ctx.fillStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a * 0.8})`;
+            ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+            if (a > 0.4) {
+              ctx.fillStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a * 0.2})`;
+              const gs = s * 3;
+              ctx.fillRect(p.x - gs / 2, p.y - gs / 2, gs, gs);
+            }
+          });
+
+          ctx.globalCompositeOperation = 'source-over';
+
+          // ── Reflection glow above piano ──
+          if (pressedNotes.size > 0) {
+            const rg = ctx.createLinearGradient(0, pianoTop - 40, 0, pianoTop);
+            rg.addColorStop(0, 'rgba(0,0,0,0)');
+            let avgHue = 0;
+            for (const n of pressedNotes) avgHue += noteHue(n);
+            avgHue /= pressedNotes.size;
+            rg.addColorStop(1, `hsla(${avgHue}, 60%, 40%, 0.12)`);
+            ctx.fillStyle = rg;
+            ctx.fillRect(0, pianoTop - 40, w, 40);
+          }
+
+          // ── Draw Piano ──
+          // Background
+          ctx.fillStyle = '#0a0a12';
+          ctx.fillRect(0, pianoTop, w, pianoH);
+
+          // Separator
+          ctx.fillStyle = 'rgba(255,255,255,0.08)';
+          ctx.fillRect(0, pianoTop, w, 1);
+
+          // White keys
+          for (const k of keys) {
+            if (k.black) continue;
+            const g = currentGeo[k.noteIndex];
+            if (!g) continue;
+            const pressed = pressedNotes.has(k.noteIndex);
+            if (pressed) {
+              const hue = noteHue(k.noteIndex);
+              const gr = ctx.createLinearGradient(0, g.y, 0, g.y + g.h);
+              gr.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.9)`);
+              gr.addColorStop(1, `hsla(${hue}, 50%, 55%, 0.95)`);
+              ctx.fillStyle = gr;
+            } else {
+              const gr = ctx.createLinearGradient(0, g.y, 0, g.y + g.h);
+              gr.addColorStop(0, '#e8e8f0');
+              gr.addColorStop(1, '#c8c8d4');
+              ctx.fillStyle = gr;
+            }
+            ctx.fillRect(g.x, g.y, g.w, g.h);
+            ctx.strokeStyle = 'rgba(30,30,50,0.4)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(g.x, g.y, g.w, g.h);
+            if (!pressed) {
+              ctx.fillStyle = 'rgba(255,255,255,0.15)';
+              ctx.fillRect(g.x + 1, g.y + 1, g.w - 2, 3);
+            }
+          }
+
+          // Black keys
+          for (const k of keys) {
+            if (!k.black) continue;
+            const g = currentGeo[k.noteIndex];
+            if (!g) continue;
+            const pressed = pressedNotes.has(k.noteIndex);
+            if (pressed) {
+              const hue = noteHue(k.noteIndex);
+              const gr = ctx.createLinearGradient(0, g.y, 0, g.y + g.h);
+              gr.addColorStop(0, `hsla(${hue}, 70%, 45%, 0.95)`);
+              gr.addColorStop(1, `hsla(${hue}, 60%, 35%, 0.95)`);
+              ctx.fillStyle = gr;
+            } else {
+              const gr = ctx.createLinearGradient(0, g.y, 0, g.y + g.h);
+              gr.addColorStop(0, '#2a2a35');
+              gr.addColorStop(1, '#151520');
+              ctx.fillStyle = gr;
+            }
+            ctx.fillRect(g.x, g.y, g.w, g.h);
+            if (!pressed) {
+              ctx.fillStyle = 'rgba(255,255,255,0.06)';
+              ctx.fillRect(g.x + 1, g.y + 1, g.w - 2, 2);
+            }
+          }
+
+          // ── Key labels ──
+          ctx.font = `${Math.max(9, pianoH * 0.08) | 0}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          for (const [keyChar, noteIdx] of Object.entries(KEY_MAP)) {
+            const g = currentGeo[noteIdx];
+            if (!g) continue;
+            const pressed = pressedNotes.has(noteIdx);
+            const bk = keys[noteIdx].black;
+            if (bk) {
+              ctx.fillStyle = pressed ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)';
+              ctx.fillText(keyChar.toUpperCase(), g.cx, g.y + g.h - 4);
+            } else {
+              ctx.fillStyle = pressed ? 'rgba(0,0,0,0.6)' : 'rgba(60,60,80,0.35)';
+              ctx.fillText(keyChar.toUpperCase(), g.cx, g.y + g.h - 6);
+            }
+          }
+
+          // ── Instructions ──
+          ctx.save();
+          ctx.font = '11px monospace';
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillText(
+            'play keys or click piano \u00B7 P panel \u00B7 E toggle',
+            w / 2, 10,
+          );
+          ctx.restore();
+        },
+      });
+
+      // ── Initialize geometry ──
+      {
+        const r = pianoGeometry(app.width, app.height);
+        currentGeo = r.geo;
+        currentPianoTop = r.pianoTop;
+        currentPianoH = r.pianoH;
+      }
+
+      // ─── Keyboard Input ───────────────────────────────────
+      window.addEventListener('keydown', (e) => {
+        if (e.repeat) return;
+        const key = e.key.toLowerCase();
+        if (key in KEY_MAP) {
+          e.preventDefault();
+          startNote(KEY_MAP[key]);
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (key in KEY_MAP) {
+          e.preventDefault();
+          stopNote(KEY_MAP[key]);
+        }
+      });
+
+      // ─── Mouse Input ──────────────────────────────────────
+      let mouseNote = -1;
+      let mouseDown = false;
+
+      function canvasCoords(e) {
+        const rect = app.canvas.getBoundingClientRect();
+        return {
+          x: (e.clientX - rect.left) * (app.width / rect.width),
+          y: (e.clientY - rect.top) * (app.height / rect.height),
+        };
+      }
+
+      app.canvas.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        const { x, y } = canvasCoords(e);
+        const note = noteAtPosition(x, y, currentGeo, currentPianoTop);
+        if (note >= 0) { mouseNote = note; startNote(note); }
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!mouseDown) return;
+        const { x, y } = canvasCoords(e);
+        const note = noteAtPosition(x, y, currentGeo, currentPianoTop);
+        if (note !== mouseNote) {
+          if (mouseNote >= 0) stopNote(mouseNote);
+          mouseNote = note;
+          if (note >= 0) startNote(note);
+        }
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (mouseNote >= 0) stopNote(mouseNote);
+        mouseNote = -1;
+        mouseDown = false;
+      });
+
+      // ─── Touch Input (multi-touch) ────────────────────────
+      function touchCoords(touch) {
+        const rect = app.canvas.getBoundingClientRect();
+        return {
+          x: (touch.clientX - rect.left) * (app.width / rect.width),
+          y: (touch.clientY - rect.top) * (app.height / rect.height),
+        };
+      }
+
+      app.canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        for (const touch of e.changedTouches) {
+          const { x, y } = touchCoords(touch);
+          const note = noteAtPosition(x, y, currentGeo, currentPianoTop);
+          if (note >= 0) { touchNotes.set(touch.identifier, note); startNote(note); }
+        }
+      }, { passive: false });
+
+      app.canvas.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        for (const touch of e.changedTouches) {
+          const { x, y } = touchCoords(touch);
+          const note = noteAtPosition(x, y, currentGeo, currentPianoTop);
+          const prev = touchNotes.get(touch.identifier);
+          if (note !== prev) {
+            if (prev !== undefined && prev >= 0) stopNote(prev);
+            touchNotes.set(touch.identifier, note);
+            if (note >= 0) startNote(note);
+          }
+        }
+      }, { passive: false });
+
+      app.canvas.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        for (const touch of e.changedTouches) {
+          const note = touchNotes.get(touch.identifier);
+          if (note !== undefined && note >= 0) stopNote(note);
+          touchNotes.delete(touch.identifier);
+        }
+      }, { passive: false });
+
+      app.canvas.addEventListener('touchcancel', (e) => {
+        for (const touch of e.changedTouches) {
+          const note = touchNotes.get(touch.identifier);
+          if (note !== undefined && note >= 0) stopNote(note);
+          touchNotes.delete(touch.identifier);
+        }
+      });
+    </script>
+  </body>
+</html>

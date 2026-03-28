@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Jellyfish</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, rgb, lerpColor, getCanvasPos } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────────
+      const TWO_PI = Math.PI * 2;
+      const PI = Math.PI;
+
+      // ─── Jellyfish Color Palettes ──────────────────────────
+      const JELLY_PALETTES = [
+        { name: 'cyan',          base: [0, 220, 255],   glow: [100, 255, 255], rim: [180, 255, 255] },
+        { name: 'magenta',       base: [220, 40, 180],  glow: [255, 100, 220], rim: [255, 180, 255] },
+        { name: 'soft-purple',   base: [140, 80, 220],  glow: [180, 140, 255], rim: [210, 190, 255] },
+        { name: 'warm-pink',     base: [255, 80, 120],  glow: [255, 150, 180], rim: [255, 200, 220] },
+        { name: 'electric-blue', base: [30, 100, 255],  glow: [80, 160, 255],  rim: [160, 210, 255] },
+        { name: 'sea-green',     base: [30, 220, 150],  glow: [80, 255, 190],  rim: [160, 255, 220] },
+      ];
+
+      // ─── Helper ─────────────────────────────────────────────
+      function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
+
+      // ─── Mouse State ───────────────────────────────────────
+      let mouseX = -9999, mouseY = -9999;
+      let mouseVX = 0, mouseVY = 0;
+      let prevMouseX = -9999, prevMouseY = -9999;
+      let mouseActive = false;
+
+      // ─── Light Pulse (click effect) ────────────────────────
+      const lightPulses = [];
+
+      function emitLightPulse(x, y) {
+        lightPulses.push({ x, y, radius: 0, maxRadius: 500, speed: 350, opacity: 1 });
+      }
+
+      function updateLightPulses(dt) {
+        for (let i = lightPulses.length - 1; i >= 0; i--) {
+          const p = lightPulses[i];
+          p.radius += p.speed * dt;
+          p.opacity = 1 - (p.radius / p.maxRadius);
+          if (p.opacity <= 0) {
+            lightPulses.splice(i, 1);
+          }
+        }
+      }
+
+      // ─── Verlet Tentacle Chain ─────────────────────────────
+      function createChain(x, y, segCount, segLength) {
+        const points = [];
+        for (let i = 0; i < segCount; i++) {
+          points.push({ x, y: y + i * segLength, px: x, py: y + i * segLength });
+        }
+        return { points, segLength };
+      }
+
+      function updateChain(chain, anchorX, anchorY, dt, gravity, damping, waveAmp, waveFreq, wavePhase, time) {
+        const pts = chain.points;
+        // Pin first point to anchor
+        pts[0].x = anchorX;
+        pts[0].y = anchorY;
+
+        // Verlet integration for remaining points
+        for (let i = 1; i < pts.length; i++) {
+          const p = pts[i];
+          const vx = (p.x - p.px) * damping;
+          const vy = (p.y - p.py) * damping;
+
+          p.px = p.x;
+          p.py = p.y;
+
+          // Wave motion — increases further from anchor
+          const waveFactor = i / pts.length;
+          const wave = Math.sin(time * waveFreq + wavePhase + i * 0.5) * waveAmp * waveFactor;
+
+          p.x += vx + wave * dt;
+          p.y += vy + gravity * dt * dt;
+        }
+
+        // Constraint relaxation (multiple iterations for stability)
+        for (let iter = 0; iter < 3; iter++) {
+          for (let i = 0; i < pts.length - 1; i++) {
+            const a = pts[i];
+            const b = pts[i + 1];
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < 0.001) continue;
+            const diff = (d - chain.segLength) / d * 0.5;
+            const ox = dx * diff;
+            const oy = dy * diff;
+            if (i > 0) {
+              a.x += ox;
+              a.y += oy;
+            }
+            b.x -= ox;
+            b.y -= oy;
+          }
+        }
+      }
+
+      // ─── Jellyfish Factory ─────────────────────────────────
+      function createJellyfish(x, y, size, paletteIndex, depthFactor) {
+        const palette = JELLY_PALETTES[paletteIndex % JELLY_PALETTES.length];
+        const pulseSpeed = rand(0.8, 1.3);
+        const pulsePhase = rand(0, TWO_PI);
+
+        // Oral arms (shorter, thicker tendrils from center)
+        const oralArmCount = Math.floor(rand(4, 7));
+        const oralArms = [];
+        for (let i = 0; i < oralArmCount; i++) {
+          const segCount = Math.floor(rand(6, 10));
+          const segLen = size * rand(0.06, 0.1);
+          oralArms.push({
+            chain: createChain(x, y + size * 0.3, segCount, segLen),
+            offsetX: rand(-size * 0.25, size * 0.25),
+            wavePhase: rand(0, TWO_PI),
+            waveAmp: rand(8, 16),
+            waveFreq: rand(1.5, 3),
+          });
+        }
+
+        // Trailing tentacles (long, thin, from bell rim)
+        const tentacleCount = Math.floor(rand(7, 13));
+        const tentacles = [];
+        for (let i = 0; i < tentacleCount; i++) {
+          const segCount = Math.floor(rand(12, 18));
+          const segLen = size * rand(0.08, 0.16);
+          const angle = (i / tentacleCount) * PI - PI * 0.5;
+          tentacles.push({
+            chain: createChain(x, y + size * 0.2, segCount, segLen),
+            rimAngle: angle,
+            wavePhase: rand(0, TWO_PI),
+            waveAmp: rand(5, 12),
+            waveFreq: rand(1, 2.5),
+          });
+        }
+
+        return {
+          x, y,
+          vx: rand(-8, 8),
+          vy: rand(-3, 3),
+          size,
+          palette,
+          pulseSpeed,
+          pulsePhase,
+          depthFactor,
+          oralArms,
+          tentacles,
+          flashTimer: rand(5, 15),
+          flashBrightness: 0,
+          lightResponse: 0,
+        };
+      }
+
+      // ─── Scene State ───────────────────────────────────────
+      let jellies = [];
+      let w = 0, h = 0;
+
+      // ─── Particle Pools ────────────────────────────────────
+      const marineSnow = new ParticlePool({ maxParticles: 150, gravity: 8, drag: 0.999 });
+      const plankton = new ParticlePool({ maxParticles: 60, gravity: 0, drag: 1 });
+
+      // ─── Ambient Current ───────────────────────────────────
+      let currentAngle = 0;
+      let currentStrength = 0;
+
+      // ─── Initialize Scene ──────────────────────────────────
+      function initScene(width, height) {
+        w = width; h = height;
+        jellies = [];
+
+        const count = clamp(Math.round(Math.sqrt(w * h) / 150), 5, 8);
+        for (let i = 0; i < count; i++) {
+          const depthFactor = rand(0.4, 1);
+          const size = lerp(35, 100, depthFactor);
+          const jx = rand(size, w - size);
+          const jy = rand(size * 2, h - size * 2);
+          jellies.push(createJellyfish(jx, jy, size, i, depthFactor));
+        }
+
+        // Initial marine snow
+        marineSnow.clear();
+        for (let i = 0; i < 120; i++) {
+          marineSnow.emit(1, () => ({
+            x: rand(0, w), y: rand(0, h),
+            vx: rand(-3, 3), vy: rand(3, 12),
+            life: rand(5, 20),
+            size: rand(0.5, 2),
+            brightness: rand(0.2, 0.5),
+          }));
+        }
+      }
+
+      // ─── Update Jellyfish ──────────────────────────────────
+      function updateJellyfish(jf, dt, time) {
+        // Pulse cycle
+        const phase = (time * jf.pulseSpeed + jf.pulsePhase) % TWO_PI;
+        const pulseT = (Math.sin(phase) + 1) * 0.5; // 0=contracted, 1=relaxed
+
+        // Pulse propulsion: during contraction, push upward
+        const pulseForce = -Math.cos(phase) * jf.pulseSpeed;
+        if (pulseForce > 0) {
+          jf.vy -= pulseForce * 18 * dt;
+        }
+
+        // Ambient current
+        const cx = Math.sin(currentAngle) * currentStrength;
+        const cy = Math.cos(currentAngle * 0.7) * currentStrength * 0.3;
+        jf.vx += cx * dt * 0.5;
+        jf.vy += cy * dt * 0.3;
+
+        // Mouse influence (gentle push away)
+        if (mouseActive) {
+          const d = dist(jf.x, jf.y, mouseX, mouseY);
+          if (d < 300 && d > 1) {
+            const pushStrength = (1 - d / 300) * 40;
+            jf.vx += ((jf.x - mouseX) / d) * pushStrength * dt;
+            jf.vy += ((jf.y - mouseY) / d) * pushStrength * dt;
+          }
+        }
+
+        // Gravity (very slight downward drift)
+        jf.vy += 3 * dt;
+
+        // Boundary steering
+        const margin = jf.size * 1.5;
+        if (jf.x < margin) jf.vx += 15 * dt;
+        if (jf.x > w - margin) jf.vx -= 15 * dt;
+        if (jf.y < margin) jf.vy += 20 * dt;
+        if (jf.y > h - margin) jf.vy -= 25 * dt;
+
+        // Drag
+        jf.vx *= 0.98;
+        jf.vy *= 0.98;
+
+        // Clamp velocity
+        const speed = Math.sqrt(jf.vx * jf.vx + jf.vy * jf.vy);
+        const maxSpeed = 40;
+        if (speed > maxSpeed) {
+          jf.vx = (jf.vx / speed) * maxSpeed;
+          jf.vy = (jf.vy / speed) * maxSpeed;
+        }
+
+        // Integrate position
+        jf.x += jf.vx * dt;
+        jf.y += jf.vy * dt;
+
+        // Keep in bounds
+        jf.x = clamp(jf.x, -jf.size, w + jf.size);
+        jf.y = clamp(jf.y, -jf.size, h + jf.size);
+
+        // Flash timer (random bioluminescent flash)
+        jf.flashTimer -= dt;
+        if (jf.flashTimer <= 0) {
+          jf.flashBrightness = 1;
+          jf.flashTimer = rand(6, 18);
+        }
+        jf.flashBrightness *= 0.95;
+
+        // Light pulse response (from click)
+        for (const pulse of lightPulses) {
+          const d = dist(jf.x, jf.y, pulse.x, pulse.y);
+          if (Math.abs(d - pulse.radius) < 60) {
+            jf.lightResponse = clamp(jf.lightResponse + pulse.opacity * 0.8, 0, 1);
+          }
+        }
+        jf.lightResponse *= 0.96;
+
+        // Bell dimensions based on pulse
+        const bellWidth = jf.size * lerp(0.65, 1, pulseT);
+        const bellHeight = jf.size * lerp(1.1, 0.75, pulseT);
+
+        // Update oral arms
+        for (const arm of jf.oralArms) {
+          const anchorX = jf.x + arm.offsetX * lerp(0.7, 1, pulseT);
+          const anchorY = jf.y + bellHeight * 0.35;
+          updateChain(arm.chain, anchorX, anchorY, dt, 20, 0.97, arm.waveAmp, arm.waveFreq, arm.wavePhase, time);
+        }
+
+        // Update trailing tentacles
+        for (const tent of jf.tentacles) {
+          const rimX = jf.x + Math.sin(tent.rimAngle) * bellWidth * 0.9;
+          const rimY = jf.y + Math.cos(tent.rimAngle) * bellHeight * 0.2 + bellHeight * 0.25;
+          updateChain(tent.chain, rimX, rimY, dt, 15, 0.975, tent.waveAmp, tent.waveFreq, tent.wavePhase, time);
+        }
+
+        return { pulseT, bellWidth, bellHeight };
+      }
+
+      // ─── Draw Jellyfish ────────────────────────────────────
+      function drawJellyfish(ctx, jf, pulseT, bellWidth, bellHeight, time) {
+        const { palette, depthFactor, flashBrightness, lightResponse } = jf;
+        const brightBoost = clamp(flashBrightness + lightResponse, 0, 1);
+        const alpha = lerp(0.15, 0.45, depthFactor) + brightBoost * 0.3;
+
+        ctx.save();
+
+        // Outer bioluminescent glow
+        const glowRadius = jf.size * 2.5;
+        const glowAlpha = (lerp(0.04, 0.1, depthFactor) + brightBoost * 0.15) *
+          (0.8 + 0.2 * Math.sin(time * 1.5 + jf.pulsePhase));
+        const glowGrad = ctx.createRadialGradient(jf.x, jf.y, 0, jf.x, jf.y, glowRadius);
+        glowGrad.addColorStop(0, rgb(palette.glow, glowAlpha));
+        glowGrad.addColorStop(0.4, rgb(palette.base, glowAlpha * 0.4));
+        glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glowGrad;
+        ctx.fillRect(jf.x - glowRadius, jf.y - glowRadius, glowRadius * 2, glowRadius * 2);
+
+        // Bell (dome shape via bezier curves)
+        const bx = jf.x, by = jf.y;
+        const bw = bellWidth, bh = bellHeight;
+
+        ctx.beginPath();
+        ctx.moveTo(bx - bw, by + bh * 0.3);
+        ctx.bezierCurveTo(
+          bx - bw, by - bh * 0.3,
+          bx - bw * 0.3, by - bh * 0.6,
+          bx, by - bh * 0.5
+        );
+        ctx.bezierCurveTo(
+          bx + bw * 0.3, by - bh * 0.6,
+          bx + bw, by - bh * 0.3,
+          bx + bw, by + bh * 0.3
+        );
+        // Scalloped bottom edge of bell
+        const scallops = 8;
+        for (let i = scallops; i >= 0; i--) {
+          const t = i / scallops;
+          const sx = bx + bw * (1 - 2 * t);
+          const sy = by + bh * 0.3 + Math.sin(t * PI * scallops + time * 2) * bh * 0.04;
+          ctx.lineTo(sx, sy);
+        }
+        ctx.closePath();
+
+        // Translucent bell fill with radial gradient
+        const bellGrad = ctx.createRadialGradient(bx, by - bh * 0.1, 0, bx, by, bh * 0.8);
+        bellGrad.addColorStop(0, rgb(palette.glow, alpha * 0.8 + brightBoost * 0.3));
+        bellGrad.addColorStop(0.5, rgb(palette.base, alpha * 0.5));
+        bellGrad.addColorStop(1, rgb(palette.base, alpha * 0.2));
+        ctx.fillStyle = bellGrad;
+        ctx.fill();
+
+        // Bell rim highlight
+        ctx.strokeStyle = rgb(palette.rim, alpha * 0.7 + brightBoost * 0.2);
+        ctx.lineWidth = lerp(1, 2.5, depthFactor);
+        ctx.stroke();
+
+        // Inner glow at bell center
+        const innerGlowR = bh * 0.3;
+        const innerGrad = ctx.createRadialGradient(bx, by - bh * 0.15, 0, bx, by - bh * 0.15, innerGlowR);
+        innerGrad.addColorStop(0, rgb(palette.glow, (0.3 + brightBoost * 0.4) * (0.6 + 0.4 * (1 - pulseT))));
+        innerGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = innerGrad;
+        ctx.beginPath();
+        ctx.arc(bx, by - bh * 0.15, innerGlowR, 0, TWO_PI);
+        ctx.fill();
+
+        // Oral arms (thick inner tendrils)
+        for (const arm of jf.oralArms) {
+          const pts = arm.chain.points;
+
+          // Glow pass (wider, softer)
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(pts[i].x, pts[i].y);
+          }
+          ctx.strokeStyle = rgb(palette.glow, alpha * 0.25);
+          ctx.lineWidth = lerp(3, 7, depthFactor);
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+
+          // Core pass (thinner, brighter)
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(pts[i].x, pts[i].y);
+          }
+          ctx.strokeStyle = rgb(palette.base, alpha * 0.7);
+          ctx.lineWidth = lerp(1.5, 4, depthFactor);
+          ctx.stroke();
+        }
+
+        // Trailing tentacles
+        for (const tent of jf.tentacles) {
+          const pts = tent.chain.points;
+
+          // Smooth curve through points
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) {
+            if (i < pts.length - 1) {
+              const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+              const my = (pts[i].y + pts[i + 1].y) * 0.5;
+              ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+            } else {
+              ctx.lineTo(pts[i].x, pts[i].y);
+            }
+          }
+
+          const tentAlpha = alpha * 0.4;
+          ctx.strokeStyle = rgb(palette.base, tentAlpha);
+          ctx.lineWidth = lerp(0.5, 1.8, depthFactor);
+          ctx.lineCap = 'round';
+          ctx.stroke();
+
+          // Bright tip glow
+          const tipPt = pts[pts.length - 1];
+          const tipR = 4 * depthFactor;
+          const tipGlow = ctx.createRadialGradient(tipPt.x, tipPt.y, 0, tipPt.x, tipPt.y, tipR);
+          tipGlow.addColorStop(0, rgb(palette.glow, 0.3 + brightBoost * 0.3));
+          tipGlow.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = tipGlow;
+          ctx.fillRect(tipPt.x - tipR, tipPt.y - tipR, tipR * 2, tipR * 2);
+        }
+
+        ctx.restore();
+      }
+
+      // ─── Draw Background ───────────────────────────────────
+      function drawBackground(ctx, time, w, h) {
+        // Deep ocean gradient
+        const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+        bgGrad.addColorStop(0, '#030812');
+        bgGrad.addColorStop(0.3, '#020610');
+        bgGrad.addColorStop(0.7, '#01040c');
+        bgGrad.addColorStop(1, '#010308');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Subtle caustic light from above
+        const causticBand = h * 0.15;
+        for (let i = 0; i < 5; i++) {
+          const cx = w * 0.5 + Math.sin(time * 0.15 + i * 1.3) * w * 0.4;
+          const cy = causticBand * 0.5;
+          const cr = Math.max(w * 0.3 + Math.sin(time * 0.2 + i * 2.1) * w * 0.1, causticBand);
+          const causGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+          const brightness = 0.012 + 0.008 * Math.sin(time * 0.3 + i * 0.8);
+          causGrad.addColorStop(0, `rgba(60,120,180,${brightness})`);
+          causGrad.addColorStop(0.6, `rgba(30,80,140,${brightness * 0.4})`);
+          causGrad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = causGrad;
+          ctx.fillRect(0, 0, w, causticBand);
+        }
+      }
+
+      // ─── Draw Light Pulses ─────────────────────────────────
+      function drawLightPulses(ctx) {
+        for (const p of lightPulses) {
+          const inner = Math.max(0, p.radius - 30);
+          const outer = p.radius + 30;
+          const grad = ctx.createRadialGradient(p.x, p.y, inner, p.x, p.y, outer);
+          grad.addColorStop(0, 'rgba(0,0,0,0)');
+          grad.addColorStop(0.4, `rgba(100,180,255,${p.opacity * 0.06})`);
+          grad.addColorStop(0.5, `rgba(150,220,255,${p.opacity * 0.1})`);
+          grad.addColorStop(0.6, `rgba(100,180,255,${p.opacity * 0.06})`);
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, outer, 0, TWO_PI);
+          ctx.fill();
+        }
+      }
+
+      // ─── Draw Marine Snow ──────────────────────────────────
+      function drawMarineSnow(ctx) {
+        marineSnow.forEach((p) => {
+          const fade = clamp(p.life / 2, 0, 1);
+          ctx.fillStyle = `rgba(180,200,220,${p.brightness * fade})`;
+          ctx.fillRect(p.x, p.y, p.size, p.size);
+        });
+      }
+
+      // ─── Draw Plankton Sparkles ────────────────────────────
+      function drawPlankton(ctx) {
+        plankton.forEach((p) => {
+          const fade = p.life > 0.5 ? 1 : p.life * 2;
+          const r = p.size * 3;
+          const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+          glow.addColorStop(0, `rgba(${p.r},${p.g},${p.b},${0.6 * fade})`);
+          glow.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = glow;
+          ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+        });
+      }
+
+      // ─── App ────────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#020410',
+          sourceOpacity: 0,
+          crtEnabled: true,
+          crtGlow: 0.25,
+          crtScanlines: 0.08,
+        },
+        layers: [
+          // Base: fine braille for delicate tentacle detail
+          { fontSize: 7, charset: 'braille', colorScheme: 'neon', opacity: 0.92 },
+          // Overlay: larger blocks for ethereal deep-water glow
+          { fontSize: 14, charset: 'blocks', colorScheme: 'vapor', blendMode: 'add', opacity: 0.12 },
+        ],
+        draw(ctx, { time: rawTime, dt, width: cw, height: ch }) {
+          const time = rawTime / 1000;
+
+          if (cw !== w || ch !== h) initScene(cw, ch);
+
+          // Update ambient current (slow oscillation)
+          currentAngle += dt * 0.08;
+          currentStrength = 8 + Math.sin(time * 0.1) * 5;
+
+          // Track mouse velocity
+          if (mouseActive) {
+            mouseVX = (mouseX - prevMouseX) / Math.max(dt, 0.001);
+            mouseVY = (mouseY - prevMouseY) / Math.max(dt, 0.001);
+            prevMouseX = mouseX;
+            prevMouseY = mouseY;
+          }
+
+          // Update light pulses
+          updateLightPulses(dt);
+
+          // ─── Draw Scene ──────────────────────────────────
+          drawBackground(ctx, time, cw, ch);
+
+          // Update and replenish marine snow
+          marineSnow.update(dt, () => {
+            marineSnow.emit(1, () => ({
+              x: rand(0, cw), y: rand(-20, 0),
+              vx: rand(-3, 3) + Math.sin(currentAngle) * 2,
+              vy: rand(4, 14),
+              life: rand(8, 25),
+              size: rand(0.5, 2),
+              brightness: rand(0.15, 0.45),
+            }));
+          });
+
+          // Maintain marine snow count
+          if (marineSnow.length < 100) {
+            marineSnow.emit(1, () => ({
+              x: rand(0, cw), y: rand(-20, 0),
+              vx: rand(-3, 3), vy: rand(4, 14),
+              life: rand(8, 25),
+              size: rand(0.5, 2),
+              brightness: rand(0.15, 0.45),
+            }));
+          }
+
+          // Plankton sparkles (occasional)
+          plankton.update(dt);
+          if (Math.random() < dt * 3) {
+            const colors = [
+              [80, 200, 255], [120, 255, 200], [200, 150, 255],
+              [255, 180, 120], [100, 255, 255],
+            ];
+            plankton.emit(1, () => {
+              const c = colors[Math.floor(Math.random() * colors.length)];
+              return {
+                x: rand(0, cw), y: rand(0, ch),
+                vx: 0, vy: 0,
+                life: rand(0.3, 1.2),
+                size: rand(1, 3),
+                r: c[0], g: c[1], b: c[2],
+              };
+            });
+          }
+
+          drawMarineSnow(ctx);
+          drawPlankton(ctx);
+
+          // Sort jellyfish by depth (far ones drawn first)
+          const sorted = [...jellies].sort((a, b) => a.depthFactor - b.depthFactor);
+
+          for (const jf of sorted) {
+            const { pulseT, bellWidth, bellHeight } = updateJellyfish(jf, dt, time);
+            drawJellyfish(ctx, jf, pulseT, bellWidth, bellHeight, time);
+          }
+
+          // Draw light pulses on top
+          drawLightPulses(ctx);
+        },
+        onResize(ctx, cw, ch) {
+          initScene(cw, ch);
+        },
+      });
+
+      // ─── Mouse / Touch Interaction ─────────────────────────
+      const canvas = app.canvas;
+
+      canvas.addEventListener('pointermove', (e) => {
+        const pos = getCanvasPos(canvas, e);
+        prevMouseX = mouseX;
+        prevMouseY = mouseY;
+        mouseX = pos.x;
+        mouseY = pos.y;
+        mouseActive = true;
+      });
+
+      canvas.addEventListener('pointerleave', () => {
+        mouseActive = false;
+      });
+
+      canvas.addEventListener('pointerdown', (e) => {
+        const pos = getCanvasPos(canvas, e);
+        emitLightPulse(pos.x, pos.y);
+      });
+
+      canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+    </script>
+  </body>
+</html>

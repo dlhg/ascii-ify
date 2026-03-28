@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Idle 2</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const TILE_W = 72;
+      const TILE_H = 36;
+      const SECTOR_SIZE = 4;
+      const META_GRID = 12;
+      const TOTAL = SECTOR_SIZE * META_GRID; // 48
+      const MAX_PARTICLES = 1200;
+      const TOTAL_SECTORS = META_GRID * META_GRID; // 144
+      const BUILDING_TYPES = ['crystal', 'collector', 'amplifier'];
+
+      const BUILDINGS = {
+        crystal:   { colors: ['#44aaff', '#aa44ff', '#ffaa44'], glowRadius: [15, 22, 30] },
+        collector: { colors: ['#44ff88', '#44ffcc', '#44ffff'], glowRadius: [12, 18, 24] },
+        amplifier: { colors: ['#ff44ff', '#ff66ff', '#ff88ff'], glowRadius: [18, 25, 35] },
+      };
+
+      // ─── State ──────────────────────────────────────────
+      let grid = [];
+      let sectors = [];
+      let unlockedCount = 0;
+      let particles = [];
+      let bgStars = [];
+      let time = 0;
+      let generation = 1;
+
+      // Camera
+      let camZoom = 1, camTargetZoom = 1;
+      let camX = 0, camY = 0;
+      let camTargetX = 0, camTargetY = 0;
+      let startZoom = 1;
+      let startZoomReady = false;
+
+      // Timers
+      let placeTimer = 0;
+      let expandPause = 1.0;
+      let sparkleTimer = 0;
+      let ambientTimer = 0;
+
+      // Loop: 0=play, 1=celebrate, 2=zoomout, 3=hold
+      let loopPhase = 0;
+      let loopTimer = 0;
+
+      // ─── Init ───────────────────────────────────────────
+      const START_SECTOR = { col: 5, row: 5 };
+
+      function initGrid() {
+        grid = [];
+        for (let r = 0; r < TOTAL; r++) {
+          grid[r] = [];
+          for (let c = 0; c < TOTAL; c++) grid[r][c] = null;
+        }
+      }
+
+      function initSectors() {
+        sectors = [];
+        for (let mr = 0; mr < META_GRID; mr++) {
+          sectors[mr] = [];
+          for (let mc = 0; mc < META_GRID; mc++)
+            sectors[mr][mc] = { unlocked: false, unlockTime: -10 };
+        }
+        sectors[START_SECTOR.row][START_SECTOR.col].unlocked = true;
+        sectors[START_SECTOR.row][START_SECTOR.col].unlockTime = time;
+        unlockedCount = 1;
+      }
+
+      function initStars() {
+        bgStars = [];
+        for (let i = 0; i < 150; i++)
+          bgStars.push({
+            x: Math.random(), y: Math.random(),
+            brightness: 0.2 + Math.random() * 0.35,
+            speed: 0.5 + Math.random() * 2,
+            phase: Math.random() * Math.PI * 2,
+          });
+      }
+
+      // ─── Coordinate Systems ─────────────────────────────
+      // World coords: isometric, centered on grid center (0,0 = center of 48x48 grid)
+      function isoToWorld(col, row) {
+        const gc = TOTAL / 2;
+        return {
+          x: ((col - gc) - (row - gc)) * TILE_W / 2,
+          y: ((col - gc) + (row - gc)) * TILE_H / 2,
+        };
+      }
+
+      function worldToScreen(wx, wy) {
+        return {
+          x: app.width / 2 + (wx - camX) * camZoom,
+          y: app.height / 2 + (wy - camY) * camZoom,
+        };
+      }
+
+      function isoToScreen(col, row) {
+        const w = isoToWorld(col, row);
+        return worldToScreen(w.x, w.y);
+      }
+
+      function inGrid(col, row) {
+        return col >= 0 && col < TOTAL && row >= 0 && row < TOTAL;
+      }
+
+      function getSectorOf(col, row) {
+        return { col: Math.floor(col / SECTOR_SIZE), row: Math.floor(row / SECTOR_SIZE) };
+      }
+
+      function isTileUnlocked(col, row) {
+        const s = getSectorOf(col, row);
+        return s.col >= 0 && s.col < META_GRID && s.row >= 0 && s.row < META_GRID
+          && sectors[s.row][s.col].unlocked;
+      }
+
+      // ─── Camera ─────────────────────────────────────────
+      function computeStartZoom() {
+        // Zoom so 1 sector fills ~25% of screen (tight view for dramatic zoom-out later)
+        const sW = SECTOR_SIZE * TILE_W;
+        const sH = SECTOR_SIZE * TILE_H;
+        return Math.min(app.width * 0.25 / sW, app.height * 0.25 / sH);
+      }
+
+      function getUnlockedBounds() {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            if (!sectors[mr][mc].unlocked) continue;
+            const sc = mc * SECTOR_SIZE, sr = mr * SECTOR_SIZE;
+            for (const [c, r] of [[sc, sr], [sc + SECTOR_SIZE, sr], [sc + SECTOR_SIZE, sr + SECTOR_SIZE], [sc, sr + SECTOR_SIZE]]) {
+              const w = isoToWorld(c, r);
+              minX = Math.min(minX, w.x); maxX = Math.max(maxX, w.x);
+              minY = Math.min(minY, w.y); maxY = Math.max(maxY, w.y);
+            }
+          }
+        }
+        return { minX, maxX, minY, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, w: maxX - minX, h: maxY - minY };
+      }
+
+      function getPlayTargetZoom() {
+        const b = getUnlockedBounds();
+        return Math.min(app.width * 0.8 / Math.max(b.w, 1), app.height * 0.8 / Math.max(b.h, 1));
+      }
+
+      function updateCamera(dt) {
+        if (!startZoomReady) {
+          startZoom = computeStartZoom();
+          camZoom = startZoom;
+          camTargetZoom = startZoom;
+          const sc = isoToWorld(START_SECTOR.col * SECTOR_SIZE + SECTOR_SIZE / 2, START_SECTOR.row * SECTOR_SIZE + SECTOR_SIZE / 2);
+          camX = sc.x; camY = sc.y;
+          camTargetX = sc.x; camTargetY = sc.y;
+          startZoomReady = true;
+        }
+
+        if (loopPhase === 0) {
+          const b = getUnlockedBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          camTargetZoom = getPlayTargetZoom();
+        }
+        // loopPhase 2: targets set in updateLoop
+
+        const speed = loopPhase === 2 ? 1.0 : 3.0;
+        const t = Math.min(1, dt * speed);
+        camZoom += (camTargetZoom - camZoom) * t;
+        camX += (camTargetX - camX) * t;
+        camY += (camTargetY - camY) * t;
+      }
+
+      // ─── Placement Rules ────────────────────────────────
+      function canPlaceAt(col, row) {
+        if (!inGrid(col, row)) return false;
+        if (grid[row][col]) return false;
+        if (!isTileUnlocked(col, row)) return false;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const nr = row + dr, nc = col + dc;
+            if (inGrid(nc, nr) && grid[nr][nc]) return false;
+          }
+        }
+        return true;
+      }
+
+      function getValidPlacements() {
+        const tiles = [];
+        for (let r = 0; r < TOTAL; r++)
+          for (let c = 0; c < TOTAL; c++)
+            if (canPlaceAt(c, r)) tiles.push({ col: c, row: r });
+        return tiles;
+      }
+
+      // ─── Expansion ──────────────────────────────────────
+      function getNextSector() {
+        const candidates = [];
+        let cx = 0, cy = 0;
+        for (let mr = 0; mr < META_GRID; mr++)
+          for (let mc = 0; mc < META_GRID; mc++)
+            if (sectors[mr][mc].unlocked) { cx += mc; cy += mr; }
+        cx /= unlockedCount; cy /= unlockedCount;
+
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            if (sectors[mr][mc].unlocked) continue;
+            let adj = false;
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+              const nr = mr + dr, nc = mc + dc;
+              if (nr >= 0 && nr < META_GRID && nc >= 0 && nc < META_GRID && sectors[nr][nc].unlocked) { adj = true; break; }
+            }
+            if (adj) candidates.push({ col: mc, row: mr, dist: Math.abs(mc - cx) + Math.abs(mr - cy) });
+          }
+        }
+        if (!candidates.length) return null;
+        candidates.sort((a, b) => a.dist - b.dist);
+        const best = candidates.filter(c => c.dist <= candidates[0].dist + 0.5);
+        return best[Math.floor(Math.random() * best.length)];
+      }
+
+      function unlockSector(mc, mr) {
+        sectors[mr][mc].unlocked = true;
+        sectors[mr][mc].unlockTime = time;
+        unlockedCount++;
+        spawnExpandBurst(mc, mr);
+      }
+
+      // ─── Building Placement ─────────────────────────────
+      function placeBuilding(col, row) {
+        const type = BUILDING_TYPES[Math.floor(Math.random() * BUILDING_TYPES.length)];
+        const tier = 1 + Math.floor(Math.random() * 3);
+        grid[row][col] = { type, tier, seed: Math.random() * 1000, placeTime: time };
+        spawnPlaceBurst(col, row, type);
+      }
+
+      // ─── Particles ──────────────────────────────────────
+      function spawnPlaceBurst(col, row, type) {
+        const w = isoToWorld(col, row);
+        const baseHue = type === 'crystal' ? 220 : type === 'collector' ? 150 : 290;
+        for (let i = 0; i < 12; i++) {
+          const angle = (i / 12) * Math.PI * 2;
+          const spd = 1.5 + Math.random() * 2;
+          particles.push({
+            x: w.x, y: w.y - 8, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd - 0.5,
+            life: 25 + Math.random() * 15, maxLife: 40,
+            size: 2 + Math.random() * 2, hue: baseHue + Math.random() * 40 - 20,
+            type: 'burst', worldSpace: true,
+          });
+        }
+      }
+
+      function spawnExpandBurst(mc, mr) {
+        const w = isoToWorld(mc * SECTOR_SIZE + SECTOR_SIZE / 2, mr * SECTOR_SIZE + SECTOR_SIZE / 2);
+        for (let i = 0; i < 30; i++) {
+          const angle = (i / 30) * Math.PI * 2;
+          const spd = 2 + Math.random() * 5;
+          particles.push({
+            x: w.x, y: w.y, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd * 0.5 - 1,
+            life: 40 + Math.random() * 40, maxLife: 80,
+            size: 3 + Math.random() * 3, hue: 270 + Math.random() * 50,
+            type: 'burst', worldSpace: true,
+          });
+        }
+      }
+
+      function spawnDissolveBurst() {
+        for (let r = 0; r < TOTAL; r++) {
+          for (let c = 0; c < TOTAL; c++) {
+            if (!grid[r][c]) continue;
+            const w = isoToWorld(c, r);
+            const b = grid[r][c];
+            const baseHue = b.type === 'crystal' ? 220 : b.type === 'collector' ? 150 : 290;
+            for (let i = 0; i < 4; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const spd = 0.5 + Math.random() * 2;
+              particles.push({
+                x: w.x, y: w.y - 8, vx: Math.cos(angle) * spd, vy: -0.5 - Math.random() * 2,
+                life: 80 + Math.random() * 80, maxLife: 160,
+                size: 2 + Math.random() * 3, hue: baseHue + Math.random() * 60 - 30,
+                type: 'dissolve', worldSpace: true,
+              });
+            }
+          }
+        }
+      }
+
+      function updateParticles(dt) {
+        // Crystal sparkles
+        sparkleTimer -= dt;
+        if (sparkleTimer <= 0 && loopPhase === 0) {
+          sparkleTimer = 0.2;
+          for (let r = 0; r < TOTAL; r++) {
+            for (let c = 0; c < TOTAL; c++) {
+              const b = grid[r][c];
+              if (b && b.type === 'crystal' && Math.random() < 0.25 && particles.length < MAX_PARTICLES) {
+                const w = isoToWorld(c, r);
+                const hues = [210, 280, 35];
+                particles.push({
+                  x: w.x + (Math.random() - 0.5) * 12, y: w.y - 5 - Math.random() * 10,
+                  vx: (Math.random() - 0.5) * 0.5, vy: -0.5 - Math.random() * 0.8,
+                  life: 30 + Math.random() * 30, maxLife: 60,
+                  size: 1.5 + Math.random() * 1.5, hue: hues[b.tier - 1] + (Math.random() - 0.5) * 20,
+                  type: 'sparkle', worldSpace: true,
+                });
+              }
+            }
+          }
+        }
+
+        // Ambient (screen-space)
+        ambientTimer -= dt;
+        if (ambientTimer <= 0) {
+          ambientTimer = 0.4;
+          const aCount = particles.reduce((n, p) => n + (p.type === 'ambient' ? 1 : 0), 0);
+          if (aCount < 50 && particles.length < MAX_PARTICLES) {
+            particles.push({
+              x: Math.random() * app.width, y: Math.random() * app.height,
+              vx: (Math.random() - 0.5) * 0.2, vy: (Math.random() - 0.5) * 0.2,
+              life: 200 + Math.random() * 200, maxLife: 400,
+              size: 1 + Math.random(), hue: 250 + Math.random() * 40,
+              type: 'ambient', worldSpace: false,
+            });
+          }
+        }
+
+        // Update
+        let len = particles.length;
+        for (let i = len - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.life -= dt * 60;
+          p.x += p.vx;
+          p.y += p.vy;
+          if (p.type === 'burst' || p.type === 'dissolve') {
+            p.vx *= 0.96;
+            p.vy *= 0.96;
+            if (p.type === 'dissolve') p.vy -= 0.01;
+          }
+          if (p.life <= 0) { particles[i] = particles[len - 1]; len--; }
+        }
+        particles.length = len;
+      }
+
+      // ─── Drawing (world space, inside canvas transform) ─
+      function drawDiamond(ctx, x, y, w, h) {
+        ctx.beginPath();
+        ctx.moveTo(x, y - h / 2);
+        ctx.lineTo(x + w / 2, y);
+        ctx.lineTo(x, y + h / 2);
+        ctx.lineTo(x - w / 2, y);
+        ctx.closePath();
+      }
+
+      function drawSectorPlatforms(ctx) {
+        for (let sum = 0; sum <= (META_GRID - 1) * 2; sum++) {
+          for (let mr = 0; mr <= sum; mr++) {
+            const mc = sum - mr;
+            if (mr >= META_GRID || mc >= META_GRID) continue;
+            const sector = sectors[mr][mc];
+            const sc = mc * SECTOR_SIZE, sr = mr * SECTOR_SIZE;
+
+            const top = isoToWorld(sc, sr);
+            const right = isoToWorld(sc + SECTOR_SIZE, sr);
+            const bottom = isoToWorld(sc + SECTOR_SIZE, sr + SECTOR_SIZE);
+            const left = isoToWorld(sc, sr + SECTOR_SIZE);
+
+            if (sector.unlocked) {
+              const age = Math.max(0, time - sector.unlockTime);
+              const fadeIn = Math.min(1, age * 1.5);
+              const depth = 16 * fadeIn;
+
+              // Side faces
+              ctx.beginPath();
+              ctx.moveTo(right.x, right.y); ctx.lineTo(bottom.x, bottom.y);
+              ctx.lineTo(bottom.x, bottom.y + depth); ctx.lineTo(right.x, right.y + depth);
+              ctx.closePath();
+              ctx.fillStyle = `rgba(22, 18, 42, ${0.7 * fadeIn})`;
+              ctx.fill();
+
+              ctx.beginPath();
+              ctx.moveTo(left.x, left.y); ctx.lineTo(bottom.x, bottom.y);
+              ctx.lineTo(bottom.x, bottom.y + depth); ctx.lineTo(left.x, left.y + depth);
+              ctx.closePath();
+              ctx.fillStyle = `rgba(16, 12, 32, ${0.8 * fadeIn})`;
+              ctx.fill();
+
+              // Top face
+              ctx.beginPath();
+              ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
+              ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
+              ctx.closePath();
+              ctx.fillStyle = `rgba(30, 25, 55, ${0.5 * fadeIn})`;
+              ctx.fill();
+              ctx.strokeStyle = `rgba(120, 90, 220, ${0.3 * fadeIn})`;
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+
+              // Unlock flash
+              if (age < 0.6) {
+                ctx.beginPath();
+                ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
+                ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
+                ctx.closePath();
+                ctx.fillStyle = `rgba(180, 140, 255, ${0.35 * (1 - age / 0.6)})`;
+                ctx.fill();
+              }
+            } else {
+              ctx.beginPath();
+              ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
+              ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
+              ctx.closePath();
+              ctx.fillStyle = 'rgba(10, 8, 20, 0.2)';
+              ctx.fill();
+              ctx.strokeStyle = 'rgba(60, 50, 100, 0.06)';
+              ctx.lineWidth = 1;
+              ctx.stroke();
+            }
+          }
+        }
+      }
+
+      function drawGridLines(ctx) {
+        // Skip when too zoomed out
+        if (camZoom < 0.35) return;
+        const alpha = camZoom < 0.6 ? (camZoom - 0.35) / 0.25 : 1;
+        for (let r = 0; r < TOTAL; r++) {
+          for (let c = 0; c < TOTAL; c++) {
+            if (!isTileUnlocked(c, r)) continue;
+            const w = isoToWorld(c, r);
+            drawDiamond(ctx, w.x, w.y, TILE_W, TILE_H);
+            ctx.strokeStyle = `rgba(80, 100, 160, ${0.15 * alpha})`;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+          }
+        }
+      }
+
+      function drawConnections(ctx) {
+        if (camZoom < 0.3) return;
+        const connAlpha = camZoom < 0.6 ? (camZoom - 0.3) / 0.3 : 1;
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            if (!sectors[mr][mc].unlocked) continue;
+            const sc = mc * SECTOR_SIZE, sr = mr * SECTOR_SIZE;
+            const blds = [];
+            for (let r = sr; r < sr + SECTOR_SIZE; r++)
+              for (let c = sc; c < sc + SECTOR_SIZE; c++)
+                if (grid[r][c]) blds.push({ w: isoToWorld(c, r), b: grid[r][c] });
+            for (let i = 0; i < blds.length; i++) {
+              for (let j = i + 1; j < blds.length; j++) {
+                const a = 0.04 + 0.03 * Math.sin(time * 2 + blds[i].b.seed + blds[j].b.seed);
+                ctx.strokeStyle = `rgba(140, 100, 240, ${a * connAlpha})`;
+                ctx.lineWidth = 0.7;
+                ctx.beginPath();
+                ctx.moveTo(blds[i].w.x, blds[i].w.y - 8);
+                ctx.lineTo(blds[j].w.x, blds[j].w.y - 8);
+                ctx.stroke();
+              }
+            }
+          }
+        }
+      }
+
+      // ─── Building Drawing ───────────────────────────────
+      function drawCrystalNode(ctx, x, y, tier, t, seed) {
+        const color = BUILDINGS.crystal.colors[tier - 1];
+        const glow = BUILDINGS.crystal.glowRadius[tier - 1] * 0.85;
+        const pulse = 1 + 0.08 * Math.sin(t * 2 + seed);
+        const size = (10 + tier * 3.5) * pulse;
+
+        const grad = ctx.createRadialGradient(x, y - 10, 0, x, y - 10, glow * pulse);
+        grad.addColorStop(0, color + 'aa');
+        grad.addColorStop(0.5, color + '44');
+        grad.addColorStop(1, color + '00');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glow * 2, y - 10 - glow * 2, glow * 4, glow * 4);
+
+        ctx.fillStyle = color;
+        drawDiamond(ctx, x, y - 10, size, size * 1.4);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff88';
+        drawDiamond(ctx, x, y - 10, size * 0.4, size * 0.6);
+        ctx.fill();
+      }
+
+      function drawCollector(ctx, x, y, tier, t, seed) {
+        const color = BUILDINGS.collector.colors[tier - 1];
+        const glow = BUILDINGS.collector.glowRadius[tier - 1] * 0.85;
+        const radius = 9 + tier * 2.5;
+
+        const grad = ctx.createRadialGradient(x, y - 8, 0, x, y - 8, glow);
+        grad.addColorStop(0, color + '66');
+        grad.addColorStop(1, color + '00');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glow * 2, y - 8 - glow * 2, glow * 4, glow * 4);
+
+        ctx.fillStyle = '#0a2a1a';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
+          const px = x + Math.cos(a) * radius;
+          const py = y - 8 + Math.sin(a) * radius * 0.6;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        for (let ri = 0; ri < tier; ri++) {
+          const dir = ri % 2 === 0 ? 1 : -1;
+          const ringR = radius * (0.7 + ri * 0.3);
+          const angle = t * 1.5 * dir + seed + ri * 2;
+          ctx.strokeStyle = color + (ri === 0 ? 'cc' : '88');
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(x, y - 8, ringR, ringR * 0.45, angle, 0, Math.PI * 0.8);
+          ctx.stroke();
+        }
+      }
+
+      function drawAmplifier(ctx, x, y, tier, t, seed) {
+        const color = BUILDINGS.amplifier.colors[tier - 1];
+        const glow = BUILDINGS.amplifier.glowRadius[tier - 1] * 0.85;
+        const height = 22 + tier * 10;
+        const width = 5 + tier * 1.8;
+
+        const grad = ctx.createRadialGradient(x, y - height / 2, 0, x, y - height / 2, glow);
+        grad.addColorStop(0, color + '55');
+        grad.addColorStop(1, color + '00');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - glow * 2, y - height - glow, glow * 4, height + glow * 2);
+
+        const bodyGrad = ctx.createLinearGradient(x, y, x, y - height);
+        bodyGrad.addColorStop(0, '#4444ff');
+        bodyGrad.addColorStop(1, color);
+        ctx.fillStyle = bodyGrad;
+        ctx.beginPath();
+        ctx.moveTo(x - width / 2, y); ctx.lineTo(x, y - height); ctx.lineTo(x + width / 2, y);
+        ctx.closePath();
+        ctx.fill();
+
+        for (let i = 0; i < 3 + tier; i++) {
+          const phase = (t * 1.5 + seed + i * 0.7) % 1;
+          const py = y - phase * height;
+          ctx.fillStyle = `hsla(290, 100%, 75%, ${Math.sin(phase * Math.PI) * 0.8})`;
+          ctx.beginPath();
+          ctx.arc(x + Math.sin(t * 3 + i * 2) * 3, py, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawBuildings(ctx) {
+        for (let r = 0; r < TOTAL; r++) {
+          for (let c = 0; c < TOTAL; c++) {
+            const b = grid[r][c];
+            if (!b) continue;
+            const w = isoToWorld(c, r);
+            const age = Math.max(0, time - b.placeTime);
+            const scale = Math.min(1, age * 5);
+            if (scale <= 0.01) continue;
+
+            ctx.save();
+            if (scale < 1) {
+              ctx.translate(w.x, w.y);
+              ctx.scale(scale, scale);
+              ctx.translate(-w.x, -w.y);
+            }
+            if (b.type === 'crystal') drawCrystalNode(ctx, w.x, w.y, b.tier, time, b.seed);
+            else if (b.type === 'collector') drawCollector(ctx, w.x, w.y, b.tier, time, b.seed);
+            else if (b.type === 'amplifier') drawAmplifier(ctx, w.x, w.y, b.tier, time, b.seed);
+            ctx.restore();
+          }
+        }
+      }
+
+      // ─── Particle Drawing (screen space) ────────────────
+      function drawParticles(ctx) {
+        for (const p of particles) {
+          const alpha = Math.max(0, p.life / p.maxLife);
+          let sx, sy;
+          if (p.worldSpace) {
+            const s = worldToScreen(p.x, p.y);
+            sx = s.x; sy = s.y;
+          } else {
+            sx = p.x; sy = p.y;
+          }
+          const s = p.type === 'ambient' ? 40 : 80;
+          const l = p.type === 'ambient' ? 40 : 70;
+          ctx.fillStyle = `hsla(${p.hue}, ${s}%, ${l}%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, p.size * alpha, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── HUD (screen space) ─────────────────────────────
+      function drawMiniMap(ctx) {
+        const mapSize = 4;
+        const gap = 1;
+        const totalW = META_GRID * (mapSize + gap);
+        const sx = app.width - 18 - totalW;
+        const sy = 38;
+
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            const x = sx + mc * (mapSize + gap);
+            const y = sy + mr * (mapSize + gap);
+            if (sectors[mr][mc].unlocked) {
+              const age = Math.max(0, time - sectors[mr][mc].unlockTime);
+              const flash = age < 0.6 ? 0.3 * (1 - age / 0.6) : 0;
+              ctx.fillStyle = `rgba(120, 90, 220, ${0.45 + flash})`;
+            } else {
+              ctx.fillStyle = 'rgba(40, 30, 70, 0.2)';
+            }
+            ctx.fillRect(x, y, mapSize, mapSize);
+          }
+        }
+      }
+
+      function drawHUD(ctx) {
+        const w = app.width, h = app.height;
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // Sector progress
+        ctx.fillStyle = '#cc88ff';
+        ctx.fillText(`Sectors ${unlockedCount}/${TOTAL_SECTORS}`, 18, 18);
+
+        // Node count
+        let count = 0;
+        for (let r = 0; r < TOTAL; r++)
+          for (let c = 0; c < TOTAL; c++)
+            if (grid[r][c]) count++;
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.5)';
+        ctx.font = '12px monospace';
+        ctx.fillText(`${count} nodes`, 18, 38);
+
+        // Progress bar
+        const barW = 120, barH = 3;
+        ctx.fillStyle = 'rgba(80, 60, 140, 0.3)';
+        ctx.fillRect(18, 56, barW, barH);
+        ctx.fillStyle = 'rgba(160, 120, 255, 0.6)';
+        ctx.fillRect(18, 56, barW * (unlockedCount / TOTAL_SECTORS), barH);
+
+        // Generation
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(200, 160, 255, 0.5)';
+        ctx.fillText(`Gen ${generation}`, w - 18, 18);
+
+        drawMiniMap(ctx);
+
+        // Loop phase text
+        if (loopPhase === 1) {
+          ctx.font = 'bold 18px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(220, 180, 255, ${0.5 + 0.5 * Math.sin(time * 10)})`;
+          ctx.fillText('CYCLE COMPLETE', w / 2, h * 0.5 - 30);
+        }
+
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.fillText('idle \u00b7 auto-expanding', w / 2, h - 16);
+      }
+
+      // ─── Auto-Play ──────────────────────────────────────
+      function autoPlay(dt) {
+        if (loopPhase !== 0) return;
+        if (expandPause > 0) { expandPause -= dt; return; }
+
+        placeTimer -= dt;
+        if (placeTimer > 0) return;
+
+        const valid = getValidPlacements();
+
+        if (valid.length === 0) {
+          if (unlockedCount >= TOTAL_SECTORS) {
+            loopPhase = 1;
+            loopTimer = 1.5;
+            return;
+          }
+          const next = getNextSector();
+          if (next) {
+            unlockSector(next.col, next.row);
+            expandPause = 0.4;
+          }
+          return;
+        }
+
+        // Prefer newest sector
+        let newestTime = -Infinity;
+        for (const t of valid) {
+          const s = getSectorOf(t.col, t.row);
+          const ut = sectors[s.row][s.col].unlockTime;
+          if (ut > newestTime) newestTime = ut;
+        }
+
+        let pool;
+        if (Math.random() < 0.75) {
+          pool = valid.filter(t => {
+            const s = getSectorOf(t.col, t.row);
+            return sectors[s.row][s.col].unlockTime === newestTime;
+          });
+        } else {
+          pool = valid;
+        }
+        if (!pool.length) pool = valid;
+
+        const pick = pool[Math.floor(Math.random() * pool.length)];
+        placeBuilding(pick.col, pick.row);
+        placeTimer = 0.18 + Math.random() * 0.08;
+      }
+
+      // ─── Loop ───────────────────────────────────────────
+      function updateLoop(dt) {
+        if (loopPhase === 0) return;
+        loopTimer -= dt;
+
+        if (loopPhase === 1 && loopTimer <= 0) {
+          // Celebrate → zoom-out
+          loopPhase = 2;
+          loopTimer = 4.0;
+          spawnDissolveBurst();
+          // Set camera target: center of grid, zoom to illusion level
+          camTargetX = 0;
+          camTargetY = 0;
+          camTargetZoom = startZoom / META_GRID;
+        } else if (loopPhase === 2 && loopTimer <= 0) {
+          // Zoom-out done → hold
+          loopPhase = 3;
+          loopTimer = 1.0;
+        } else if (loopPhase === 3 && loopTimer <= 0) {
+          // Reset — snap camera back to start
+          generation++;
+          initGrid();
+          initSectors();
+          particles = particles.filter(p => p.type === 'ambient');
+          loopPhase = 0;
+          expandPause = 1.0;
+          placeTimer = 0.5;
+          // Snap camera to starting sector
+          const sc = isoToWorld(
+            START_SECTOR.col * SECTOR_SIZE + SECTOR_SIZE / 2,
+            START_SECTOR.row * SECTOR_SIZE + SECTOR_SIZE / 2
+          );
+          camZoom = startZoom;
+          camTargetZoom = startZoom;
+          camX = sc.x; camY = sc.y;
+          camTargetX = sc.x; camTargetY = sc.y;
+        }
+      }
+
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        autoPlay(dt);
+        updateLoop(dt);
+        updateParticles(dt);
+      }
+
+      // ─── Init ───────────────────────────────────────────
+      initGrid();
+      initSectors();
+      initStars();
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#0a0a20',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          { fontSize: 18, charset: 'blocks', colorScheme: 'vapor', pattern: 'diamond', patternMix: 0.08, blendMode: 'replace', opacity: 1 },
+          { fontSize: 10, charset: 'density', colorScheme: 'neon', blendMode: 'add', opacity: 0.8 },
+          { fontSize: 6, charset: 'braille', colorScheme: 'ocean', pattern: 'breathing', patternMix: 0.2, blendMode: 'add', opacity: 0.25 },
+        ],
+        onKeydown(e) {
+          if (e.key.toLowerCase() === 'r') {
+            generation = 1;
+            initGrid();
+            initSectors();
+            particles = [];
+            loopPhase = 0;
+            expandPause = 1.0;
+            placeTimer = 0.5;
+            startZoomReady = false;
+          }
+        },
+        draw(ctx, { time: rawTime, dt, width: w, height: h }) {
+          time = rawTime * 0.001;
+          updateCamera(dt);
+          update(dt);
+
+          // ── Clear ──
+          ctx.fillStyle = '#0a0a20';
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Stars (screen space) ──
+          for (const s of bgStars) {
+            const twinkle = 0.5 + 0.5 * Math.sin(time * s.speed + s.phase);
+            ctx.fillStyle = `rgba(200, 190, 240, ${s.brightness * twinkle * 1.8})`;
+            ctx.beginPath();
+            ctx.arc(s.x * w, s.y * h, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // ── World (camera transform) ──
+          ctx.save();
+          ctx.translate(w / 2, h / 2);
+          ctx.scale(camZoom, camZoom);
+          ctx.translate(-camX, -camY);
+
+          drawSectorPlatforms(ctx);
+          drawGridLines(ctx);
+          drawConnections(ctx);
+
+          // Buildings with loop effects
+          let bAlpha = 1;
+          if (loopPhase === 1) bAlpha = 0.6 + 0.4 * Math.sin(time * 8);
+          else if (loopPhase === 2) bAlpha = Math.max(0, loopTimer / 4.0);
+          else if (loopPhase === 3) bAlpha = 0;
+
+          if (bAlpha > 0) {
+            ctx.globalAlpha = bAlpha;
+            drawBuildings(ctx);
+            ctx.globalAlpha = 1;
+          }
+
+          ctx.restore();
+
+          // ── Celebrate flash (screen space) ──
+          if (loopPhase === 1) {
+            const age = 1.5 - loopTimer;
+            if (age < 0.3) {
+              ctx.fillStyle = `rgba(200, 170, 255, ${0.2 * (1 - age / 0.3)})`;
+              ctx.fillRect(0, 0, w, h);
+            }
+          }
+
+          // ── Particles (screen space, manually converted) ──
+          drawParticles(ctx);
+
+          // ── HUD ──
+          drawHUD(ctx);
+        },
+      });
+    </script>
+  </body>
+</html>

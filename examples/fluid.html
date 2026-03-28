@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Fluid</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+      #hud {
+        position: absolute; top: 16px; left: 16px;
+        font-family: monospace; font-size: 14px; color: #fff;
+        pointer-events: none; text-shadow: 0 1px 4px #000;
+        line-height: 1.6; opacity: 0.85;
+      }
+      #hint {
+        position: absolute; bottom: 24px; left: 50%;
+        transform: translateX(-50%);
+        font-family: monospace; font-size: 13px; color: #aaa;
+        pointer-events: none; text-shadow: 0 1px 4px #000;
+        transition: opacity 2s;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+      <div id="hud"></div>
+      <div id="hint">Click and drag to paint &nbsp;|&nbsp; 1-4: Material &nbsp;|&nbsp; P: Panel</div>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp, getCanvasPos } from './utils.js';
+
+      // ─── Fluid Grid ────────────────────────────────────
+      const N = 128;             // grid resolution (square, mapped to aspect)
+      let NX = N, NY = N;       // actual cols/rows after aspect correction
+      const ITER = 4;            // Gauss-Seidel iterations
+
+      // Typed arrays — allocated once and reused
+      let u, v, u0, v0;         // velocity
+      let r, g, b, r0, g0, b0; // dye RGB
+      let div, p;               // divergence, pressure
+
+      function allocGrid() {
+        const sz = (NX + 2) * (NY + 2);
+        u  = new Float32Array(sz); v  = new Float32Array(sz);
+        u0 = new Float32Array(sz); v0 = new Float32Array(sz);
+        r  = new Float32Array(sz); g  = new Float32Array(sz); b  = new Float32Array(sz);
+        r0 = new Float32Array(sz); g0 = new Float32Array(sz); b0 = new Float32Array(sz);
+        div = new Float32Array(sz); p = new Float32Array(sz);
+      }
+
+      function IX(x, y) { return x + (NX + 2) * y; }
+
+      // ─── Boundary Conditions ─────────────────────────
+      function setBnd(bnd, x) {
+        for (let i = 1; i <= NY; i++) {
+          x[IX(0, i)]      = bnd === 1 ? -x[IX(1, i)]  : x[IX(1, i)];
+          x[IX(NX + 1, i)] = bnd === 1 ? -x[IX(NX, i)] : x[IX(NX, i)];
+        }
+        for (let i = 1; i <= NX; i++) {
+          x[IX(i, 0)]      = bnd === 2 ? -x[IX(i, 1)]  : x[IX(i, 1)];
+          x[IX(i, NY + 1)] = bnd === 2 ? -x[IX(i, NY)] : x[IX(i, NY)];
+        }
+        x[IX(0, 0)]           = 0.5 * (x[IX(1, 0)]      + x[IX(0, 1)]);
+        x[IX(0, NY + 1)]      = 0.5 * (x[IX(1, NY + 1)] + x[IX(0, NY)]);
+        x[IX(NX + 1, 0)]      = 0.5 * (x[IX(NX, 0)]     + x[IX(NX + 1, 1)]);
+        x[IX(NX + 1, NY + 1)] = 0.5 * (x[IX(NX, NY + 1)]+ x[IX(NX + 1, NY)]);
+      }
+
+      // ─── Diffuse ─────────────────────────────────────
+      function diffuse(bnd, x, x0, diff, dt) {
+        const a = dt * diff * NX * NY;
+        const c = 1 + 4 * a;
+        for (let k = 0; k < ITER; k++) {
+          for (let j = 1; j <= NY; j++) {
+            for (let i = 1; i <= NX; i++) {
+              const idx = IX(i, j);
+              x[idx] = (x0[idx] + a * (
+                x[IX(i - 1, j)] + x[IX(i + 1, j)] +
+                x[IX(i, j - 1)] + x[IX(i, j + 1)]
+              )) / c;
+            }
+          }
+          setBnd(bnd, x);
+        }
+      }
+
+      // ─── Advect (semi-Lagrangian) ────────────────────
+      function advect(bnd, d, d0, velU, velV, dt) {
+        const dt0x = dt * NX;
+        const dt0y = dt * NY;
+        for (let j = 1; j <= NY; j++) {
+          for (let i = 1; i <= NX; i++) {
+            const idx = IX(i, j);
+            let x = i - dt0x * velU[idx];
+            let y = j - dt0y * velV[idx];
+            x = clamp(x, 0.5, NX + 0.5);
+            y = clamp(y, 0.5, NY + 0.5);
+            const i0 = x | 0, i1 = i0 + 1;
+            const j0 = y | 0, j1 = j0 + 1;
+            const s1 = x - i0, s0 = 1 - s1;
+            const t1 = y - j0, t0 = 1 - t1;
+            d[idx] =
+              s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) +
+              s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+          }
+        }
+        setBnd(bnd, d);
+      }
+
+      // ─── Project (pressure solve) ────────────────────
+      function project(velU, velV) {
+        const hx = 1.0 / NX;
+        const hy = 1.0 / NY;
+        for (let j = 1; j <= NY; j++) {
+          for (let i = 1; i <= NX; i++) {
+            const idx = IX(i, j);
+            div[idx] = -0.5 * (
+              hx * (velU[IX(i + 1, j)] - velU[IX(i - 1, j)]) +
+              hy * (velV[IX(i, j + 1)] - velV[IX(i, j - 1)])
+            );
+            p[idx] = 0;
+          }
+        }
+        setBnd(0, div);
+        setBnd(0, p);
+        for (let k = 0; k < ITER; k++) {
+          for (let j = 1; j <= NY; j++) {
+            for (let i = 1; i <= NX; i++) {
+              const idx = IX(i, j);
+              p[idx] = (div[idx] +
+                p[IX(i - 1, j)] + p[IX(i + 1, j)] +
+                p[IX(i, j - 1)] + p[IX(i, j + 1)]
+              ) / 4;
+            }
+          }
+          setBnd(0, p);
+        }
+        for (let j = 1; j <= NY; j++) {
+          for (let i = 1; i <= NX; i++) {
+            const idx = IX(i, j);
+            velU[idx] -= 0.5 * NX * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
+            velV[idx] -= 0.5 * NY * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
+          }
+        }
+        setBnd(1, velU);
+        setBnd(2, velV);
+      }
+
+      // ─── Full Velocity Step ──────────────────────────
+      function velStep(dt, visc) {
+        // diffuse
+        u0.set(u); v0.set(v);
+        diffuse(1, u, u0, visc, dt);
+        diffuse(2, v, v0, visc, dt);
+        project(u, v);
+        // advect
+        u0.set(u); v0.set(v);
+        advect(1, u, u0, u0, v0, dt);
+        advect(2, v, v0, u0, v0, dt);
+        project(u, v);
+      }
+
+      // ─── Full Dye Step ───────────────────────────────
+      function dyeStep(dt, diff, dissipation) {
+        r0.set(r); g0.set(g); b0.set(b);
+        diffuse(0, r, r0, diff, dt);
+        diffuse(0, g, g0, diff, dt);
+        diffuse(0, b, b0, diff, dt);
+        r0.set(r); g0.set(g); b0.set(b);
+        advect(0, r, r0, u, v, dt);
+        advect(0, g, g0, u, v, dt);
+        advect(0, b, b0, u, v, dt);
+        // dissipate
+        const fade = 1 / (1 + dt * dissipation);
+        const sz = (NX + 2) * (NY + 2);
+        for (let i = 0; i < sz; i++) {
+          r[i] *= fade;
+          g[i] *= fade;
+          b[i] *= fade;
+        }
+      }
+
+      // ─── Add Source at Grid Position ─────────────────
+      function addSource(gx, gy, radius, vx, vy, cr, cg, cb) {
+        const rad = Math.max(1, radius);
+        for (let dy = -rad; dy <= rad; dy++) {
+          for (let dx = -rad; dx <= rad; dx++) {
+            const ix = (gx + dx) | 0;
+            const iy = (gy + dy) | 0;
+            if (ix < 1 || ix > NX || iy < 1 || iy > NY) continue;
+            const d = Math.sqrt(dx * dx + dy * dy) / rad;
+            if (d > 1) continue;
+            const w = 1 - d * d; // quadratic falloff
+            const idx = IX(ix, iy);
+            u[idx] += vx * w;
+            v[idx] += vy * w;
+            r[idx] += cr * w;
+            g[idx] += cg * w;
+            b[idx] += cb * w;
+          }
+        }
+      }
+
+      // ─── Material Presets ────────────────────────────
+      const MATERIALS = [
+        {
+          name: 'Water',
+          colorScheme: 'ocean', charset: 'braille', fontSize: 7,
+          background: '#020a14',
+          visc: 0.00008, dyeDiff: 0.00005, dissipation: 0.4,
+          crtEnabled: false, crtGlow: 0, crtScanlines: 0,
+          edgeDetect: true, edgeOpacity: 0.25,
+          dyeFn(t) { // blue-cyan palette
+            const h = 190 + 40 * Math.sin(t * 0.5);
+            return hslToRgb(h / 360, 0.7, 0.55);
+          },
+        },
+        {
+          name: 'Lava',
+          colorScheme: 'fire', charset: 'density', fontSize: 8,
+          background: '#0a0200',
+          visc: 0.0003, dyeDiff: 0.0001, dissipation: 0.15,
+          crtEnabled: true, crtGlow: 0.4, crtScanlines: 0.15,
+          edgeDetect: false, edgeOpacity: 0,
+          dyeFn(t) { // orange-red
+            const h = (20 + 20 * Math.sin(t * 0.3)) / 360;
+            return hslToRgb(h, 0.9, 0.5);
+          },
+        },
+        {
+          name: 'Smoke',
+          colorScheme: 'mono', charset: 'minimal', fontSize: 10,
+          background: '#050505',
+          visc: 0.00002, dyeDiff: 0.00015, dissipation: 1.2,
+          crtEnabled: false, crtGlow: 0, crtScanlines: 0,
+          edgeDetect: false, edgeOpacity: 0,
+          dyeFn(t) { // white/gray
+            const l = 0.5 + 0.15 * Math.sin(t * 0.8);
+            return [l * 255, l * 255, l * 255];
+          },
+        },
+        {
+          name: 'Neon Ink',
+          colorScheme: 'acid', charset: 'braille', fontSize: 6,
+          background: '#020204',
+          visc: 0.00004, dyeDiff: 0.00002, dissipation: 0.08,
+          crtEnabled: true, crtGlow: 0.2, crtScanlines: 0.05,
+          edgeDetect: true, edgeOpacity: 0.35,
+          dyeFn(t) { // rainbow cycling
+            const h = (t * 0.4) % 1;
+            return hslToRgb(h, 1.0, 0.55);
+          },
+        },
+      ];
+
+      let materialIdx = 0;
+      let mat = MATERIALS[0];
+
+      function hslToRgb(h, s, l) {
+        let r, g, b;
+        if (s === 0) { r = g = b = l; }
+        else {
+          const hue2rgb = (p, q, t) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1/6) return p + (q - p) * 6 * t;
+            if (t < 1/2) return q;
+            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+            return p;
+          };
+          const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+          const p = 2 * l - q;
+          r = hue2rgb(p, q, h + 1/3);
+          g = hue2rgb(p, q, h);
+          b = hue2rgb(p, q, h - 1/3);
+        }
+        return [r * 255, g * 255, b * 255];
+      }
+
+      // ─── Render Fluid to Canvas (ImageData) ─────────
+      let imgData = null;
+
+      function renderFluid(ctx, w, h) {
+        if (!imgData || imgData.width !== w || imgData.height !== h) {
+          imgData = ctx.createImageData(w, h);
+        }
+        const data = imgData.data;
+        const scaleX = NX / w;
+        const scaleY = NY / h;
+
+        for (let py = 0; py < h; py++) {
+          // precompute grid Y with bilinear coords
+          const fy = py * scaleY + 0.5;
+          const j0 = clamp(fy | 0, 1, NY);
+          const j1 = clamp(j0 + 1, 1, NY);
+          const ty = fy - j0;
+
+          for (let px = 0; px < w; px++) {
+            const fx = px * scaleX + 0.5;
+            const i0 = clamp(fx | 0, 1, NX);
+            const i1 = clamp(i0 + 1, 1, NX);
+            const tx = fx - i0;
+
+            // bilinear sample each channel
+            const s00 = IX(i0, j0), s10 = IX(i1, j0);
+            const s01 = IX(i0, j1), s11 = IX(i1, j1);
+            const sx0 = 1 - tx, sx1 = tx;
+            const sy0 = 1 - ty, sy1 = ty;
+
+            const rv = sx0 * (sy0 * r[s00] + sy1 * r[s01]) + sx1 * (sy0 * r[s10] + sy1 * r[s11]);
+            const gv = sx0 * (sy0 * g[s00] + sy1 * g[s01]) + sx1 * (sy0 * g[s10] + sy1 * g[s11]);
+            const bv = sx0 * (sy0 * b[s00] + sy1 * b[s01]) + sx1 * (sy0 * b[s10] + sy1 * b[s11]);
+
+            const pi = (py * w + px) << 2;
+            data[pi]     = clamp(rv, 0, 255) | 0;
+            data[pi + 1] = clamp(gv, 0, 255) | 0;
+            data[pi + 2] = clamp(bv, 0, 255) | 0;
+            data[pi + 3] = 255;
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
+      }
+
+      // ─── Mouse / Touch State ─────────────────────────
+      let pointerDown = false;
+      let prevMX = 0, prevMY = 0;
+      let curMX = 0, curMY = 0;
+      let hasMoved = false;
+
+      // ─── Auto-stir: ambient vortices ─────────────────
+      const vortices = [];
+      let nextVortexTime = 2;
+
+      function spawnVortex(t) {
+        vortices.push({
+          x: 0.15 + Math.random() * 0.7,
+          y: 0.15 + Math.random() * 0.7,
+          strength: (Math.random() < 0.5 ? 1 : -1) * (0.3 + Math.random() * 0.4),
+          radius: 0.06 + Math.random() * 0.08,
+          life: 0,
+          maxLife: 3 + Math.random() * 4,
+          born: t,
+        });
+      }
+
+      function applyVortices(t, dt) {
+        // spawn new
+        if (t > nextVortexTime) {
+          spawnVortex(t);
+          nextVortexTime = t + 1.5 + Math.random() * 3;
+        }
+
+        for (let vi = vortices.length - 1; vi >= 0; vi--) {
+          const vx = vortices[vi];
+          vx.life = t - vx.born;
+          if (vx.life > vx.maxLife) { vortices.splice(vi, 1); continue; }
+
+          const fade = Math.sin(Math.PI * vx.life / vx.maxLife); // ramp in and out
+          const cx = vx.x * NX;
+          const cy = vx.y * NY;
+          const rad = vx.radius * NX;
+          const str = vx.strength * fade * dt * 60;
+
+          const ri = Math.ceil(rad);
+          for (let dy = -ri; dy <= ri; dy++) {
+            for (let dx = -ri; dx <= ri; dx++) {
+              const ix = (cx + dx) | 0;
+              const iy = (cy + dy) | 0;
+              if (ix < 1 || ix > NX || iy < 1 || iy > NY) continue;
+              const d = Math.sqrt(dx * dx + dy * dy);
+              if (d > rad || d < 0.01) continue;
+              const w = (1 - d / rad);
+              const idx = IX(ix, iy);
+              // tangential force (perpendicular to radius)
+              u[idx] += -dy / d * str * w;
+              v[idx] +=  dx / d * str * w;
+            }
+          }
+        }
+
+        // gentle large-scale circular current
+        const slow = dt * 0.15;
+        for (let j = 1; j <= NY; j++) {
+          for (let i = 1; i <= NX; i++) {
+            const fx = (i - NX * 0.5) / NX;
+            const fy = (j - NY * 0.5) / NY;
+            const idx = IX(i, j);
+            u[idx] += -fy * slow;
+            v[idx] +=  fx * slow;
+          }
+        }
+      }
+
+      // ─── HUD ─────────────────────────────────────────
+      const hudEl = document.getElementById('hud');
+      const hintEl = document.getElementById('hint');
+      let hintVisible = true;
+
+      function updateHUD() {
+        hudEl.textContent = mat.name;
+      }
+      updateHUD();
+
+      function fadeHint() {
+        if (hintVisible) {
+          hintEl.style.opacity = '0';
+          hintVisible = false;
+        }
+      }
+
+      // ─── Apply Material to ASCII Renderer ────────────
+      function applyMaterial(ascii) {
+        ascii.set('colorScheme', mat.colorScheme);
+        ascii.set('background', mat.background);
+        ascii.set('crtEnabled', mat.crtEnabled);
+        ascii.set('crtGlow', mat.crtGlow);
+        ascii.set('crtScanlines', mat.crtScanlines);
+
+        // base layer (index 0)
+        ascii.setLayer(0, { fontSize: mat.fontSize, charset: mat.charset });
+
+        // edge layer (index 1)
+        ascii.setLayer(1, {
+          edgeDetect: mat.edgeDetect,
+          opacity: mat.edgeOpacity,
+        });
+      }
+
+      // ─── Init Grid with Aspect Ratio ─────────────────
+      function initGrid(w, h) {
+        const aspect = w / h;
+        if (aspect >= 1) {
+          NX = N;
+          NY = Math.max(32, Math.round(N / aspect));
+        } else {
+          NY = N;
+          NX = Math.max(32, Math.round(N * aspect));
+        }
+        allocGrid();
+        imgData = null;
+      }
+
+      // ─── Create App ──────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: mat.background,
+          sourceOpacity: 0,
+          colorScheme: mat.colorScheme,
+          crtEnabled: mat.crtEnabled,
+          crtGlow: mat.crtGlow,
+          crtScanlines: mat.crtScanlines,
+        },
+        layers: [
+          // Base layer — varies per material
+          { fontSize: mat.fontSize, charset: mat.charset, opacity: 0.95 },
+          // Edge detection overlay for fluid boundaries
+          {
+            fontSize: 6, charset: 'density',
+            edgeDetect: mat.edgeDetect, edgeCharset: 'box-light',
+            colorScheme: mat.colorScheme,
+            blendMode: 'add', opacity: mat.edgeOpacity,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          if (!u) initGrid(w, h);
+
+          const tSec = time / 1000;
+
+          // ── Handle mouse injection ──
+          if (pointerDown && hasMoved) {
+            const gx = (curMX / w) * NX;
+            const gy = (curMY / h) * NY;
+            const dx = (curMX - prevMX) / w * NX;
+            const dy = (curMY - prevMY) / h * NY;
+            const speed = Math.sqrt(dx * dx + dy * dy);
+            const force = 15;
+            const dyeAmt = 150 + clamp(speed * 40, 0, 100);
+            const [cr, cg, cb] = mat.dyeFn(tSec);
+            addSource(gx, gy, 3, dx * force, dy * force, cr / 255 * dyeAmt, cg / 255 * dyeAmt, cb / 255 * dyeAmt);
+          }
+
+          // ── Auto-stir ──
+          applyVortices(tSec, dt);
+
+          // ── Step simulation ──
+          velStep(dt, mat.visc);
+          dyeStep(dt, mat.dyeDiff, mat.dissipation);
+
+          // ── Render ──
+          renderFluid(ctx, w, h);
+        },
+        onResize(ctx, w, h) {
+          initGrid(w, h);
+        },
+        onKeydown(e) {
+          const num = parseInt(e.key);
+          if (num >= 1 && num <= 4) {
+            materialIdx = num - 1;
+            mat = MATERIALS[materialIdx];
+            applyMaterial(app.ascii);
+            updateHUD();
+          }
+        },
+      });
+
+      // ─── Pointer Events ──────────────────────────────
+      const canvas = app.canvas;
+
+      function onPointerDown(e) {
+        pointerDown = true;
+        hasMoved = false;
+        const pos = getCanvasPos(canvas, e);
+        prevMX = pos.x; prevMY = pos.y;
+        curMX = pos.x; curMY = pos.y;
+        fadeHint();
+      }
+
+      function onPointerMove(e) {
+        if (!pointerDown) return;
+        const pos = getCanvasPos(canvas, e);
+        prevMX = curMX; prevMY = curMY;
+        curMX = pos.x; curMY = pos.y;
+        hasMoved = true;
+      }
+
+      function onPointerUp() {
+        pointerDown = false;
+        hasMoved = false;
+      }
+
+      canvas.addEventListener('pointerdown', onPointerDown);
+      canvas.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+
+      // ── Seed some initial dye so it isn't blank ──
+      setTimeout(() => {
+        const tSec = performance.now() / 1000;
+        for (let k = 0; k < 5; k++) {
+          const gx = NX * (0.2 + Math.random() * 0.6);
+          const gy = NY * (0.2 + Math.random() * 0.6);
+          const angle = Math.random() * Math.PI * 2;
+          const str = 3 + Math.random() * 4;
+          const [cr, cg, cb] = mat.dyeFn(tSec + k);
+          addSource(gx, gy, 4, Math.cos(angle) * str, Math.sin(angle) * str, cr * 0.5, cg * 0.5, cb * 0.5);
+        }
+      }, 100);
+    </script>
+  </body>
+</html>

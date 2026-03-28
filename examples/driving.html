@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Driving</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp } from './utils.js';
+
+      // ─── Road Parameters ─────────────────────────────────
+      const HORIZON_Y = 0.38;            // horizon line (fraction of height)
+      const ROAD_WIDTH_BOTTOM = 0.55;    // road width at bottom of screen
+      const ROAD_WIDTH_HORIZON = 0.012;  // road width at horizon
+      const SPEED = 280;                 // scroll speed (pixels/s)
+      const DASH_LENGTH = 60;            // center-line dash length
+      const DASH_GAP = 50;              // center-line gap length
+      const NUM_POSTS = 12;              // roadside posts per side
+      const POST_SPACING = 140;          // distance between posts
+
+      // ─── State ────────────────────────────────────────────
+      let scroll = 0;
+      let steerX = 0;           // -1 to 1 steering offset
+      let targetSteerX = 0;
+      let mouseActive = false;
+
+      // ─── Stars ────────────────────────────────────────────
+      const stars = [];
+      function initStars(w, h) {
+        stars.length = 0;
+        const horizonPx = h * HORIZON_Y;
+        for (let i = 0; i < 80; i++) {
+          stars.push({
+            x: Math.random() * w,
+            y: Math.random() * horizonPx * 0.85,
+            r: 0.3 + Math.random() * 1.0,
+            b: 0.2 + Math.random() * 0.6,
+            twinkle: Math.random() * Math.PI * 2,
+            speed: 0.5 + Math.random() * 2,
+          });
+        }
+      }
+
+      // ─── Perspective Helpers ──────────────────────────────
+      function perspectiveT(y, horizonPx, h) {
+        // 0 at horizon, 1 at bottom of screen
+        return clamp((y - horizonPx) / (h - horizonPx), 0, 1);
+      }
+
+      function roadEdgesAtY(y, horizonPx, h, w, steer) {
+        const t = perspectiveT(y, horizonPx, h);
+        const halfWidth = lerp(ROAD_WIDTH_HORIZON, ROAD_WIDTH_BOTTOM, t) * w * 0.5;
+        const cx = w / 2 + steer * t * w * 0.12;
+        return { left: cx - halfWidth, right: cx + halfWidth, cx, t };
+      }
+
+      // ─── Draw ─────────────────────────────────────────────
+      let globalTime = 0;
+
+      function draw(ctx, { dt, width: w, height: h }) {
+        globalTime += dt;
+        scroll += SPEED * dt;
+
+        // Smooth steering
+        steerX = lerp(steerX, targetSteerX, 1 - Math.pow(0.02, dt));
+
+        const horizonPx = h * HORIZON_Y;
+
+        // ── Sky ──
+        const skyGrad = ctx.createLinearGradient(0, 0, 0, horizonPx);
+        skyGrad.addColorStop(0, '#020408');
+        skyGrad.addColorStop(0.6, '#060c18');
+        skyGrad.addColorStop(1, '#0c1520');
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, w, horizonPx);
+
+        // ── Stars ──
+        if (stars.length === 0) initStars(w, h);
+        for (const s of stars) {
+          const alpha = s.b * (0.5 + 0.5 * Math.sin(globalTime * s.speed + s.twinkle));
+          ctx.fillStyle = `rgba(180, 200, 240, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // ── Horizon glow ──
+        const horizonGlow = ctx.createRadialGradient(
+          w / 2, horizonPx, 0,
+          w / 2, horizonPx, w * 0.4
+        );
+        horizonGlow.addColorStop(0, 'rgba(60, 30, 10, 0.25)');
+        horizonGlow.addColorStop(0.4, 'rgba(40, 15, 5, 0.1)');
+        horizonGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = horizonGlow;
+        ctx.fillRect(0, 0, w, h);
+
+        // ── Ground (off-road) ──
+        const groundGrad = ctx.createLinearGradient(0, horizonPx, 0, h);
+        groundGrad.addColorStop(0, '#0a0f08');
+        groundGrad.addColorStop(0.3, '#0d1510');
+        groundGrad.addColorStop(1, '#081008');
+        ctx.fillStyle = groundGrad;
+        ctx.fillRect(0, horizonPx, w, h - horizonPx);
+
+        // ── Road surface ──
+        ctx.beginPath();
+        const topEdge = roadEdgesAtY(horizonPx, horizonPx, h, w, steerX);
+        const botEdge = roadEdgesAtY(h, horizonPx, h, w, steerX);
+        ctx.moveTo(topEdge.left, horizonPx);
+        ctx.lineTo(topEdge.right, horizonPx);
+        ctx.lineTo(botEdge.right, h);
+        ctx.lineTo(botEdge.left, h);
+        ctx.closePath();
+
+        const roadGrad = ctx.createLinearGradient(0, horizonPx, 0, h);
+        roadGrad.addColorStop(0, '#1a1a1a');
+        roadGrad.addColorStop(0.1, '#1e1e1e');
+        roadGrad.addColorStop(1, '#252525');
+        ctx.fillStyle = roadGrad;
+        ctx.fill();
+
+        // ── Road edge lines ──
+        ctx.strokeStyle = 'rgba(200, 180, 140, 0.5)';
+        ctx.lineWidth = 1;
+
+        // Left edge
+        ctx.beginPath();
+        for (let y = horizonPx; y <= h; y += 3) {
+          const e = roadEdgesAtY(y, horizonPx, h, w, steerX);
+          const lw = lerp(0.5, 3, e.t);
+          if (y === horizonPx) ctx.moveTo(e.left, y);
+          else ctx.lineTo(e.left, y);
+        }
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Right edge
+        ctx.beginPath();
+        for (let y = horizonPx; y <= h; y += 3) {
+          const e = roadEdgesAtY(y, horizonPx, h, w, steerX);
+          if (y === horizonPx) ctx.moveTo(e.right, y);
+          else ctx.lineTo(e.right, y);
+        }
+        ctx.stroke();
+
+        // ── Center dashes ──
+        const dashCycle = DASH_LENGTH + DASH_GAP;
+        const totalRoadDepth = h - horizonPx;
+
+        for (let y = horizonPx; y <= h; y += 1) {
+          const e = roadEdgesAtY(y, horizonPx, h, w, steerX);
+          // Map y to world-space depth (non-linear for perspective)
+          const t = e.t;
+          const depth = 1 / (0.001 + t); // perspective depth — high res near viewer
+          const worldZ = depth * 100 + scroll;
+          const inDash = (((worldZ % dashCycle) + dashCycle) % dashCycle) < DASH_LENGTH;
+
+          if (inDash) {
+            const dashWidth = lerp(0.5, 5, t);
+            const alpha = lerp(0.15, 0.9, t);
+            ctx.fillStyle = `rgba(220, 200, 140, ${alpha})`;
+            ctx.fillRect(e.cx - dashWidth / 2, y, dashWidth, 1.5);
+          }
+        }
+
+        // ── Shoulder rumble strips ──
+        for (let side = -1; side <= 1; side += 2) {
+          for (let y = horizonPx + 5; y <= h; y += 1) {
+            const e = roadEdgesAtY(y, horizonPx, h, w, steerX);
+            const t = e.t;
+            const depth = 1 / (0.001 + t);
+            const worldZ = depth * 100 + scroll;
+            const stripCycle = 30;
+            const inStrip = (((worldZ % stripCycle) + stripCycle) % stripCycle) < stripCycle * 0.4;
+
+            if (inStrip && t > 0.02) {
+              const stripW = lerp(0.3, 4, t);
+              const alpha = lerp(0.05, 0.35, t);
+              const edgeX = side === -1 ? e.left : e.right;
+              const offsetDir = side === -1 ? -stripW : 0;
+              ctx.fillStyle = `rgba(180, 60, 40, ${alpha})`;
+              ctx.fillRect(edgeX + offsetDir, y, stripW, 1);
+            }
+          }
+        }
+
+        // ── Roadside posts ──
+        for (let i = 0; i < NUM_POSTS; i++) {
+          const worldZ = ((scroll + i * POST_SPACING) % (NUM_POSTS * POST_SPACING));
+          const depth = worldZ / (NUM_POSTS * POST_SPACING);
+          const t = 1 - depth; // closer = higher t
+
+          if (t < 0.01 || t > 0.99) continue;
+
+          const y = horizonPx + t * totalRoadDepth;
+          const e = roadEdgesAtY(y, horizonPx, h, w, steerX);
+          const postHeight = lerp(2, 35, t);
+          const postWidth = lerp(0.5, 3, t);
+          const alpha = lerp(0.1, 0.9, t);
+
+          // Left post
+          ctx.fillStyle = `rgba(200, 180, 140, ${alpha})`;
+          ctx.fillRect(e.left - 15 * t - postWidth, y - postHeight, postWidth, postHeight);
+          // Reflector
+          const refAlpha = alpha * (0.5 + 0.5 * Math.sin(globalTime * 2 + i));
+          ctx.fillStyle = `rgba(255, 120, 30, ${refAlpha})`;
+          ctx.fillRect(e.left - 15 * t - postWidth, y - postHeight, postWidth, Math.max(1, postWidth * 0.6));
+
+          // Right post
+          ctx.fillStyle = `rgba(200, 180, 140, ${alpha})`;
+          ctx.fillRect(e.right + 15 * t, y - postHeight, postWidth, postHeight);
+          ctx.fillStyle = `rgba(255, 120, 30, ${refAlpha})`;
+          ctx.fillRect(e.right + 15 * t, y - postHeight, postWidth, Math.max(1, postWidth * 0.6));
+        }
+
+        // ── Headlight glow on road ──
+        const hlGrad = ctx.createRadialGradient(
+          w / 2 + steerX * w * 0.05, h * 0.85, 0,
+          w / 2 + steerX * w * 0.05, h * 0.7, h * 0.45
+        );
+        hlGrad.addColorStop(0, 'rgba(255, 240, 200, 0.06)');
+        hlGrad.addColorStop(0.3, 'rgba(255, 220, 160, 0.03)');
+        hlGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = hlGrad;
+        ctx.fillRect(0, horizonPx, w, h - horizonPx);
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 10,
+          colorScheme: 'fire',
+          background: '#020304',
+          sourceOpacity: 0,
+        },
+        layers: [
+          {
+            fontSize: 5,
+            charset: 'blocks',
+            colorScheme: 'fire',
+          },
+          {
+            fontSize: 12,
+            charset: 'minimal',
+            colorScheme: 'neon',
+            opacity: 0.4,
+            blendMode: 'add',
+          },
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'fire',
+            opacity: 0.5,
+            blendMode: 'add',
+            edgeDetect: true,
+          },
+        ],
+        draw,
+        onResize(ctx, w, h) {
+          initStars(w, h);
+        },
+      });
+
+      // ─── Mouse / Touch Steering ───────────────────────────
+      function updateSteer(clientX) {
+        const rect = app.canvas.getBoundingClientRect();
+        const nx = (clientX - rect.left) / rect.width;
+        targetSteerX = (nx - 0.5) * 2; // -1 to 1
+      }
+
+      window.addEventListener('mousemove', (e) => {
+        mouseActive = true;
+        updateSteer(e.clientX);
+      });
+      window.addEventListener('mouseleave', () => {
+        mouseActive = false;
+        targetSteerX = 0;
+      });
+
+      window.addEventListener('touchstart', (e) => {
+        mouseActive = true;
+        updateSteer(e.touches[0].clientX);
+      });
+      window.addEventListener('touchmove', (e) => {
+        updateSteer(e.touches[0].clientX);
+      });
+      window.addEventListener('touchend', () => {
+        mouseActive = false;
+        targetSteerX = 0;
+      });
+    </script>
+  </body>
+</html>

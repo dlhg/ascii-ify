@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Murmuration</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { lerp, clamp, smoothstep } from './utils.js';
+
+      // ─── Configuration ────────────────────────────────
+      const NUM_BOIDS = 1500;
+      const CELL_SIZE = 50;
+
+      // Boid behavior weights
+      const SEPARATION_RADIUS = 22;
+      const ALIGNMENT_RADIUS = 50;
+      const COHESION_RADIUS = 50;
+      const SEPARATION_WEIGHT = 2.8;
+      const ALIGNMENT_WEIGHT = 1.0;
+      const COHESION_WEIGHT = 0.9;
+      const MIN_SPEED = 80;
+      const MAX_SPEED = 220;
+
+      // Predator (mouse)
+      const PREDATOR_RADIUS = 150;
+      const PREDATOR_STRENGTH = 600;
+
+      // Boundary
+      const BOUNDARY_MARGIN = 100;
+      const BOUNDARY_STRENGTH = 120;
+
+      // Attractor
+      const ATTRACTOR_STRENGTH = 18;
+
+      // ─── Boid Arrays (flat for perf) ──────────────────
+      const bx = new Float32Array(NUM_BOIDS);
+      const by = new Float32Array(NUM_BOIDS);
+      const bvx = new Float32Array(NUM_BOIDS);
+      const bvy = new Float32Array(NUM_BOIDS);
+
+      let screenW = 0, screenH = 0;
+
+      function initBoids(w, h) {
+        screenW = w;
+        screenH = h;
+        const cx = w * 0.5;
+        const cy = h * 0.4;
+        for (let i = 0; i < NUM_BOIDS; i++) {
+          // Spawn in a loose cluster near center
+          bx[i] = cx + (Math.random() - 0.5) * w * 0.4;
+          by[i] = cy + (Math.random() - 0.5) * h * 0.3;
+          const angle = Math.random() * Math.PI * 2;
+          const speed = MIN_SPEED + Math.random() * (MAX_SPEED - MIN_SPEED) * 0.5;
+          bvx[i] = Math.cos(angle) * speed;
+          bvy[i] = Math.sin(angle) * speed;
+        }
+      }
+
+      // ─── Spatial Hash Grid ────────────────────────────
+      let gridCols = 0, gridRows = 0;
+      let gridCells = null; // Int32Array: flat list of boid indices per cell
+      let gridCounts = null; // how many boids in each cell
+      const MAX_PER_CELL = 64;
+
+      function rebuildGrid(w, h) {
+        gridCols = Math.ceil(w / CELL_SIZE) + 1;
+        gridRows = Math.ceil(h / CELL_SIZE) + 1;
+        const totalCells = gridCols * gridRows;
+        gridCells = new Int32Array(totalCells * MAX_PER_CELL);
+        gridCounts = new Int32Array(totalCells);
+      }
+
+      function populateGrid() {
+        gridCounts.fill(0);
+        for (let i = 0; i < NUM_BOIDS; i++) {
+          const col = (bx[i] / CELL_SIZE) | 0;
+          const row = (by[i] / CELL_SIZE) | 0;
+          if (col < 0 || col >= gridCols || row < 0 || row >= gridRows) continue;
+          const cellIdx = row * gridCols + col;
+          const count = gridCounts[cellIdx];
+          if (count < MAX_PER_CELL) {
+            gridCells[cellIdx * MAX_PER_CELL + count] = i;
+            gridCounts[cellIdx] = count + 1;
+          }
+        }
+      }
+
+      // ─── Mouse / Predator ─────────────────────────────
+      let mouseX = -9999, mouseY = -9999;
+      let mouseActive = false;
+
+      // ─── Wandering Attractor ──────────────────────────
+      let attractorX = 0, attractorY = 0;
+
+      function updateAttractor(time) {
+        const t = time / 1000;
+        // Lissajous figure with slow drift
+        attractorX = screenW * 0.5 + Math.sin(t * 0.13) * screenW * 0.25
+                     + Math.sin(t * 0.07) * screenW * 0.1;
+        attractorY = screenH * 0.38 + Math.sin(t * 0.11 + 1.3) * screenH * 0.18
+                     + Math.cos(t * 0.05) * screenH * 0.08;
+      }
+
+      // ─── Boid Update ─────────────────────────────────
+      function updateBoids(dt, time) {
+        updateAttractor(time);
+        populateGrid();
+
+        const sepR2 = SEPARATION_RADIUS * SEPARATION_RADIUS;
+        const aliR2 = ALIGNMENT_RADIUS * ALIGNMENT_RADIUS;
+        const cohR2 = COHESION_RADIUS * COHESION_RADIUS;
+        const predR2 = PREDATOR_RADIUS * PREDATOR_RADIUS;
+
+        for (let i = 0; i < NUM_BOIDS; i++) {
+          const px = bx[i], py = by[i];
+          const pvx = bvx[i], pvy = bvy[i];
+
+          // Accumulate steering forces
+          let sepX = 0, sepY = 0, sepCount = 0;
+          let aliX = 0, aliY = 0, aliCount = 0;
+          let cohX = 0, cohY = 0, cohCount = 0;
+
+          // Check neighboring grid cells
+          const col = (px / CELL_SIZE) | 0;
+          const row = (py / CELL_SIZE) | 0;
+
+          for (let dr = -1; dr <= 1; dr++) {
+            const r = row + dr;
+            if (r < 0 || r >= gridRows) continue;
+            for (let dc = -1; dc <= 1; dc++) {
+              const c = col + dc;
+              if (c < 0 || c >= gridCols) continue;
+              const cellIdx = r * gridCols + c;
+              const count = gridCounts[cellIdx];
+              const base = cellIdx * MAX_PER_CELL;
+
+              for (let k = 0; k < count; k++) {
+                const j = gridCells[base + k];
+                if (j === i) continue;
+
+                const dx = bx[j] - px;
+                const dy = by[j] - py;
+
+                // Manhattan pre-check
+                const manhattan = (dx > 0 ? dx : -dx) + (dy > 0 ? dy : -dy);
+                if (manhattan > COHESION_RADIUS * 1.5) continue;
+
+                const d2 = dx * dx + dy * dy;
+
+                // Separation
+                if (d2 < sepR2 && d2 > 0.01) {
+                  const invD = 1 / Math.sqrt(d2);
+                  // Stronger at close range
+                  const weight = (SEPARATION_RADIUS - d2 * invD) / SEPARATION_RADIUS;
+                  sepX -= dx * invD * weight;
+                  sepY -= dy * invD * weight;
+                  sepCount++;
+                }
+
+                // Alignment
+                if (d2 < aliR2) {
+                  aliX += bvx[j];
+                  aliY += bvy[j];
+                  aliCount++;
+                }
+
+                // Cohesion
+                if (d2 < cohR2) {
+                  cohX += bx[j];
+                  cohY += by[j];
+                  cohCount++;
+                }
+              }
+            }
+          }
+
+          // Compute steering vectors
+          let steerX = 0, steerY = 0;
+
+          // Separation
+          if (sepCount > 0) {
+            steerX += sepX * SEPARATION_WEIGHT;
+            steerY += sepY * SEPARATION_WEIGHT;
+          }
+
+          // Alignment
+          if (aliCount > 0) {
+            const avgVx = aliX / aliCount;
+            const avgVy = aliY / aliCount;
+            steerX += (avgVx - pvx) * ALIGNMENT_WEIGHT * 0.1;
+            steerY += (avgVy - pvy) * ALIGNMENT_WEIGHT * 0.1;
+          }
+
+          // Cohesion
+          if (cohCount > 0) {
+            const avgX = cohX / cohCount;
+            const avgY = cohY / cohCount;
+            steerX += (avgX - px) * COHESION_WEIGHT * 0.02;
+            steerY += (avgY - py) * COHESION_WEIGHT * 0.02;
+          }
+
+          // Predator avoidance
+          if (mouseActive) {
+            const dmx = px - mouseX;
+            const dmy = py - mouseY;
+            const md2 = dmx * dmx + dmy * dmy;
+            if (md2 < predR2 && md2 > 1) {
+              const md = Math.sqrt(md2);
+              const force = ((PREDATOR_RADIUS - md) / PREDATOR_RADIUS);
+              const strength = PREDATOR_STRENGTH * force * force;
+              steerX += (dmx / md) * strength;
+              steerY += (dmy / md) * strength;
+            }
+          }
+
+          // Boundary steering (soft walls)
+          if (px < BOUNDARY_MARGIN) {
+            steerX += (BOUNDARY_MARGIN - px) / BOUNDARY_MARGIN * BOUNDARY_STRENGTH;
+          } else if (px > screenW - BOUNDARY_MARGIN) {
+            steerX -= (px - (screenW - BOUNDARY_MARGIN)) / BOUNDARY_MARGIN * BOUNDARY_STRENGTH;
+          }
+          if (py < BOUNDARY_MARGIN) {
+            steerY += (BOUNDARY_MARGIN - py) / BOUNDARY_MARGIN * BOUNDARY_STRENGTH;
+          } else if (py > screenH - BOUNDARY_MARGIN) {
+            steerY -= (py - (screenH - BOUNDARY_MARGIN)) / BOUNDARY_MARGIN * BOUNDARY_STRENGTH;
+          }
+
+          // Attractor pull (very gentle)
+          const adx = attractorX - px;
+          const ady = attractorY - py;
+          const ad = Math.sqrt(adx * adx + ady * ady);
+          if (ad > 1) {
+            steerX += (adx / ad) * ATTRACTOR_STRENGTH;
+            steerY += (ady / ad) * ATTRACTOR_STRENGTH;
+          }
+
+          // Apply steering
+          let nvx = pvx + steerX * dt;
+          let nvy = pvy + steerY * dt;
+
+          // Clamp speed
+          const speed = Math.sqrt(nvx * nvx + nvy * nvy);
+          if (speed > MAX_SPEED) {
+            nvx = (nvx / speed) * MAX_SPEED;
+            nvy = (nvy / speed) * MAX_SPEED;
+          } else if (speed < MIN_SPEED && speed > 0.01) {
+            nvx = (nvx / speed) * MIN_SPEED;
+            nvy = (nvy / speed) * MIN_SPEED;
+          }
+
+          bvx[i] = nvx;
+          bvy[i] = nvy;
+          bx[i] = px + nvx * dt;
+          by[i] = py + nvy * dt;
+
+          // Hard clamp to keep on screen
+          if (bx[i] < -50) bx[i] = -50;
+          if (bx[i] > screenW + 50) bx[i] = screenW + 50;
+          if (by[i] < -50) by[i] = -50;
+          if (by[i] > screenH + 50) by[i] = screenH + 50;
+        }
+      }
+
+      // ─── Sunset Drawing ───────────────────────────────
+      // Off-screen canvas for the sky gradient (redrawn on resize or slow anim)
+      let skyCanvas = null, skyCtx = null;
+      let lastSkyTime = -1;
+
+      function drawSky(ctx, w, h, time) {
+        const t = time / 1000;
+
+        // Only redraw sky texture every few frames for perf
+        if (!skyCanvas || skyCanvas.width !== w || skyCanvas.height !== h) {
+          skyCanvas = document.createElement('canvas');
+          skyCanvas.width = w;
+          skyCanvas.height = h;
+          skyCtx = skyCanvas.getContext('2d');
+          lastSkyTime = -1;
+        }
+
+        // Redraw sky every ~100ms for slow animation
+        if (lastSkyTime < 0 || time - lastSkyTime > 100) {
+          lastSkyTime = time;
+          const sctx = skyCtx;
+
+          // Animated color shifts
+          const shift = Math.sin(t * 0.03) * 10;
+          const horizonY = h * 0.78;
+
+          const grad = sctx.createLinearGradient(0, 0, 0, h);
+          // Top: deep dark blue/navy
+          grad.addColorStop(0, `rgb(${10 + shift * 0.2 | 0}, ${8 | 0}, ${35 + shift * 0.3 | 0})`);
+          // Upper mid: deep purple
+          grad.addColorStop(0.3, `rgb(${35 + shift * 0.5 | 0}, ${15 | 0}, ${55 + shift * 0.4 | 0})`);
+          // Mid: rich purple/magenta
+          grad.addColorStop(0.5, `rgb(${75 + shift | 0}, ${25 + shift * 0.3 | 0}, ${65 + shift * 0.5 | 0})`);
+          // Lower mid: warm orange/red
+          grad.addColorStop(0.68, `rgb(${180 + shift * 0.5 | 0}, ${60 + shift * 0.4 | 0}, ${35 | 0})`);
+          // Horizon: intense orange/gold
+          grad.addColorStop(0.78, `rgb(${240 + shift * 0.2 | 0}, ${130 + shift | 0}, ${30 + shift * 0.5 | 0})`);
+          // Below horizon: darker warm
+          grad.addColorStop(0.88, `rgb(${160 + shift * 0.3 | 0}, ${50 + shift * 0.2 | 0}, ${25 | 0})`);
+          grad.addColorStop(1, `rgb(${40 | 0}, ${12 | 0}, ${18 | 0})`);
+          sctx.fillStyle = grad;
+          sctx.fillRect(0, 0, w, h);
+
+          // Sun glow (large soft circle at horizon)
+          const sunX = w * 0.55 + Math.sin(t * 0.02) * w * 0.05;
+          const sunY = horizonY + h * 0.02;
+          const sunR = Math.min(w, h) * 0.18;
+
+          // Outer glow
+          const sunGlow = sctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR * 2.5);
+          sunGlow.addColorStop(0, 'rgba(255, 200, 80, 0.15)');
+          sunGlow.addColorStop(0.3, 'rgba(255, 140, 40, 0.08)');
+          sunGlow.addColorStop(0.6, 'rgba(200, 60, 30, 0.03)');
+          sunGlow.addColorStop(1, 'rgba(100, 20, 20, 0)');
+          sctx.fillStyle = sunGlow;
+          sctx.fillRect(0, 0, w, h);
+
+          // Sun disc
+          const sunDisc = sctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+          sunDisc.addColorStop(0, 'rgba(255, 235, 180, 0.45)');
+          sunDisc.addColorStop(0.2, 'rgba(255, 200, 100, 0.3)');
+          sunDisc.addColorStop(0.5, 'rgba(255, 150, 60, 0.12)');
+          sunDisc.addColorStop(1, 'rgba(200, 80, 30, 0)');
+          sctx.fillStyle = sunDisc;
+          sctx.beginPath();
+          sctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
+          sctx.fill();
+
+          // Horizon line glow
+          const horizGlow = sctx.createLinearGradient(0, horizonY - 15, 0, horizonY + 15);
+          horizGlow.addColorStop(0, 'rgba(255, 180, 60, 0)');
+          horizGlow.addColorStop(0.5, 'rgba(255, 180, 60, 0.06)');
+          horizGlow.addColorStop(1, 'rgba(255, 180, 60, 0)');
+          sctx.fillStyle = horizGlow;
+          sctx.fillRect(0, horizonY - 15, w, 30);
+        }
+
+        ctx.drawImage(skyCanvas, 0, 0);
+      }
+
+      // ─── Boid Rendering ───────────────────────────────
+      function drawBoids(ctx, w, h, time) {
+        // Motion blur: semi-transparent overlay instead of full clear
+        // (sky is drawn fresh each frame, so we overlay boids with trails)
+        // We draw onto the main canvas which already has the sky
+
+        const t = time / 1000;
+
+        // Draw each boid as a small dark dot
+        // Use a single path for performance
+        ctx.fillStyle = 'rgba(15, 10, 20, 0.85)';
+        ctx.beginPath();
+        for (let i = 0; i < NUM_BOIDS; i++) {
+          const x = bx[i], y = by[i];
+          // Skip offscreen
+          if (x < -10 || x > w + 10 || y < -10 || y > h + 10) continue;
+
+          // Vary size slightly based on velocity for depth illusion
+          const speed = Math.sqrt(bvx[i] * bvx[i] + bvy[i] * bvy[i]);
+          const size = 1.5 + (speed / MAX_SPEED) * 1.2;
+
+          ctx.moveTo(x + size, y);
+          ctx.arc(x, y, size, 0, Math.PI * 2);
+        }
+        ctx.fill();
+
+        // Lighter secondary pass for trailing effect
+        ctx.fillStyle = 'rgba(25, 18, 35, 0.4)';
+        ctx.beginPath();
+        for (let i = 0; i < NUM_BOIDS; i++) {
+          const x = bx[i], y = by[i];
+          if (x < -10 || x > w + 10 || y < -10 || y > h + 10) continue;
+
+          // Trail: offset slightly opposite to velocity
+          const speed = Math.sqrt(bvx[i] * bvx[i] + bvy[i] * bvy[i]);
+          if (speed < 1) continue;
+          const trailX = x - (bvx[i] / speed) * 4;
+          const trailY = y - (bvy[i] / speed) * 4;
+          const size = 1.0 + (speed / MAX_SPEED) * 0.8;
+
+          ctx.moveTo(trailX + size, trailY);
+          ctx.arc(trailX, trailY, size, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      }
+
+      // ─── Ghosting Overlay Canvas ──────────────────────
+      // We use a separate canvas to accumulate boid trails
+      let trailCanvas = null, trailCtx = null;
+
+      function ensureTrailCanvas(w, h) {
+        if (!trailCanvas || trailCanvas.width !== w || trailCanvas.height !== h) {
+          trailCanvas = document.createElement('canvas');
+          trailCanvas.width = w;
+          trailCanvas.height = h;
+          trailCtx = trailCanvas.getContext('2d');
+          trailCtx.clearRect(0, 0, w, h);
+        }
+      }
+
+      function drawBoidsWithTrails(ctx, w, h, time) {
+        ensureTrailCanvas(w, h);
+
+        // Fade the trail canvas slightly each frame for ghosting
+        trailCtx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+        trailCtx.fillRect(0, 0, w, h);
+
+        // Draw fresh boids onto trail canvas
+        trailCtx.fillStyle = 'rgba(10, 5, 15, 0.9)';
+        trailCtx.beginPath();
+        for (let i = 0; i < NUM_BOIDS; i++) {
+          const x = bx[i], y = by[i];
+          if (x < -10 || x > w + 10 || y < -10 || y > h + 10) continue;
+          const speed = Math.sqrt(bvx[i] * bvx[i] + bvy[i] * bvy[i]);
+          const size = 1.5 + (speed / MAX_SPEED) * 1.5;
+          trailCtx.moveTo(x + size, y);
+          trailCtx.arc(x, y, size, 0, Math.PI * 2);
+        }
+        trailCtx.fill();
+
+        // Composite trail canvas onto main canvas (multiply-like effect via dark overlay)
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.drawImage(trailCanvas, 0, 0);
+        ctx.globalCompositeOperation = 'source-over';
+
+        // Draw sharp boids on top
+        drawBoids(ctx, w, h, time);
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 7,
+          charset: 'braille',
+          colorScheme: 'vapor',
+          opacity: 0.9,
+          background: '#0a0512',
+          sourceOpacity: 0,
+        },
+        layers: [
+          {
+            fontSize: 14,
+            charset: 'blocks',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.1,
+          },
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'sakura',
+            blendMode: 'add',
+            opacity: 0.08,
+          },
+        ],
+        draw(ctx, { time, dt, width: w, height: h }) {
+          // Draw sunset sky (full redraw each frame)
+          drawSky(ctx, w, h, time);
+
+          // Update boid simulation
+          updateBoids(dt, time);
+
+          // Draw boids with ghosting trails
+          drawBoidsWithTrails(ctx, w, h, time);
+        },
+        onResize(ctx, w, h) {
+          screenW = w;
+          screenH = h;
+          rebuildGrid(w, h);
+          if (bx[0] === 0 && by[0] === 0) {
+            initBoids(w, h);
+          }
+        },
+      });
+
+      // Initialize on first frame
+      initBoids(app.width, app.height);
+      rebuildGrid(app.width, app.height);
+
+      // ─── Mouse Events ─────────────────────────────────
+      window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+        mouseActive = true;
+      });
+      window.addEventListener('mouseleave', () => {
+        mouseActive = false;
+      });
+
+      // Touch support
+      window.addEventListener('touchstart', (e) => {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+        mouseActive = true;
+      });
+      window.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+        mouseActive = true;
+      }, { passive: false });
+      window.addEventListener('touchend', () => {
+        mouseActive = false;
+      });
+    </script>
+  </body>
+</html>
