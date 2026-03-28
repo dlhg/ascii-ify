@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Neural Ignition</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, mulberry32 } from './utils.js';
+
+      const TWO_PI = Math.PI * 2;
+
+      // ─── Constants ────────────────────────────────────
+      const MAX_NODES   = 600;
+      const MAX_DEPTH   = 16;
+      const BRANCH_MIN  = 25;
+      const BRANCH_MAX  = 60;
+      const MIN_DIST    = 15;
+      const SIGNAL_SPEED = 150; // px/s for reveal timing
+      const WAVE_W      = 0.15; // wave width (fraction of max reveal time)
+
+      // ─── State ────────────────────────────────────────
+      let nodes = [];
+      let edges = [];
+      let maxRevealTime = 0;
+      let elapsed = 0;
+      let initialized = false;
+
+      const sparks = new ParticlePool({ maxParticles: 300, gravity: 0, drag: 0.94 });
+
+      // ─── Network Generation ───────────────────────────
+      function generateNetwork(cx, cy, w, h) {
+        const rng = mulberry32(7919);
+        nodes = [{ x: cx, y: cy, depth: 0, revealTime: 0 }];
+        edges = [];
+        const queue = [0];
+        const margin = 30;
+
+        while (queue.length > 0 && nodes.length < MAX_NODES) {
+          const idx = queue.shift();
+          const node = nodes[idx];
+          if (node.depth >= MAX_DEPTH) continue;
+
+          const bc = node.depth === 0 ? 6 + Math.floor(rng() * 3) :
+                     node.depth < 3 ? 2 + Math.floor(rng() * 2) :
+                     node.depth < 7 ? (rng() < 0.65 ? 2 : 1) :
+                     (rng() < 0.35 ? 2 : 1);
+
+          const baseAngle = node.depth === 0 ? 0 :
+            Math.atan2(node.y - cy, node.x - cx);
+
+          for (let b = 0; b < bc; b++) {
+            if (nodes.length >= MAX_NODES) break;
+
+            let angle;
+            if (node.depth === 0) {
+              angle = (b / bc) * TWO_PI + (rng() - 0.5) * 0.3;
+            } else {
+              angle = baseAngle + (rng() - 0.5) * 1.4;
+            }
+
+            const len = lerp(BRANCH_MAX, BRANCH_MIN, node.depth / MAX_DEPTH) +
+                        (rng() - 0.5) * 20;
+            const nx = node.x + Math.cos(angle) * len;
+            const ny = node.y + Math.sin(angle) * len;
+
+            if (nx < margin || nx > w - margin || ny < margin || ny > h - margin) continue;
+
+            let tooClose = false;
+            for (let i = 0; i < nodes.length; i++) {
+              if (dist(nx, ny, nodes[i].x, nodes[i].y) < MIN_DIST) {
+                tooClose = true;
+                break;
+              }
+            }
+            if (tooClose) continue;
+
+            const edgeLen = dist(node.x, node.y, nx, ny);
+            const revealTime = node.revealTime + edgeLen / SIGNAL_SPEED;
+
+            edges.push({ from: idx, to: nodes.length, length: edgeLen });
+            nodes.push({ x: nx, y: ny, depth: node.depth + 1, revealTime });
+            queue.push(nodes.length - 1);
+          }
+        }
+
+        maxRevealTime = nodes.reduce((m, n) => Math.max(m, n.revealTime), 0);
+        initialized = true;
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'density',
+          colorScheme: 'acid',
+          background: '#010a01',
+          sourceOpacity: 0,
+        },
+        layers: [
+          { fontSize: 18, charset: 'blocks', blendMode: 'replace', opacity: 0.2 },
+          { fontSize: 6, charset: 'density', blendMode: 'add', opacity: 1 },
+        ],
+
+        draw(ctx, { dt, width, height }) {
+          if (!initialized) generateNetwork(width / 2, height / 2, width, height);
+          elapsed += dt;
+          const cx = width / 2, cy = height / 2;
+
+          // Phase boundaries
+          const growEnd   = maxRevealTime + 0.5;
+          const syncStart = growEnd + 0.8;
+          const syncEnd   = syncStart + maxRevealTime + 0.3;
+          const pulseStart = syncEnd + 0.5;
+
+          // ─── Background fade ────────────────────────
+          ctx.fillStyle = 'rgba(1, 10, 1, 0.055)';
+          ctx.fillRect(0, 0, width, height);
+
+          // ─── Initial spark flash ────────────────────
+          if (elapsed < 0.5) {
+            const f = elapsed < 0.12 ? smoothstep(0, 0.12, elapsed) :
+                      1 - smoothstep(0.12, 0.5, elapsed);
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 35);
+            grad.addColorStop(0, `rgba(255, 255, 255, ${f})`);
+            grad.addColorStop(0.3, `rgba(100, 255, 160, ${f * 0.6})`);
+            grad.addColorStop(1, 'rgba(0, 40, 20, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 35, 0, TWO_PI);
+            ctx.fill();
+          }
+
+          // ─── Draw edges ─────────────────────────────
+          for (const edge of edges) {
+            const src = nodes[edge.from];
+            const tgt = nodes[edge.to];
+
+            // Not yet reached source node
+            if (elapsed < src.revealTime) continue;
+
+            // Signal still traveling along this edge
+            if (elapsed < tgt.revealTime) {
+              const progress = clamp(
+                (elapsed - src.revealTime) / (tgt.revealTime - src.revealTime), 0, 1
+              );
+              const ex = lerp(src.x, tgt.x, progress);
+              const ey = lerp(src.y, tgt.y, progress);
+
+              // Partial edge
+              ctx.strokeStyle = 'rgba(30, 180, 80, 0.4)';
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(src.x, src.y);
+              ctx.lineTo(ex, ey);
+              ctx.stroke();
+
+              // Signal tip glow
+              const tipSize = 4 + Math.sin(elapsed * 18) * 1.5;
+              ctx.fillStyle = 'rgba(200, 255, 230, 0.9)';
+              ctx.beginPath();
+              ctx.arc(ex, ey, tipSize, 0, TWO_PI);
+              ctx.fill();
+
+              // Emit sparks from tip
+              if (Math.random() < 0.12) {
+                sparks.emit(1, () => ({
+                  x: ex, y: ey,
+                  vx: (Math.random() - 0.5) * 50,
+                  vy: (Math.random() - 0.5) * 50,
+                  life: 0.25 + Math.random() * 0.25,
+                  size: 0.8 + Math.random(),
+                }));
+              }
+              continue;
+            }
+
+            // Fully revealed edge — compute brightness
+            let edgeAlpha = 0.25;
+
+            // Sync pulse (edges → center)
+            if (elapsed >= syncStart && elapsed < pulseStart) {
+              const syncT = (elapsed - syncStart) / maxRevealTime;
+              const tgtPos = 1 - tgt.revealTime / maxRevealTime;
+              const srcPos = 1 - src.revealTime / maxRevealTime;
+              const midPos = (tgtPos + srcPos) / 2;
+              const wd = Math.abs(syncT - midPos);
+              if (wd < WAVE_W) {
+                edgeAlpha = lerp(0.25, 0.9, 1 - wd / WAVE_W);
+              }
+            }
+
+            // Steady pulse (center → edges, repeating)
+            if (elapsed >= pulseStart) {
+              const pt = elapsed - pulseStart;
+              const period = maxRevealTime + 1.5;
+              const wavePos = clamp((pt % period) / maxRevealTime, 0, 1.2);
+              const tgtPos = tgt.revealTime / maxRevealTime;
+              const srcPos = src.revealTime / maxRevealTime;
+              const midPos = (tgtPos + srcPos) / 2;
+              const wd = Math.abs(wavePos - midPos);
+              if (wd < WAVE_W) {
+                edgeAlpha = lerp(0.25, 0.75, 1 - wd / WAVE_W);
+              }
+            }
+
+            ctx.strokeStyle = `rgba(30, 180, 80, ${edgeAlpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(src.x, src.y);
+            ctx.lineTo(tgt.x, tgt.y);
+            ctx.stroke();
+          }
+
+          // ─── Draw nodes ─────────────────────────────
+          for (const node of nodes) {
+            if (elapsed < node.revealTime) continue;
+
+            const since = elapsed - node.revealTime;
+            const flash = since < 0.3 ? 1 - since / 0.3 : 0;
+
+            let alpha = 0.45 + flash * 0.55;
+            let size = (node.depth === 0 ? 5 : lerp(3.5, 1.5, node.depth / MAX_DEPTH))
+                       + flash * 3;
+
+            // Sync pulse brightness
+            if (elapsed >= syncStart && elapsed < pulseStart) {
+              const syncT = (elapsed - syncStart) / maxRevealTime;
+              const nodePos = 1 - node.revealTime / maxRevealTime;
+              const wd = Math.abs(syncT - nodePos);
+              if (wd < WAVE_W) {
+                const ps = 1 - wd / WAVE_W;
+                alpha = lerp(alpha, 1, ps);
+                size += ps * 2.5;
+              }
+            }
+
+            // Steady pulse brightness
+            if (elapsed >= pulseStart) {
+              const pt = elapsed - pulseStart;
+              const period = maxRevealTime + 1.5;
+              const wavePos = clamp((pt % period) / maxRevealTime, 0, 1.2);
+              const nodePos = node.revealTime / maxRevealTime;
+              const wd = Math.abs(wavePos - nodePos);
+              if (wd < WAVE_W) {
+                const ps = 1 - wd / WAVE_W;
+                alpha = lerp(alpha, 1, ps);
+                size += ps * 2;
+              }
+
+              // Gentle shimmer in steady state
+              alpha += 0.04 * Math.sin(elapsed * 2.5 + node.revealTime * 4);
+            }
+
+            const g = Math.floor(lerp(140, 255, clamp(alpha, 0, 1)));
+            const b = Math.floor(lerp(70, 220, flash));
+            ctx.fillStyle = `rgba(70, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, clamp(size, 0.5, 12), 0, TWO_PI);
+            ctx.fill();
+          }
+
+          // ─── Spark particles ────────────────────────
+          sparks.update(dt);
+          sparks.forEach(p => {
+            ctx.fillStyle = `rgba(160, 255, 200, ${clamp(p.life * 2.5, 0, 1)})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, TWO_PI);
+            ctx.fill();
+          });
+
+          // ─── Center glow during growth ──────────────
+          if (elapsed < growEnd) {
+            const glow = clamp(elapsed / 1, 0, 0.15);
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 40);
+            grad.addColorStop(0, `rgba(120, 255, 180, ${glow})`);
+            grad.addColorStop(1, 'rgba(0, 40, 20, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 40, 0, TWO_PI);
+            ctx.fill();
+          }
+        },
+
+        onResize(ctx, w, h) {
+          elapsed = 0;
+          initialized = false;
+          sparks.clear();
+        },
+      });
+    </script>
+  </body>
+</html>

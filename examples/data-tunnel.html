@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Data Tunnel</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, mulberry32 } from './utils.js';
+
+      const TWO_PI = Math.PI * 2;
+      const rng = mulberry32(42);
+
+      // ─── Phase Timings (seconds) ──────────────────────
+      const T_SLOW     = 3;
+      const T_FAST     = 7;
+      const T_GLITCH   = 9.5;
+      const T_COLLAPSE = 11;
+      const T_SETTLE   = 12;
+
+      // ─── Tunnel Config ────────────────────────────────
+      const RING_COUNT   = 50;
+      const MAX_Z        = 30;
+      const MIN_Z        = 0.5;
+      const RING_RADIUS  = 100;
+      const FOV          = 30;
+
+      // ─── State ────────────────────────────────────────
+      let rings = [];
+      let elapsed = 0;
+      let cursorBlink = 0;
+      let initialized = false;
+
+      const sparks = new ParticlePool({ maxParticles: 400, gravity: 0, drag: 0.96 });
+
+      function createRing(z) {
+        return {
+          z,
+          rot: rng() * TWO_PI,
+          count: 18 + Math.floor(rng() * 14),
+          twist: (rng() - 0.5) * 0.5,
+        };
+      }
+
+      function initRings() {
+        rings = [];
+        for (let i = 0; i < RING_COUNT; i++) {
+          rings.push(createRing(MIN_Z + (i / RING_COUNT) * (MAX_Z - MIN_Z)));
+        }
+        sparks.clear();
+        cursorBlink = 0;
+        initialized = true;
+      }
+
+      // ─── App ──────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          charset: 'binary',
+          colorScheme: 'acid',
+          background: '#010801',
+          sourceOpacity: 0,
+        },
+        layers: [
+          { fontSize: 20, charset: 'blocks', blendMode: 'replace', opacity: 0.15 },
+          { fontSize: 7, charset: 'binary', blendMode: 'add', opacity: 1 },
+        ],
+
+        draw(ctx, { dt, width, height }) {
+          if (!initialized) initRings();
+          elapsed += dt;
+          const cx = width / 2, cy = height / 2;
+
+          // ─── Background ─────────────────────────────
+          const trailFade = elapsed < T_FAST ? 0.12 :
+                            elapsed < T_GLITCH ? 0.08 :
+                            elapsed < T_COLLAPSE ? 0.18 :
+                            elapsed >= T_COLLAPSE ? 0.08 : 0.12;
+          ctx.fillStyle = `rgba(1, 8, 1, ${trailFade})`;
+          ctx.fillRect(0, 0, width, height);
+
+          // ═══════════════════════════════════════════════
+          // TUNNEL — rings rushing toward camera
+          // ═══════════════════════════════════════════════
+          if (elapsed < T_COLLAPSE) {
+            // Speed ramp
+            let speed;
+            if (elapsed < T_SLOW) {
+              speed = lerp(2, 5, elapsed / T_SLOW);
+            } else if (elapsed < T_FAST) {
+              speed = lerp(5, 18, smoothstep(0, 1, (elapsed - T_SLOW) / (T_FAST - T_SLOW)));
+            } else if (elapsed < T_GLITCH) {
+              speed = lerp(18, 30, (elapsed - T_FAST) / (T_GLITCH - T_FAST));
+            } else {
+              speed = lerp(30, 120, smoothstep(0, 1, (elapsed - T_GLITCH) / (T_COLLAPSE - T_GLITCH)));
+            }
+
+            // Glitch state
+            const glitchOn = elapsed >= T_FAST && elapsed < T_GLITCH;
+            const glitchI = glitchOn ? smoothstep(T_FAST, T_GLITCH, elapsed) : 0;
+
+            // Collapse fade
+            const collapseOn = elapsed >= T_GLITCH;
+            const collapseT = collapseOn ? smoothstep(T_GLITCH, T_COLLAPSE, elapsed) : 0;
+
+            // Update and draw rings
+            for (const ring of rings) {
+              ring.z -= speed * dt;
+              ring.rot += ring.twist * dt;
+
+              if (ring.z <= MIN_Z) {
+                ring.z = MAX_Z + rng() * 3;
+                ring.rot = rng() * TWO_PI;
+                ring.count = 18 + Math.floor(rng() * 14);
+              }
+
+              // Skip some rings during collapse
+              if (collapseOn && rng() < collapseT * 0.5) continue;
+
+              const scale = FOV / ring.z;
+              const zNorm = 1 - ring.z / MAX_Z;
+              const brightness = clamp(zNorm, 0.05, 1);
+              const dotSize = lerp(0.8, 3.5, zNorm);
+
+              for (let i = 0; i < ring.count; i++) {
+                const angle = (i / ring.count) * TWO_PI + ring.rot;
+                let sx = Math.cos(angle) * RING_RADIUS * scale + cx;
+                let sy = Math.sin(angle) * RING_RADIUS * scale + cy;
+
+                // Glitch jitter
+                if (glitchOn && rng() < glitchI * 0.3) {
+                  sx += (rng() - 0.5) * 50 * glitchI;
+                  sy += (rng() - 0.5) * 50 * glitchI;
+                }
+
+                if (sx < -30 || sx > width + 30 || sy < -30 || sy > height + 30) continue;
+
+                const g = Math.floor(lerp(80, 255, brightness));
+                const alpha = brightness * (collapseOn ? 1 - collapseT : 1);
+                ctx.fillStyle = `rgba(40, ${g}, 80, ${alpha})`;
+                ctx.fillRect(sx - dotSize / 2, sy - dotSize / 2, dotSize, dotSize);
+              }
+
+              // Faint ring outline for close rings
+              if (zNorm > 0.7 && !collapseOn) {
+                const ringScreenR = RING_RADIUS * scale;
+                ctx.strokeStyle = `rgba(30, 160, 70, ${(zNorm - 0.7) * 0.15})`;
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                ctx.arc(cx, cy, ringScreenR, 0, TWO_PI);
+                ctx.stroke();
+              }
+            }
+
+            // ─── Glitch effects ─────────────────────────
+            if (glitchOn) {
+              // Random static
+              const sparkCount = Math.floor(glitchI * 35);
+              for (let i = 0; i < sparkCount; i++) {
+                const gx = rng() * width;
+                const gy = rng() * height;
+                const gs = 1 + rng() * 3;
+                ctx.fillStyle = `rgba(200, 255, 220, ${rng() * glitchI * 0.6})`;
+                ctx.fillRect(gx, gy, gs, gs);
+              }
+
+              // Occasional flash
+              if (rng() < glitchI * 0.05) {
+                ctx.fillStyle = `rgba(180, 255, 200, ${glitchI * 0.12})`;
+                ctx.fillRect(0, 0, width, height);
+              }
+
+              // Horizontal tear lines
+              if (rng() < glitchI * 0.08) {
+                const tearY = rng() * height;
+                const tearH = 1 + rng() * 4;
+                ctx.fillStyle = `rgba(100, 255, 160, ${glitchI * 0.3})`;
+                ctx.fillRect(0, tearY, width, tearH);
+              }
+
+              // Emit sparks near center
+              if (rng() < glitchI * 0.4) {
+                sparks.emit(3, () => ({
+                  x: cx + (rng() - 0.5) * 120,
+                  y: cy + (rng() - 0.5) * 120,
+                  vx: (rng() - 0.5) * 200,
+                  vy: (rng() - 0.5) * 200,
+                  life: 0.4 + rng() * 0.4,
+                  size: 1 + rng() * 2,
+                }));
+              }
+            }
+
+            // Draw sparks
+            sparks.update(dt);
+            sparks.forEach(p => {
+              ctx.fillStyle = `rgba(200, 255, 230, ${clamp(p.life * 2, 0, 1)})`;
+              ctx.fillRect(p.x, p.y, p.size, p.size);
+            });
+
+            // Vanishing point glow
+            const vpGlow = elapsed < T_SLOW ? smoothstep(0, T_SLOW, elapsed) * 0.1 :
+                           elapsed < T_FAST ? 0.1 + smoothstep(T_SLOW, T_FAST, elapsed) * 0.15 :
+                           0.25 * (1 - collapseT);
+            const vpGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 60);
+            vpGrad.addColorStop(0, `rgba(100, 255, 180, ${vpGlow})`);
+            vpGrad.addColorStop(1, 'rgba(0, 40, 20, 0)');
+            ctx.fillStyle = vpGrad;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 60, 0, TWO_PI);
+            ctx.fill();
+          }
+
+          // ═══════════════════════════════════════════════
+          // CURSOR + GRID — arrival
+          // ═══════════════════════════════════════════════
+          else {
+            const t = clamp((elapsed - T_COLLAPSE) / (T_SETTLE - T_COLLAPSE), 0, 1);
+            cursorBlink += dt;
+
+            // Faint grid
+            const gridAlpha = smoothstep(0, 1, t) * 0.06;
+            const spacing = 40;
+            ctx.strokeStyle = `rgba(50, 180, 90, ${gridAlpha})`;
+            ctx.lineWidth = 0.5;
+
+            for (let x = cx % spacing; x < width; x += spacing) {
+              ctx.beginPath();
+              ctx.moveTo(x, 0);
+              ctx.lineTo(x, height);
+              ctx.stroke();
+            }
+            for (let y = cy % spacing; y < height; y += spacing) {
+              ctx.beginPath();
+              ctx.moveTo(0, y);
+              ctx.lineTo(width, y);
+              ctx.stroke();
+            }
+
+            // Blinking cursor
+            const cursorAlpha = smoothstep(0, 0.3, t) * 0.9;
+            if (Math.floor(cursorBlink * 2) % 2 === 0) {
+              ctx.fillStyle = `rgba(100, 255, 160, ${cursorAlpha})`;
+              ctx.fillRect(cx - 6, cy - 10, 12, 20);
+            }
+
+            // Subtle center glow
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 120);
+            grad.addColorStop(0, `rgba(40, 150, 80, ${t * 0.04})`);
+            grad.addColorStop(1, 'rgba(0, 20, 10, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 120, 0, TWO_PI);
+            ctx.fill();
+          }
+        },
+
+        onResize(ctx, w, h) {
+          elapsed = 0;
+          initialized = false;
+          sparks.clear();
+        },
+      });
+    </script>
+  </body>
+</html>
