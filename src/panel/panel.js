@@ -61,6 +61,12 @@ export class ControlPanel {
   }
 
   hide() {
+    if (this._popupWindow && !this._popupWindow.closed) {
+      const popup = this._popupWindow;
+      this._popIn();
+      popup.close();
+      return;
+    }
     this._visible = false;
     this._surface.classList.add('hidden');
     this._stopSync();
@@ -73,6 +79,10 @@ export class ControlPanel {
 
   destroy() {
     this._stopSync();
+    if (this._popupWindow && !this._popupWindow.closed) {
+      this._popIn();
+      this._popupWindow.close();
+    }
     this._ascii.off('layeradd', this._onLayerAdd);
     this._ascii.off('layerremove', this._onLayerRemove);
     if (this._host.parentElement) {
@@ -100,6 +110,10 @@ export class ControlPanel {
     const header = h('div', 'drawer-header');
     header.appendChild(h('span', 'drawer-title', 'Controls'));
     const headerBtns = h('div', 'header-btn-group');
+    this._popoutBtn = h('div', 'popout-btn', '\u2197');
+    this._popoutBtn.title = 'Pop out to separate window';
+    this._popoutBtn.addEventListener('click', () => this._togglePopOut());
+    headerBtns.appendChild(this._popoutBtn);
     const closeBtn = h('div', 'close-btn', '\u00D7');
     closeBtn.addEventListener('click', () => this.hide());
     headerBtns.appendChild(closeBtn);
@@ -142,6 +156,11 @@ export class ControlPanel {
     drawer.appendChild(this._scroll);
 
     this._surface.appendChild(drawer);
+
+    // Resize handle (drag left edge to widen/narrow)
+    this._resizeHandle = h('div', 'resize-handle');
+    this._surface.appendChild(this._resizeHandle);
+    this._initResize();
 
     // Add existing layers
     for (const layer of this._ascii._layers) {
@@ -626,6 +645,109 @@ export class ControlPanel {
     this._controls.push(ctrl);
     parent.appendChild(ctrl.el);
     return ctrl;
+  }
+
+  // ─── Resize ───────────────────────────────────────
+
+  _initResize() {
+    const handle = this._resizeHandle;
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      handle.classList.add('dragging');
+      const doc = this._host.ownerDocument;
+      const hostRect = this._host.getBoundingClientRect();
+
+      const onMove = (ev) => {
+        const newW = Math.max(200, Math.min(600, hostRect.right - ev.clientX));
+        this._host.style.setProperty('--drawer-w', newW + 'px');
+      };
+
+      const onUp = () => {
+        handle.classList.remove('dragging');
+        doc.removeEventListener('mousemove', onMove);
+        doc.removeEventListener('mouseup', onUp);
+      };
+
+      doc.addEventListener('mousemove', onMove);
+      doc.addEventListener('mouseup', onUp);
+    });
+  }
+
+  // ─── Pop Out ─────────────────────────────────────
+
+  _togglePopOut() {
+    if (this._popupWindow && !this._popupWindow.closed) {
+      const popup = this._popupWindow;
+      this._popIn();
+      popup.close();
+    } else {
+      this._popOut();
+    }
+  }
+
+  _popOut() {
+    const cs = getComputedStyle(this._host);
+    const currentW = parseInt(cs.getPropertyValue('--drawer-w')) || 260;
+    const popup = window.open(
+      '', 'ascii-panel',
+      `width=${Math.max(currentW + 40, 300)},height=${window.innerHeight},resizable=yes`
+    );
+    if (!popup) return; // blocked by browser
+
+    popup.document.write(
+      '<!DOCTYPE html><html><head><title>ascii\u2011ify controls</title>' +
+      '<style>html,body{margin:0;padding:0;height:100%;background:#08080f;overflow:hidden;}</style>' +
+      '</head><body></body></html>'
+    );
+    popup.document.close();
+
+    // Create a new shadow host inside the popup
+    const popupHost = popup.document.createElement('div');
+    popupHost.className = 'popped-out';
+    popupHost.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;';
+    const popupShadow = popupHost.attachShadow({ mode: 'closed' });
+
+    // Inject styles into the popup shadow
+    const style = popup.document.createElement('style');
+    style.textContent = PANEL_CSS;
+    popupShadow.appendChild(style);
+
+    // Move the surface into the popup shadow
+    this._surface.remove();
+    this._surface.classList.remove('hidden');
+    popupShadow.appendChild(this._surface);
+
+    popup.document.body.appendChild(popupHost);
+
+    this._popupWindow = popup;
+    this._popupHost = popupHost;
+    this._popupShadow = popupShadow;
+
+    // Update button
+    this._popoutBtn.textContent = '\u2199';
+    this._popoutBtn.title = 'Pop back into main window';
+
+    this._visible = true;
+    this._startSync();
+
+    // Return panel when popup closes
+    popup.addEventListener('beforeunload', () => this._popIn());
+  }
+
+  _popIn() {
+    if (!this._popupWindow) return;
+
+    // Move surface back to the original shadow
+    this._surface.remove();
+    this._shadow.appendChild(this._surface);
+
+    // Update button
+    this._popoutBtn.textContent = '\u2197';
+    this._popoutBtn.title = 'Pop out to separate window';
+
+    this._popupHost = null;
+    this._popupShadow = null;
+    this._popupWindow = null;
   }
 
   // ─── Randomize ────────────────────────────────────

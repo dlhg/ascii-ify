@@ -181,7 +181,8 @@ export const PANEL_CSS = `
   border-color: var(--accent-dim);
 }
 
-.close-btn {
+.close-btn,
+.popout-btn {
   width: 22px;
   height: 22px;
   background: var(--bg-raised);
@@ -196,10 +197,15 @@ export const PANEL_CSS = `
   transition: all 0.15s;
 }
 
-.close-btn:hover {
+.close-btn:hover,
+.popout-btn:hover {
   color: var(--text-1);
   border-color: var(--border-3);
   background: var(--bg-track);
+}
+
+.popout-btn {
+  font-size: 12px;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -621,5 +627,52 @@ export const PANEL_CSS = `
   height: 1px;
   background: var(--border-1);
   margin: 6px 0;
+}
+
+/* ═══════════════════════════════════════════════════════
+   RESIZE HANDLE
+   ═══════════════════════════════════════════════════════ */
+.resize-handle {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transition: background 0.15s;
+}
+
+.resize-handle:hover::after,
+.resize-handle.dragging::after {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* ═══════════════════════════════════════════════════════
+   POPPED-OUT MODE
+   ═══════════════════════════════════════════════════════ */
+:host(.popped-out) .control-surface {
+  width: 100% !important;
+  transform: none !important;
+}
+
+:host(.popped-out) .drawer {
+  width: 100%;
+}
+
+:host(.popped-out) .edge-tab,
+:host(.popped-out) .resize-handle {
+  display: none;
 }
 `;
