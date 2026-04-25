@@ -1,0 +1,1449 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — City at Night</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { clamp, smoothstep, dist, mulberry32 } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const TILE_W = 64;
+      const TILE_H = 32;
+      const SECTOR_SIZE = 3;
+      const META_GRID = 10;
+      const TOTAL = SECTOR_SIZE * META_GRID; // 30
+      const TOTAL_SECTORS = META_GRID * META_GRID; // 100
+
+      const BUILDING_TYPES = ['glass', 'apartment', 'neon', 'industrial'];
+
+      const BUILDING_DEFS = {
+        glass: {
+          minHeight: 80, maxHeight: 200,
+          colors: ['#2288cc', '#3399dd', '#44aaee'],
+          glowColor: [50, 140, 220],
+          tiers: 3,
+        },
+        apartment: {
+          minHeight: 40, maxHeight: 100,
+          colors: ['#cc9944', '#ddaa55', '#eebb66'],
+          glowColor: [200, 160, 60],
+          tiers: 3,
+        },
+        neon: {
+          minHeight: 25, maxHeight: 55,
+          colors: ['#ff44aa', '#44ffaa', '#ffaa44', '#aa44ff'],
+          glowColor: [255, 80, 180],
+          tiers: 2,
+        },
+        industrial: {
+          minHeight: 50, maxHeight: 120,
+          colors: ['#888888', '#999999', '#aaaaaa'],
+          glowColor: [150, 150, 150],
+          tiers: 3,
+        },
+      };
+
+      // ─── State ──────────────────────────────────────────
+      const rng = mulberry32(2077);
+      let grid = [];
+      let sectors = [];
+      let unlockedCount = 0;
+      let bgStars = [];
+      let time = 0;
+      let generation = 1;
+      let buildingCount = 0;
+
+      // Camera
+      let camZoom = 1, camTargetZoom = 1;
+      let camX = 0, camY = 0;
+      let camTargetX = 0, camTargetY = 0;
+      let startZoom = 1;
+      let startZoomReady = false;
+
+      // Timers
+      let placeTimer = 0;
+      let expandPause = 1.2;
+      let smokeTimer = 0;
+      let carSpawnTimer = 0;
+
+      // Loop: 0=build, 1=celebrate(fireworks), 2=sunrise, 3=fade, 4=hold
+      let loopPhase = 0;
+      let loopTimer = 0;
+
+      // Particle pools
+      const dustParticles = new ParticlePool({ maxParticles: 600, gravity: 0, drag: 0.97 });
+      const smokeParticles = new ParticlePool({ maxParticles: 300, gravity: 0, drag: 0.995 });
+      const fireworkParticles = new ParticlePool({ maxParticles: 2000, gravity: 120, drag: 0.985 });
+      const carParticles = new ParticlePool({ maxParticles: 150, gravity: 0, drag: 1.0 });
+
+      // Firework rockets
+      let rockets = [];
+      let fireworkTimer = 0;
+
+      // Sunrise
+      let sunriseAmount = 0;
+
+      // ─── Init ───────────────────────────────────────────
+      const START_SECTOR = { col: 4, row: 4 };
+
+      function initGrid() {
+        grid = [];
+        for (let r = 0; r < TOTAL; r++) {
+          grid[r] = [];
+          for (let c = 0; c < TOTAL; c++) grid[r][c] = null;
+        }
+        buildingCount = 0;
+      }
+
+      function initSectors() {
+        sectors = [];
+        for (let mr = 0; mr < META_GRID; mr++) {
+          sectors[mr] = [];
+          for (let mc = 0; mc < META_GRID; mc++)
+            sectors[mr][mc] = { unlocked: false, unlockTime: -10 };
+        }
+        sectors[START_SECTOR.row][START_SECTOR.col].unlocked = true;
+        sectors[START_SECTOR.row][START_SECTOR.col].unlockTime = time;
+        unlockedCount = 1;
+      }
+
+      function initStars() {
+        bgStars = [];
+        for (let i = 0; i < 200; i++)
+          bgStars.push({
+            x: rng(), y: rng(),
+            brightness: 0.15 + rng() * 0.4,
+            speed: 0.3 + rng() * 2,
+            phase: rng() * Math.PI * 2,
+          });
+      }
+
+      // ─── Coordinate Systems ─────────────────────────────
+      function isoToWorld(col, row) {
+        const gc = TOTAL / 2;
+        return {
+          x: ((col - gc) - (row - gc)) * TILE_W / 2,
+          y: ((col - gc) + (row - gc)) * TILE_H / 2,
+        };
+      }
+
+      function worldToScreen(wx, wy) {
+        return {
+          x: app.width / 2 + (wx - camX) * camZoom,
+          y: app.height / 2 + (wy - camY) * camZoom,
+        };
+      }
+
+      function isoToScreen(col, row) {
+        const w = isoToWorld(col, row);
+        return worldToScreen(w.x, w.y);
+      }
+
+      function inGrid(col, row) {
+        return col >= 0 && col < TOTAL && row >= 0 && row < TOTAL;
+      }
+
+      function getSectorOf(col, row) {
+        return { col: Math.floor(col / SECTOR_SIZE), row: Math.floor(row / SECTOR_SIZE) };
+      }
+
+      function isTileUnlocked(col, row) {
+        const s = getSectorOf(col, row);
+        return s.col >= 0 && s.col < META_GRID && s.row >= 0 && s.row < META_GRID
+          && sectors[s.row][s.col].unlocked;
+      }
+
+      // ─── Camera ─────────────────────────────────────────
+      function computeStartZoom() {
+        const sW = SECTOR_SIZE * TILE_W;
+        const sH = SECTOR_SIZE * TILE_H;
+        return Math.min(app.width * 0.28 / sW, app.height * 0.28 / sH);
+      }
+
+      function getUnlockedBounds() {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            if (!sectors[mr][mc].unlocked) continue;
+            const sc = mc * SECTOR_SIZE, sr = mr * SECTOR_SIZE;
+            for (const [c, r] of [[sc, sr], [sc + SECTOR_SIZE, sr], [sc + SECTOR_SIZE, sr + SECTOR_SIZE], [sc, sr + SECTOR_SIZE]]) {
+              const w = isoToWorld(c, r);
+              minX = Math.min(minX, w.x); maxX = Math.max(maxX, w.x);
+              minY = Math.min(minY, w.y - 200); maxY = Math.max(maxY, w.y);
+            }
+          }
+        }
+        return { minX, maxX, minY, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, w: maxX - minX, h: maxY - minY };
+      }
+
+      function getPlayTargetZoom() {
+        const b = getUnlockedBounds();
+        return Math.min(
+          app.width * 0.75 / Math.max(b.w, 1),
+          app.height * 0.75 / Math.max(b.h, 1)
+        );
+      }
+
+      function updateCamera(dt) {
+        if (!startZoomReady) {
+          startZoom = computeStartZoom();
+          camZoom = startZoom;
+          camTargetZoom = startZoom;
+          const sc = isoToWorld(
+            START_SECTOR.col * SECTOR_SIZE + SECTOR_SIZE / 2,
+            START_SECTOR.row * SECTOR_SIZE + SECTOR_SIZE / 2
+          );
+          camX = sc.x; camY = sc.y;
+          camTargetX = sc.x; camTargetY = sc.y;
+          startZoomReady = true;
+        }
+
+        if (loopPhase === 0) {
+          const b = getUnlockedBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          camTargetZoom = getPlayTargetZoom();
+        }
+
+        const speed = (loopPhase === 2 || loopPhase === 3) ? 0.8 : 3.0;
+        const t = Math.min(1, dt * speed);
+        camZoom += (camTargetZoom - camZoom) * t;
+        camX += (camTargetX - camX) * t;
+        camY += (camTargetY - camY) * t;
+      }
+
+      // ─── Placement Rules ────────────────────────────────
+      function canPlaceAt(col, row) {
+        if (!inGrid(col, row)) return false;
+        if (grid[row][col]) return false;
+        if (!isTileUnlocked(col, row)) return false;
+        return true;
+      }
+
+      function getValidPlacements() {
+        const tiles = [];
+        for (let r = 0; r < TOTAL; r++)
+          for (let c = 0; c < TOTAL; c++)
+            if (canPlaceAt(c, r)) tiles.push({ col: c, row: r });
+        return tiles;
+      }
+
+      // ─── Expansion ──────────────────────────────────────
+      function getNextSector() {
+        const candidates = [];
+        let cx = 0, cy = 0;
+        for (let mr = 0; mr < META_GRID; mr++)
+          for (let mc = 0; mc < META_GRID; mc++)
+            if (sectors[mr][mc].unlocked) { cx += mc; cy += mr; }
+        cx /= unlockedCount; cy /= unlockedCount;
+
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            if (sectors[mr][mc].unlocked) continue;
+            let adj = false;
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+              const nr = mr + dr, nc = mc + dc;
+              if (nr >= 0 && nr < META_GRID && nc >= 0 && nc < META_GRID && sectors[nr][nc].unlocked) { adj = true; break; }
+            }
+            if (adj) candidates.push({ col: mc, row: mr, dist: Math.abs(mc - cx) + Math.abs(mr - cy) });
+          }
+        }
+        if (!candidates.length) return null;
+        candidates.sort((a, b) => a.dist - b.dist);
+        const best = candidates.filter(c => c.dist <= candidates[0].dist + 1);
+        return best[Math.floor(rng() * best.length)];
+      }
+
+      function unlockSector(mc, mr) {
+        sectors[mr][mc].unlocked = true;
+        sectors[mr][mc].unlockTime = time;
+        unlockedCount++;
+
+        // District unlock burst
+        const w = isoToWorld(mc * SECTOR_SIZE + SECTOR_SIZE / 2, mr * SECTOR_SIZE + SECTOR_SIZE / 2);
+        dustParticles.emit(20, (i) => {
+          const angle = (i / 20) * Math.PI * 2;
+          const spd = 40 + rng() * 80;
+          return {
+            x: w.x, y: w.y,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd * 0.5 - 20,
+            life: 0.8 + rng() * 0.8,
+            maxLife: 1.6,
+            size: 2 + rng() * 3,
+            hue: 40 + rng() * 30,
+            worldSpace: true,
+          };
+        });
+      }
+
+      // ─── Building Placement ─────────────────────────────
+      function placeBuilding(col, row) {
+        // Choose type based on distance from center — glass towers near center, industrial at edges
+        const gc = TOTAL / 2;
+        const d = dist(col, row, gc, gc);
+        const maxDist = gc * 1.2;
+        const centerBias = 1 - clamp(d / maxDist, 0, 1);
+
+        let type;
+        const roll = rng();
+        if (centerBias > 0.6 && roll < 0.5) type = 'glass';
+        else if (centerBias > 0.3 && roll < 0.4) type = 'apartment';
+        else if (roll < 0.2) type = 'neon';
+        else if (roll < 0.5) type = 'industrial';
+        else if (roll < 0.75) type = 'apartment';
+        else type = 'glass';
+
+        const def = BUILDING_DEFS[type];
+        const tier = 1 + Math.floor(rng() * def.tiers);
+        const height = def.minHeight + rng() * (def.maxHeight - def.minHeight) * (tier / def.tiers);
+
+        // Generate window grid for apartments
+        let windows = null;
+        if (type === 'apartment') {
+          const cols = 3 + Math.floor(rng() * 3);
+          const rows = Math.floor(height / 12);
+          windows = [];
+          for (let wr = 0; wr < rows; wr++) {
+            windows[wr] = [];
+            for (let wc = 0; wc < cols; wc++) {
+              windows[wr][wc] = rng() < 0.65; // 65% windows lit
+            }
+          }
+        }
+
+        // Neon sign properties
+        let neonHue = 0, neonText = '';
+        if (type === 'neon') {
+          neonHue = rng() * 360;
+          const signs = ['BAR', 'HOTEL', 'OPEN', 'CAFE', 'LIVE', 'EAT', 'CLUB', 'PIZZA', 'JAZZ', 'DINER'];
+          neonText = signs[Math.floor(rng() * signs.length)];
+        }
+
+        // Industrial chimney count
+        let chimneys = 0;
+        if (type === 'industrial') {
+          chimneys = 1 + Math.floor(rng() * 3);
+        }
+
+        grid[row][col] = {
+          type, tier, height,
+          seed: rng() * 1000,
+          placeTime: time,
+          riseProgress: 0,
+          windows,
+          neonHue, neonText,
+          chimneys,
+          width: TILE_W * 0.7 + rng() * TILE_W * 0.2,
+        };
+
+        buildingCount++;
+
+        // Construction dust burst
+        const w = isoToWorld(col, row);
+        dustParticles.emit(15, (i) => {
+          const angle = (i / 15) * Math.PI * 2;
+          const spd = 20 + rng() * 40;
+          return {
+            x: w.x + (rng() - 0.5) * 20,
+            y: w.y,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd * 0.4 - 15,
+            life: 0.6 + rng() * 0.6,
+            maxLife: 1.2,
+            size: 2 + rng() * 2,
+            hue: 30 + rng() * 30,
+            worldSpace: true,
+          };
+        });
+      }
+
+      // ─── Car System ─────────────────────────────────────
+      function spawnCars(dt) {
+        if (loopPhase !== 0) return;
+        carSpawnTimer -= dt;
+        if (carSpawnTimer > 0) return;
+        carSpawnTimer = 0.3 + rng() * 0.5;
+
+        // Spawn cars along road edges of unlocked sectors
+        if (carParticles.length >= 120) return;
+
+        // Pick a random unlocked sector edge as a road
+        const unlocked = [];
+        for (let mr = 0; mr < META_GRID; mr++)
+          for (let mc = 0; mc < META_GRID; mc++)
+            if (sectors[mr][mc].unlocked) unlocked.push({ mc, mr });
+
+        if (unlocked.length === 0) return;
+        const sector = unlocked[Math.floor(rng() * unlocked.length)];
+        const sc = sector.mc * SECTOR_SIZE;
+        const sr = sector.mr * SECTOR_SIZE;
+
+        // Road along bottom or right edge of sector
+        const horizontal = rng() < 0.5;
+        let startCol, startRow, dirC, dirR;
+        if (horizontal) {
+          startCol = sc;
+          startRow = sr + SECTOR_SIZE;
+          dirC = 1; dirR = 0;
+        } else {
+          startCol = sc + SECTOR_SIZE;
+          startRow = sr;
+          dirC = 0; dirR = 1;
+        }
+
+        const startW = isoToWorld(startCol, startRow);
+        const endW = isoToWorld(startCol + dirC * SECTOR_SIZE, startRow + dirR * SECTOR_SIZE);
+        const speed = 30 + rng() * 60;
+        const dx = endW.x - startW.x;
+        const dy = endW.y - startW.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 1) return;
+
+        const isRed = rng() < 0.3; // 30% chance red taillights
+        const hue = isRed ? 0 : (40 + rng() * 20); // warm headlights or red
+
+        carParticles.emit(1, () => ({
+          x: startW.x + (rng() - 0.5) * 8,
+          y: startW.y + (rng() - 0.5) * 4,
+          vx: (dx / len) * speed,
+          vy: (dy / len) * speed,
+          life: 3 + rng() * 4,
+          maxLife: 7,
+          size: 2 + rng() * 1.5,
+          hue,
+          brightness: 0.7 + rng() * 0.3,
+          isRed,
+          worldSpace: true,
+        }));
+      }
+
+      // ─── Smokestack Particles ───────────────────────────
+      function spawnSmoke(dt) {
+        if (loopPhase !== 0) return;
+        smokeTimer -= dt;
+        if (smokeTimer > 0) return;
+        smokeTimer = 0.15;
+
+        for (let r = 0; r < TOTAL; r++) {
+          for (let c = 0; c < TOTAL; c++) {
+            const b = grid[r][c];
+            if (!b || b.type !== 'industrial' || b.riseProgress < 0.9) continue;
+            if (rng() > 0.3) continue;
+
+            const w = isoToWorld(c, r);
+            const buildingTop = w.y - b.height * b.riseProgress;
+
+            for (let ch = 0; ch < b.chimneys; ch++) {
+              const offsetX = (ch - (b.chimneys - 1) / 2) * 12;
+              smokeParticles.emit(1, () => ({
+                x: w.x + offsetX + (rng() - 0.5) * 4,
+                y: buildingTop - 5,
+                vx: (rng() - 0.5) * 8,
+                vy: -(15 + rng() * 25),
+                life: 2 + rng() * 3,
+                maxLife: 5,
+                size: 4 + rng() * 6,
+                worldSpace: true,
+              }));
+            }
+          }
+        }
+      }
+
+      // ─── Fireworks ──────────────────────────────────────
+      function launchFirework() {
+        const b = getUnlockedBounds();
+        const tx = b.cx + (rng() - 0.5) * b.w * 0.7;
+        const ty = b.cy - b.h * 0.3 - rng() * 150;
+        const sx = tx + (rng() - 0.5) * 100;
+
+        rockets.push({
+          x: sx, y: b.cy + b.h * 0.3,
+          targetX: tx, targetY: ty,
+          vy: -(200 + rng() * 150),
+          vx: (tx - sx) * 0.8,
+          hue: rng() * 360,
+          trail: [],
+          sparkTimer: 0,
+        });
+      }
+
+      function detonateFirework(rocket) {
+        const count = 60 + Math.floor(rng() * 40);
+        const hue = rocket.hue;
+        fireworkParticles.emit(count, (i) => {
+          const angle = rng() * Math.PI * 2;
+          const speed = 80 + rng() * 180;
+          const life = 1.2 + rng() * 1.5;
+          return {
+            x: rocket.x, y: rocket.y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed * 0.7 - 40,
+            life, maxLife: life,
+            hue: hue + (rng() - 0.5) * 40,
+            sat: 80 + rng() * 20,
+            size: 1.5 + rng() * 2,
+            worldSpace: true,
+          };
+        });
+      }
+
+      function updateRockets(dt) {
+        let len = rockets.length;
+        for (let i = len - 1; i >= 0; i--) {
+          const r = rockets[i];
+          r.x += r.vx * dt;
+          r.y += r.vy * dt;
+          r.vy += 50 * dt; // slight gravity on rockets
+
+          // Trail
+          r.sparkTimer += dt;
+          if (r.sparkTimer > 0.03) {
+            r.sparkTimer = 0;
+            r.trail.push({ x: r.x, y: r.y, life: 0.4, maxLife: 0.4 });
+          }
+
+          // Fade trail
+          for (let j = r.trail.length - 1; j >= 0; j--) {
+            r.trail[j].life -= dt;
+            if (r.trail[j].life <= 0) {
+              r.trail.splice(j, 1);
+            }
+          }
+
+          // Detonate at target
+          if (r.y <= r.targetY) {
+            detonateFirework(r);
+            rockets[i] = rockets[len - 1];
+            len--;
+          }
+        }
+        rockets.length = len;
+      }
+
+      // ─── Drawing Helpers ────────────────────────────────
+      function drawDiamond(ctx, x, y, w, h) {
+        ctx.beginPath();
+        ctx.moveTo(x, y - h / 2);
+        ctx.lineTo(x + w / 2, y);
+        ctx.lineTo(x, y + h / 2);
+        ctx.lineTo(x - w / 2, y);
+        ctx.closePath();
+      }
+
+      // ─── Draw Sector Platforms ──────────────────────────
+      function drawSectorPlatforms(ctx) {
+        for (let sum = 0; sum <= (META_GRID - 1) * 2; sum++) {
+          for (let mr = 0; mr <= sum; mr++) {
+            const mc = sum - mr;
+            if (mr >= META_GRID || mc >= META_GRID) continue;
+            const sector = sectors[mr][mc];
+            const sc = mc * SECTOR_SIZE, sr = mr * SECTOR_SIZE;
+
+            const top = isoToWorld(sc, sr);
+            const right = isoToWorld(sc + SECTOR_SIZE, sr);
+            const bottom = isoToWorld(sc + SECTOR_SIZE, sr + SECTOR_SIZE);
+            const left = isoToWorld(sc, sr + SECTOR_SIZE);
+
+            if (sector.unlocked) {
+              const age = Math.max(0, time - sector.unlockTime);
+              const fadeIn = Math.min(1, age * 2);
+              const depth = 10 * fadeIn;
+
+              // Right side face
+              ctx.beginPath();
+              ctx.moveTo(right.x, right.y); ctx.lineTo(bottom.x, bottom.y);
+              ctx.lineTo(bottom.x, bottom.y + depth); ctx.lineTo(right.x, right.y + depth);
+              ctx.closePath();
+              ctx.fillStyle = `rgba(15, 15, 25, ${0.8 * fadeIn})`;
+              ctx.fill();
+
+              // Left side face
+              ctx.beginPath();
+              ctx.moveTo(left.x, left.y); ctx.lineTo(bottom.x, bottom.y);
+              ctx.lineTo(bottom.x, bottom.y + depth); ctx.lineTo(left.x, left.y + depth);
+              ctx.closePath();
+              ctx.fillStyle = `rgba(10, 10, 18, ${0.9 * fadeIn})`;
+              ctx.fill();
+
+              // Top face
+              ctx.beginPath();
+              ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
+              ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
+              ctx.closePath();
+              ctx.fillStyle = `rgba(18, 18, 30, ${0.6 * fadeIn})`;
+              ctx.fill();
+
+              // Road grid lines on edges
+              ctx.strokeStyle = `rgba(60, 55, 40, ${0.35 * fadeIn})`;
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+
+              // Street lamps along edges (subtle yellow dots)
+              if (camZoom > 0.4) {
+                const lampAlpha = fadeIn * Math.min(1, (camZoom - 0.4) / 0.3);
+                for (let edge = 0; edge < 4; edge++) {
+                  const e0 = [top, right, bottom, left][edge];
+                  const e1 = [right, bottom, left, top][edge];
+                  const mx = (e0.x + e1.x) / 2;
+                  const my = (e0.y + e1.y) / 2;
+                  ctx.fillStyle = `rgba(255, 220, 100, ${0.25 * lampAlpha})`;
+                  ctx.beginPath();
+                  ctx.arc(mx, my, 2.5, 0, Math.PI * 2);
+                  ctx.fill();
+
+                  // Lamp glow
+                  const grad = ctx.createRadialGradient(mx, my, 0, mx, my, 15);
+                  grad.addColorStop(0, `rgba(255, 200, 80, ${0.08 * lampAlpha})`);
+                  grad.addColorStop(1, 'rgba(255, 200, 80, 0)');
+                  ctx.fillStyle = grad;
+                  ctx.fillRect(mx - 15, my - 15, 30, 30);
+                }
+              }
+
+              // Unlock flash
+              if (age < 0.5) {
+                ctx.beginPath();
+                ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
+                ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
+                ctx.closePath();
+                ctx.fillStyle = `rgba(255, 200, 100, ${0.25 * (1 - age / 0.5)})`;
+                ctx.fill();
+              }
+            } else {
+              // Unbuilt — ghost outline
+              ctx.beginPath();
+              ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
+              ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
+              ctx.closePath();
+              ctx.fillStyle = 'rgba(8, 8, 14, 0.15)';
+              ctx.fill();
+              ctx.strokeStyle = 'rgba(40, 35, 60, 0.06)';
+              ctx.lineWidth = 0.5;
+              ctx.stroke();
+            }
+          }
+        }
+      }
+
+      // ─── Draw Grid Lines ────────────────────────────────
+      function drawGridLines(ctx) {
+        if (camZoom < 0.35) return;
+        const alpha = camZoom < 0.6 ? (camZoom - 0.35) / 0.25 : 1;
+        for (let r = 0; r < TOTAL; r++) {
+          for (let c = 0; c < TOTAL; c++) {
+            if (!isTileUnlocked(c, r)) continue;
+            const w = isoToWorld(c, r);
+            drawDiamond(ctx, w.x, w.y, TILE_W, TILE_H);
+            ctx.strokeStyle = `rgba(40, 40, 60, ${0.12 * alpha})`;
+            ctx.lineWidth = 0.4;
+            ctx.stroke();
+          }
+        }
+      }
+
+      // ─── Draw Buildings ─────────────────────────────────
+      function drawGlassTower(ctx, x, y, b, t) {
+        const h = b.height * b.riseProgress;
+        const halfW = b.width * 0.35;
+        const isoHalfW = halfW;
+        const isoHalfD = halfW * 0.5;
+
+        // Left face (darker)
+        ctx.fillStyle = `rgba(20, 50, 80, ${0.85 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x - isoHalfW, y);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.lineTo(x, y - h - isoHalfD);
+        ctx.lineTo(x, y - isoHalfD);
+        ctx.closePath();
+        ctx.fill();
+
+        // Right face (lighter)
+        ctx.fillStyle = `rgba(30, 70, 110, ${0.8 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x + isoHalfW, y);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x, y - h - isoHalfD);
+        ctx.lineTo(x, y - isoHalfD);
+        ctx.closePath();
+        ctx.fill();
+
+        // Top face
+        ctx.fillStyle = `rgba(60, 120, 180, ${0.6 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x, y - h - isoHalfD - isoHalfD);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x, y - h + isoHalfD - isoHalfD);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.closePath();
+        ctx.fill();
+
+        // Window strips — horizontal glowing lines
+        if (b.riseProgress > 0.5 && camZoom > 0.3) {
+          const stripCount = Math.floor(h / 14);
+          const pulse = 0.6 + 0.4 * Math.sin(t * 1.5 + b.seed);
+          for (let i = 0; i < stripCount; i++) {
+            const sy = y - (i + 1) * 14 * b.riseProgress;
+            if (sy < y - h) break;
+            const a = 0.15 + 0.1 * pulse * Math.sin(i * 0.7 + b.seed);
+
+            // Left face windows
+            ctx.strokeStyle = `rgba(100, 200, 255, ${a * b.riseProgress})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x - isoHalfW + 3, sy);
+            ctx.lineTo(x - 3, sy - isoHalfD);
+            ctx.stroke();
+
+            // Right face windows
+            ctx.beginPath();
+            ctx.moveTo(x + 3, sy - isoHalfD);
+            ctx.lineTo(x + isoHalfW - 3, sy);
+            ctx.stroke();
+          }
+        }
+
+        // Glow at top
+        if (b.riseProgress > 0.8) {
+          const glowPulse = 0.5 + 0.5 * Math.sin(t * 2 + b.seed);
+          const grad = ctx.createRadialGradient(x, y - h, 0, x, y - h, 25 * b.tier);
+          grad.addColorStop(0, `rgba(80, 180, 255, ${0.15 * glowPulse * b.riseProgress})`);
+          grad.addColorStop(1, 'rgba(80, 180, 255, 0)');
+          ctx.fillStyle = grad;
+          const gr = 25 * b.tier;
+          ctx.fillRect(x - gr, y - h - gr, gr * 2, gr * 2);
+        }
+      }
+
+      function drawApartment(ctx, x, y, b, t) {
+        const h = b.height * b.riseProgress;
+        const halfW = b.width * 0.35;
+        const isoHalfW = halfW;
+        const isoHalfD = halfW * 0.45;
+
+        // Left face
+        ctx.fillStyle = `rgba(50, 40, 30, ${0.9 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x - isoHalfW, y);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.lineTo(x, y - h - isoHalfD);
+        ctx.lineTo(x, y - isoHalfD);
+        ctx.closePath();
+        ctx.fill();
+
+        // Right face
+        ctx.fillStyle = `rgba(60, 48, 35, ${0.85 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x + isoHalfW, y);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x, y - h - isoHalfD);
+        ctx.lineTo(x, y - isoHalfD);
+        ctx.closePath();
+        ctx.fill();
+
+        // Top
+        ctx.fillStyle = `rgba(70, 55, 40, ${0.7 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x, y - h - isoHalfD * 2);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x, y - h);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.closePath();
+        ctx.fill();
+
+        // Window grid
+        if (b.windows && b.riseProgress > 0.3 && camZoom > 0.25) {
+          const cols = b.windows[0].length;
+          const rows = b.windows.length;
+          const visibleRows = Math.floor(rows * b.riseProgress);
+
+          for (let wr = 0; wr < visibleRows; wr++) {
+            for (let wc = 0; wc < cols; wc++) {
+              const lit = b.windows[wr][wc];
+              // Randomly flicker some windows
+              const flicker = lit && (Math.sin(t * 3 + b.seed + wr * 7 + wc * 13) > -0.8);
+              if (!flicker) continue;
+
+              const wx = x - isoHalfW + 5 + (wc / cols) * (isoHalfW * 2 - 10);
+              const wy = y - (wr + 1) * (h / rows);
+              if (wy < y - h) continue;
+
+              const warmth = 0.5 + 0.5 * Math.sin(t * 0.5 + b.seed + wr + wc * 0.3);
+              const r = 200 + warmth * 55;
+              const g = 170 + warmth * 40;
+              const bv = 60 + warmth * 30;
+
+              ctx.fillStyle = `rgba(${r | 0}, ${g | 0}, ${bv | 0}, ${0.7 * b.riseProgress})`;
+              ctx.fillRect(wx - 1.5, wy - 2, 3, 4);
+
+              // Tiny window glow
+              if (camZoom > 0.5) {
+                ctx.fillStyle = `rgba(${r | 0}, ${g | 0}, ${bv | 0}, ${0.08 * b.riseProgress})`;
+                ctx.fillRect(wx - 4, wy - 5, 8, 10);
+              }
+            }
+          }
+        }
+      }
+
+      function drawNeonBuilding(ctx, x, y, b, t) {
+        const h = b.height * b.riseProgress;
+        const halfW = b.width * 0.3;
+        const isoHalfW = halfW;
+        const isoHalfD = halfW * 0.4;
+
+        // Body — dark
+        ctx.fillStyle = `rgba(25, 20, 30, ${0.9 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x - isoHalfW, y);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x + isoHalfW, y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Neon sign — pulsing glow
+        if (b.riseProgress > 0.6) {
+          const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 3 + b.seed));
+          const flicker = Math.sin(t * 17 + b.seed) > -0.9 ? 1 : 0.1;
+          const hue = (b.neonHue + t * 15) % 360;
+          const signY = y - h * 0.6;
+
+          // Sign glow
+          const glowR = 30 + b.tier * 10;
+          const grad = ctx.createRadialGradient(x, signY, 0, x, signY, glowR);
+          grad.addColorStop(0, `hsla(${hue}, 100%, 65%, ${0.25 * pulse * flicker * b.riseProgress})`);
+          grad.addColorStop(0.5, `hsla(${hue}, 100%, 50%, ${0.1 * pulse * flicker * b.riseProgress})`);
+          grad.addColorStop(1, `hsla(${hue}, 100%, 40%, 0)`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(x - glowR, signY - glowR, glowR * 2, glowR * 2);
+
+          // Sign text (draw small, bright)
+          if (camZoom > 0.35) {
+            ctx.save();
+            ctx.font = `bold ${Math.max(6, 8 * b.tier)}px monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `hsla(${hue}, 100%, 75%, ${0.8 * pulse * flicker * b.riseProgress})`;
+            ctx.fillText(b.neonText, x, signY);
+            ctx.restore();
+          }
+
+          // Colored edge lines on building
+          ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${0.2 * pulse * flicker * b.riseProgress})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x - isoHalfW, y);
+          ctx.lineTo(x - isoHalfW, y - h);
+          ctx.lineTo(x + isoHalfW, y - h);
+          ctx.lineTo(x + isoHalfW, y);
+          ctx.stroke();
+        }
+      }
+
+      function drawIndustrialBuilding(ctx, x, y, b, t) {
+        const h = b.height * b.riseProgress;
+        const halfW = b.width * 0.38;
+        const isoHalfW = halfW;
+        const isoHalfD = halfW * 0.45;
+
+        // Main body — left face
+        ctx.fillStyle = `rgba(40, 40, 45, ${0.9 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x - isoHalfW, y);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.lineTo(x, y - h - isoHalfD);
+        ctx.lineTo(x, y - isoHalfD);
+        ctx.closePath();
+        ctx.fill();
+
+        // Right face
+        ctx.fillStyle = `rgba(50, 50, 55, ${0.85 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x + isoHalfW, y);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x, y - h - isoHalfD);
+        ctx.lineTo(x, y - isoHalfD);
+        ctx.closePath();
+        ctx.fill();
+
+        // Top
+        ctx.fillStyle = `rgba(55, 55, 60, ${0.7 * b.riseProgress})`;
+        ctx.beginPath();
+        ctx.moveTo(x, y - h - isoHalfD * 2);
+        ctx.lineTo(x + isoHalfW, y - h);
+        ctx.lineTo(x, y - h);
+        ctx.lineTo(x - isoHalfW, y - h);
+        ctx.closePath();
+        ctx.fill();
+
+        // Smokestacks
+        if (b.riseProgress > 0.7) {
+          for (let ch = 0; ch < b.chimneys; ch++) {
+            const offsetX = (ch - (b.chimneys - 1) / 2) * 12;
+            const stackH = 15 + b.tier * 8;
+            const stackW = 4;
+
+            ctx.fillStyle = `rgba(70, 65, 60, ${0.9 * b.riseProgress})`;
+            ctx.fillRect(x + offsetX - stackW / 2, y - h - stackH, stackW, stackH);
+
+            // Red warning light at top
+            const blink = Math.sin(t * 4 + b.seed + ch * 2) > 0 ? 1 : 0.2;
+            ctx.fillStyle = `rgba(255, 40, 20, ${0.7 * blink * b.riseProgress})`;
+            ctx.beginPath();
+            ctx.arc(x + offsetX, y - h - stackH, 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Warning light glow
+            const warnGrad = ctx.createRadialGradient(x + offsetX, y - h - stackH, 0, x + offsetX, y - h - stackH, 8);
+            warnGrad.addColorStop(0, `rgba(255, 40, 20, ${0.15 * blink * b.riseProgress})`);
+            warnGrad.addColorStop(1, 'rgba(255, 40, 20, 0)');
+            ctx.fillStyle = warnGrad;
+            ctx.fillRect(x + offsetX - 8, y - h - stackH - 8, 16, 16);
+          }
+        }
+
+        // Industrial windows (few, dim)
+        if (b.riseProgress > 0.4 && camZoom > 0.3) {
+          const winCount = 2 + b.tier;
+          for (let i = 0; i < winCount; i++) {
+            const wy = y - (i + 1) * (h / (winCount + 1));
+            if (wy < y - h) break;
+            ctx.fillStyle = `rgba(120, 110, 80, ${0.4 * b.riseProgress})`;
+            ctx.fillRect(x - isoHalfW + 5, wy - 2, isoHalfW - 8, 3);
+          }
+        }
+      }
+
+      function drawBuildings(ctx, t) {
+        // Sort by row then col for proper iso overlap (back to front)
+        for (let r = 0; r < TOTAL; r++) {
+          for (let c = 0; c < TOTAL; c++) {
+            const b = grid[r][c];
+            if (!b) continue;
+
+            // Animate rise
+            const age = Math.max(0, time - b.placeTime);
+            b.riseProgress = clamp(age * 1.2, 0, 1);
+            b.riseProgress = smoothstep(0, 1, b.riseProgress); // ease
+            if (b.riseProgress < 0.01) continue;
+
+            const w = isoToWorld(c, r);
+
+            if (b.type === 'glass') drawGlassTower(ctx, w.x, w.y, b, t);
+            else if (b.type === 'apartment') drawApartment(ctx, w.x, w.y, b, t);
+            else if (b.type === 'neon') drawNeonBuilding(ctx, w.x, w.y, b, t);
+            else if (b.type === 'industrial') drawIndustrialBuilding(ctx, w.x, w.y, b, t);
+          }
+        }
+      }
+
+      // ─── Draw Particles ─────────────────────────────────
+      function drawWorldParticles(ctx, pool, drawFn) {
+        pool.forEach((p) => {
+          if (!p.worldSpace) return;
+          drawFn(ctx, p);
+        });
+      }
+
+      function drawDust(ctx) {
+        drawWorldParticles(ctx, dustParticles, (ctx, p) => {
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          ctx.fillStyle = `hsla(${p.hue}, 40%, 60%, ${alpha * 0.6})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawSmoke(ctx) {
+        drawWorldParticles(ctx, smokeParticles, (ctx, p) => {
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          const fadeIn = smoothstep(0, 0.2, 1 - alpha);
+          const fadeOut = smoothstep(0, 0.3, alpha);
+          const a = fadeIn * fadeOut * 0.12;
+          const size = p.size * (1 + (1 - alpha) * 2);
+          ctx.fillStyle = `rgba(100, 95, 90, ${a})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawCars(ctx) {
+        drawWorldParticles(ctx, carParticles, (ctx, p) => {
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          const fadeIn = smoothstep(0, 0.1, 1 - alpha);
+          const fadeOut = smoothstep(0, 0.2, alpha);
+          const a = fadeIn * fadeOut * p.brightness;
+
+          // Headlight / taillight
+          if (p.isRed) {
+            ctx.fillStyle = `rgba(255, 30, 20, ${a * 0.8})`;
+          } else {
+            ctx.fillStyle = `rgba(255, 240, 200, ${a * 0.9})`;
+          }
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * 0.7, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Glow
+          const glowR = p.size * 4;
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowR);
+          if (p.isRed) {
+            grad.addColorStop(0, `rgba(255, 30, 20, ${a * 0.12})`);
+            grad.addColorStop(1, 'rgba(255, 30, 20, 0)');
+          } else {
+            grad.addColorStop(0, `rgba(255, 220, 150, ${a * 0.1})`);
+            grad.addColorStop(1, 'rgba(255, 220, 150, 0)');
+          }
+          ctx.fillStyle = grad;
+          ctx.fillRect(p.x - glowR, p.y - glowR, glowR * 2, glowR * 2);
+        });
+      }
+
+      function drawFireworks(ctx) {
+        // Rocket trails (world space, drawn in camera transform)
+        for (const r of rockets) {
+          for (const s of r.trail) {
+            const alpha = s.life / s.maxLife;
+            ctx.fillStyle = `rgba(255, 220, 150, ${alpha * 0.7})`;
+            ctx.fillRect(s.x - 1, s.y - 1, 2, 2);
+          }
+          // Rocket head
+          ctx.fillStyle = 'rgba(255, 240, 200, 0.9)';
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Firework particles
+        ctx.globalCompositeOperation = 'lighter';
+        fireworkParticles.forEach((p) => {
+          if (!p.worldSpace) return;
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          const vis = alpha < 0.3 ? alpha / 0.3 : 1;
+          const h = ((p.hue % 360) + 360) % 360;
+          const size = p.size * (0.3 + vis * 0.7);
+
+          ctx.fillStyle = `hsla(${h}, ${p.sat}%, ${55 + vis * 35}%, ${vis * 0.8})`;
+          ctx.fillRect(p.x - size * 0.5, p.y - size * 0.5, size, size);
+
+          if (vis > 0.5) {
+            const glowSize = size * 3;
+            ctx.fillStyle = `hsla(${h}, ${p.sat * 0.7}%, 80%, ${(vis - 0.5) * 0.3})`;
+            ctx.fillRect(p.x - glowSize * 0.5, p.y - glowSize * 0.5, glowSize, glowSize);
+          }
+        });
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // ─── HUD ────────────────────────────────────────────
+      function drawMiniMap(ctx) {
+        const mapSize = 4;
+        const gap = 1;
+        const totalW = META_GRID * (mapSize + gap);
+        const sx = app.width - 18 - totalW;
+        const sy = 38;
+
+        for (let mr = 0; mr < META_GRID; mr++) {
+          for (let mc = 0; mc < META_GRID; mc++) {
+            const x = sx + mc * (mapSize + gap);
+            const y = sy + mr * (mapSize + gap);
+            if (sectors[mr][mc].unlocked) {
+              const age = Math.max(0, time - sectors[mr][mc].unlockTime);
+              const flash = age < 0.5 ? 0.3 * (1 - age / 0.5) : 0;
+              ctx.fillStyle = `rgba(255, 180, 60, ${0.4 + flash})`;
+            } else {
+              ctx.fillStyle = 'rgba(30, 25, 40, 0.2)';
+            }
+            ctx.fillRect(x, y, mapSize, mapSize);
+          }
+        }
+      }
+
+      function drawHUD(ctx) {
+        const w = app.width, h = app.height;
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // District progress
+        ctx.fillStyle = '#ffcc44';
+        ctx.fillText(`Districts ${unlockedCount}/${TOTAL_SECTORS}`, 18, 18);
+
+        // Building count
+        ctx.fillStyle = 'rgba(100, 200, 255, 0.5)';
+        ctx.font = '12px monospace';
+        ctx.fillText(`${buildingCount} buildings`, 18, 38);
+
+        // Population estimate
+        const pop = buildingCount * (42 + Math.floor(Math.sin(time * 0.2) * 5));
+        ctx.fillStyle = 'rgba(100, 255, 150, 0.4)';
+        ctx.fillText(`pop. ${pop.toLocaleString()}`, 18, 54);
+
+        // Progress bar
+        const barW = 120, barH = 3;
+        ctx.fillStyle = 'rgba(60, 50, 30, 0.3)';
+        ctx.fillRect(18, 72, barW, barH);
+        ctx.fillStyle = 'rgba(255, 180, 60, 0.6)';
+        ctx.fillRect(18, 72, barW * (unlockedCount / TOTAL_SECTORS), barH);
+
+        // Generation
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(255, 200, 100, 0.5)';
+        ctx.fillText(`Gen ${generation}`, w - 18, 18);
+
+        drawMiniMap(ctx);
+
+        // Phase text
+        if (loopPhase === 1) {
+          ctx.font = 'bold 18px monospace';
+          ctx.textAlign = 'center';
+          const pulse = 0.5 + 0.5 * Math.sin(time * 8);
+          ctx.fillStyle = `rgba(255, 220, 100, ${pulse * 0.7})`;
+          ctx.fillText('CITY COMPLETE', w / 2, h * 0.12);
+        } else if (loopPhase === 2) {
+          ctx.font = 'bold 16px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(255, 180, 120, ${0.4 + 0.2 * Math.sin(time * 3)})`;
+          ctx.fillText('DAWN BREAKS', w / 2, h * 0.12);
+        }
+
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.fillText('city at night \u00b7 auto-building \u00b7 P panel \u00b7 E toggle', w / 2, h - 16);
+      }
+
+      // ─── Auto-Play ──────────────────────────────────────
+      function autoPlay(dt) {
+        if (loopPhase !== 0) return;
+        if (expandPause > 0) { expandPause -= dt; return; }
+
+        placeTimer -= dt;
+        if (placeTimer > 0) return;
+
+        const valid = getValidPlacements();
+
+        if (valid.length === 0) {
+          if (unlockedCount >= TOTAL_SECTORS) {
+            // All sectors full — start celebration
+            loopPhase = 1;
+            loopTimer = 4.0;
+            fireworkTimer = 0;
+            return;
+          }
+          const next = getNextSector();
+          if (next) {
+            unlockSector(next.col, next.row);
+            expandPause = 0.35;
+          }
+          return;
+        }
+
+        // Prefer tiles in newest sectors
+        let newestTime = -Infinity;
+        for (const t of valid) {
+          const s = getSectorOf(t.col, t.row);
+          const ut = sectors[s.row][s.col].unlockTime;
+          if (ut > newestTime) newestTime = ut;
+        }
+
+        let pool;
+        if (rng() < 0.7) {
+          pool = valid.filter(t => {
+            const s = getSectorOf(t.col, t.row);
+            return sectors[s.row][s.col].unlockTime === newestTime;
+          });
+        } else {
+          pool = valid;
+        }
+        if (!pool.length) pool = valid;
+
+        const pick = pool[Math.floor(rng() * pool.length)];
+        placeBuilding(pick.col, pick.row);
+        placeTimer = 0.12 + rng() * 0.06;
+      }
+
+      // ─── Loop Phases ────────────────────────────────────
+      function updateLoop(dt) {
+        if (loopPhase === 0) return;
+        loopTimer -= dt;
+
+        if (loopPhase === 1) {
+          // Fireworks celebration
+          fireworkTimer -= dt;
+          if (fireworkTimer <= 0) {
+            fireworkTimer = 0.15 + rng() * 0.25;
+            launchFirework();
+            if (rng() < 0.3) launchFirework(); // occasional double
+          }
+
+          // Dramatic zoom out during celebration
+          const b = getUnlockedBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          camTargetZoom = Math.min(
+            app.width * 0.55 / Math.max(b.w, 1),
+            app.height * 0.55 / Math.max(b.h, 1)
+          );
+
+          if (loopTimer <= 0) {
+            loopPhase = 2;
+            loopTimer = 4.0;
+            sunriseAmount = 0;
+          }
+        } else if (loopPhase === 2) {
+          // Sunrise wash
+          sunriseAmount = smoothstep(0, 1, 1 - loopTimer / 4.0);
+
+          // Continue slow zoom out
+          camTargetZoom *= 0.999;
+
+          if (loopTimer <= 0) {
+            loopPhase = 3;
+            loopTimer = 2.5;
+          }
+        } else if (loopPhase === 3) {
+          // Fade to black
+          sunriseAmount = Math.max(0, loopTimer / 2.5);
+
+          if (loopTimer <= 0) {
+            loopPhase = 4;
+            loopTimer = 0.8;
+          }
+        } else if (loopPhase === 4) {
+          // Hold black, then reset
+          if (loopTimer <= 0) {
+            generation++;
+            initGrid();
+            initSectors();
+            dustParticles.clear();
+            smokeParticles.clear();
+            fireworkParticles.clear();
+            carParticles.clear();
+            rockets = [];
+            loopPhase = 0;
+            expandPause = 1.2;
+            placeTimer = 0.5;
+            sunriseAmount = 0;
+            startZoomReady = false;
+          }
+        }
+      }
+
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        autoPlay(dt);
+        updateLoop(dt);
+        spawnCars(dt);
+        spawnSmoke(dt);
+        updateRockets(dt);
+
+        // Update particle pools
+        dustParticles.update(dt);
+        smokeParticles.update(dt);
+        fireworkParticles.update(dt);
+        carParticles.update(dt);
+      }
+
+      // ─── Init ───────────────────────────────────────────
+      initGrid();
+      initSectors();
+      initStars();
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#06060f',
+          sourceOpacity: 0,
+          speed: 1,
+          colorCycle: true,
+          colorCycleRate: 0.08,
+        },
+        layers: [
+          {
+            fontSize: 16,
+            charset: 'blocks',
+            colorScheme: 'vapor',
+            pattern: 'diamond',
+            patternMix: 0.06,
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 10,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.75,
+          },
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'fire',
+            pattern: 'breathing',
+            patternMix: 0.15,
+            blendMode: 'add',
+            opacity: 0.2,
+          },
+        ],
+        onKeydown(e) {
+          if (e.key.toLowerCase() === 'r') {
+            generation = 1;
+            initGrid();
+            initSectors();
+            dustParticles.clear();
+            smokeParticles.clear();
+            fireworkParticles.clear();
+            carParticles.clear();
+            rockets = [];
+            loopPhase = 0;
+            expandPause = 1.2;
+            placeTimer = 0.5;
+            sunriseAmount = 0;
+            startZoomReady = false;
+          }
+        },
+        draw(ctx, { time: rawTime, dt, width: w, height: h }) {
+          time = rawTime * 0.001;
+          const t = time;
+          updateCamera(dt);
+          update(dt);
+
+          // ── Clear ──
+          ctx.fillStyle = '#06060f';
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Night sky gradient ──
+          const skyGrad = ctx.createLinearGradient(0, 0, 0, h * 0.6);
+          skyGrad.addColorStop(0, 'rgba(6, 6, 18, 0.95)');
+          skyGrad.addColorStop(0.5, 'rgba(10, 8, 22, 0.9)');
+          skyGrad.addColorStop(1, 'rgba(15, 12, 28, 0.8)');
+          ctx.fillStyle = skyGrad;
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Stars (screen space) ──
+          const starFade = loopPhase === 2 ? 1 - sunriseAmount * 0.7 : loopPhase === 3 ? sunriseAmount * 0.3 + 0.3 : 1;
+          for (const s of bgStars) {
+            const twinkle = 0.5 + 0.5 * Math.sin(t * s.speed + s.phase);
+            const alpha = s.brightness * twinkle * starFade;
+            ctx.fillStyle = `rgba(200, 210, 240, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(s.x * w, s.y * h * 0.6, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // ── Ambient city glow on horizon (screen space) ──
+          const cityGlowIntensity = clamp(buildingCount / 300, 0, 1);
+          if (cityGlowIntensity > 0 && loopPhase < 3) {
+            const glowGrad = ctx.createRadialGradient(w / 2, h * 0.55, 0, w / 2, h * 0.55, w * 0.6);
+            glowGrad.addColorStop(0, `rgba(255, 160, 60, ${0.04 * cityGlowIntensity})`);
+            glowGrad.addColorStop(0.4, `rgba(200, 100, 40, ${0.02 * cityGlowIntensity})`);
+            glowGrad.addColorStop(1, 'rgba(100, 50, 20, 0)');
+            ctx.fillStyle = glowGrad;
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          // ── World (camera transform) ──
+          ctx.save();
+          ctx.translate(w / 2, h / 2);
+          ctx.scale(camZoom, camZoom);
+          ctx.translate(-camX, -camY);
+
+          drawSectorPlatforms(ctx);
+          drawGridLines(ctx);
+
+          // Buildings with loop effects
+          let bAlpha = 1;
+          if (loopPhase === 1) bAlpha = 0.7 + 0.3 * Math.sin(t * 6);
+          else if (loopPhase === 3) bAlpha = clamp(loopTimer / 2.5, 0, 1);
+          else if (loopPhase === 4) bAlpha = 0;
+
+          if (bAlpha > 0) {
+            ctx.globalAlpha = bAlpha;
+            drawBuildings(ctx, t);
+            ctx.globalAlpha = 1;
+          }
+
+          // World-space particles
+          drawDust(ctx);
+          drawSmoke(ctx);
+          drawCars(ctx);
+          drawFireworks(ctx);
+
+          ctx.restore();
+
+          // ── Sunrise overlay (screen space) ──
+          if (sunriseAmount > 0) {
+            // Horizon sunrise glow
+            const sunGrad = ctx.createLinearGradient(0, h * 0.3, 0, h * 0.7);
+            sunGrad.addColorStop(0, `rgba(255, 100, 40, ${sunriseAmount * 0.15})`);
+            sunGrad.addColorStop(0.3, `rgba(255, 160, 60, ${sunriseAmount * 0.12})`);
+            sunGrad.addColorStop(0.6, `rgba(255, 200, 100, ${sunriseAmount * 0.08})`);
+            sunGrad.addColorStop(1, `rgba(255, 220, 180, ${sunriseAmount * 0.04})`);
+            ctx.fillStyle = sunGrad;
+            ctx.fillRect(0, 0, w, h);
+
+            // Sun disk
+            const sunX = w * 0.5 + Math.sin(t * 0.3) * w * 0.1;
+            const sunY = h * 0.45 - sunriseAmount * h * 0.1;
+            const sunR = 40 + sunriseAmount * 30;
+            const sunDisk = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+            sunDisk.addColorStop(0, `rgba(255, 220, 160, ${sunriseAmount * 0.5})`);
+            sunDisk.addColorStop(0.3, `rgba(255, 180, 80, ${sunriseAmount * 0.3})`);
+            sunDisk.addColorStop(1, 'rgba(255, 120, 40, 0)');
+            ctx.fillStyle = sunDisk;
+            ctx.fillRect(sunX - sunR, sunY - sunR, sunR * 2, sunR * 2);
+
+            // Color wash over everything
+            ctx.fillStyle = `rgba(255, 140, 60, ${sunriseAmount * 0.06})`;
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          // ── Fade to black overlay (phase 3/4) ──
+          if (loopPhase === 3) {
+            const fadeAlpha = 1 - loopTimer / 2.5;
+            ctx.fillStyle = `rgba(6, 6, 15, ${fadeAlpha})`;
+            ctx.fillRect(0, 0, w, h);
+          } else if (loopPhase === 4) {
+            ctx.fillStyle = 'rgba(6, 6, 15, 1)';
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          // ── Celebrate flash (screen space) ──
+          if (loopPhase === 1) {
+            const age = 4.0 - loopTimer;
+            if (age < 0.3) {
+              ctx.fillStyle = `rgba(255, 220, 150, ${0.15 * (1 - age / 0.3)})`;
+              ctx.fillRect(0, 0, w, h);
+            }
+          }
+
+          // ── HUD ──
+          if (loopPhase !== 4) {
+            drawHUD(ctx);
+          }
+        },
+      });
+    </script>
+  </body>
+</html>

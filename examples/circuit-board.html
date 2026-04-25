@@ -1,0 +1,1502 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Circuit Board</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, mulberry32, rgb, lerpColor } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const CELL = 20;                   // grid cell size in world px
+      const GRID_SIZE = 60;              // 60x60 grid
+      const HALF_GRID = GRID_SIZE / 2;
+      const SECTOR_SIZE = 10;            // 10x10 cells per sector
+      const SECTOR_COUNT = GRID_SIZE / SECTOR_SIZE; // 6x6 sectors
+      const TOTAL_SECTORS = SECTOR_COUNT * SECTOR_COUNT;
+      const MAX_PARTICLES = 3000;
+
+      // ─── Colors ─────────────────────────────────────────
+      const COL_PCB_BG     = [10, 32, 18];
+      const COL_PCB_DARK   = [6, 22, 12];
+      const COL_COPPER     = [200, 140, 60];
+      const COL_COPPER_DIM = [120, 80, 30];
+      const COL_SOLDER     = [180, 180, 170];
+      const COL_GOLD       = [255, 200, 50];
+      const COL_CHIP_BODY  = [20, 20, 25];
+      const COL_CHIP_MARK  = [200, 200, 210];
+      const COL_CAP_TAN    = [180, 150, 90];
+      const COL_CAP_BLUE   = [40, 80, 180];
+      const COL_RES_BODY   = [60, 45, 30];
+      const COL_SIGNAL     = [80, 255, 180];
+      const COL_SIGNAL_HOT = [255, 255, 200];
+      const COL_BOOT_GLOW  = [0, 255, 120];
+
+      // Resistor color bands
+      const BAND_COLORS = [
+        [30, 30, 30],    // black
+        [140, 60, 20],   // brown
+        [220, 30, 30],   // red
+        [240, 140, 20],  // orange
+        [240, 220, 30],  // yellow
+        [40, 180, 40],   // green
+        [30, 60, 220],   // blue
+        [160, 40, 200],  // violet
+      ];
+
+      // ─── State ──────────────────────────────────────────
+      let rng = mulberry32(42);
+      let time = 0;
+      let generation = 1;
+
+      // Grid: each cell can hold a component ref or null
+      let grid = [];
+      // Sectors
+      let sectors = [];
+      let unlockedCount = 0;
+      // Components placed on the board
+      let components = [];
+      // Traces: { cells: [{col, row}...], drawnProgress: 0..1, fromComp, toComp, signal: null }
+      let traces = [];
+      // Signals traveling along traces
+      let signals = [];
+
+      // Camera
+      let camX = 0, camY = 0, camZoom = 1;
+      let camTargetX = 0, camTargetY = 0, camTargetZoom = 1;
+      let startZoom = 1;
+      let startZoomReady = false;
+
+      // Timers
+      let routeTimer = 0;
+      let expandPause = 0.8;
+      let traceDrawTimer = 0;
+
+      // Phases: 0=route, 1=boot-test, 2=zoom-out, 3=hold
+      let loopPhase = 0;
+      let loopTimer = 0;
+      let bootIndex = 0;
+      let bootTimer = 0;
+
+      // Stats
+      let totalTraceLength = 0;
+
+      // Particle pool
+      const particles = new ParticlePool({ maxParticles: MAX_PARTICLES, gravity: 0, drag: 0.97 });
+
+      // ─── Component Types ────────────────────────────────
+      // type: 'chip' | 'capacitor' | 'resistor'
+      // tier: 1, 2, 3 — affects size and visual detail
+      function makeComponent(type, tier, col, row) {
+        let w, h;
+        if (type === 'chip') {
+          w = tier === 1 ? 3 : tier === 2 ? 4 : 5;
+          h = tier === 1 ? 2 : tier === 2 ? 3 : 4;
+        } else if (type === 'capacitor') {
+          w = 1; h = tier === 1 ? 1 : 2;
+        } else {
+          w = tier === 1 ? 2 : 3; h = 1;
+        }
+        return {
+          type, tier, col, row, w, h,
+          placeTime: time,
+          seed: rng() * 1000,
+          bootLit: false,
+          bootLitTime: -10,
+          bandColors: type === 'resistor'
+            ? [BAND_COLORS[(rng() * 8) | 0], BAND_COLORS[(rng() * 8) | 0], BAND_COLORS[(rng() * 8) | 0]]
+            : null,
+          capColor: type === 'capacitor' ? (rng() > 0.5 ? COL_CAP_TAN : COL_CAP_BLUE) : null,
+        };
+      }
+
+      // ─── Init ───────────────────────────────────────────
+      function initGrid() {
+        grid = [];
+        for (let r = 0; r < GRID_SIZE; r++) {
+          grid[r] = [];
+          for (let c = 0; c < GRID_SIZE; c++) grid[r][c] = null;
+        }
+      }
+
+      function initSectors() {
+        sectors = [];
+        for (let sr = 0; sr < SECTOR_COUNT; sr++) {
+          sectors[sr] = [];
+          for (let sc = 0; sc < SECTOR_COUNT; sc++) {
+            sectors[sr][sc] = { unlocked: false, unlockTime: -10 };
+          }
+        }
+        // Unlock center sector
+        const csr = Math.floor(SECTOR_COUNT / 2);
+        const csc = Math.floor(SECTOR_COUNT / 2);
+        sectors[csr][csc].unlocked = true;
+        sectors[csr][csc].unlockTime = time;
+        unlockedCount = 1;
+      }
+
+      function resetState() {
+        rng = mulberry32(42 + generation * 137);
+        initGrid();
+        initSectors();
+        components = [];
+        traces = [];
+        signals = [];
+        totalTraceLength = 0;
+        loopPhase = 0;
+        loopTimer = 0;
+        expandPause = 0.8;
+        routeTimer = 0.3;
+        traceDrawTimer = 0;
+        bootIndex = 0;
+        bootTimer = 0;
+        startZoomReady = false;
+        particles.clear();
+      }
+
+      resetState();
+
+      // ─── Coordinate Helpers ─────────────────────────────
+      function cellToWorld(col, row) {
+        return {
+          x: (col - HALF_GRID) * CELL,
+          y: (row - HALF_GRID) * CELL,
+        };
+      }
+
+      function worldToScreen(wx, wy) {
+        return {
+          x: app.width / 2 + (wx - camX) * camZoom,
+          y: app.height / 2 + (wy - camY) * camZoom,
+        };
+      }
+
+      function cellToScreen(col, row) {
+        const w = cellToWorld(col, row);
+        return worldToScreen(w.x, w.y);
+      }
+
+      function inGrid(col, row) {
+        return col >= 0 && col < GRID_SIZE && row >= 0 && row < GRID_SIZE;
+      }
+
+      function getSector(col, row) {
+        return {
+          sc: Math.floor(col / SECTOR_SIZE),
+          sr: Math.floor(row / SECTOR_SIZE),
+        };
+      }
+
+      function isCellUnlocked(col, row) {
+        const { sc, sr } = getSector(col, row);
+        return sc >= 0 && sc < SECTOR_COUNT && sr >= 0 && sr < SECTOR_COUNT
+          && sectors[sr][sc].unlocked;
+      }
+
+      // ─── Placement ─────────────────────────────────────
+      // Check if a rectangular component can be placed
+      function canPlace(col, row, w, h) {
+        for (let dr = -1; dr <= h; dr++) {
+          for (let dc = -1; dc <= w; dc++) {
+            const c = col + dc, r = row + dr;
+            if (dc >= 0 && dc < w && dr >= 0 && dr < h) {
+              // Must be in-grid, unlocked, empty
+              if (!inGrid(c, r)) return false;
+              if (!isCellUnlocked(c, r)) return false;
+              if (grid[r][c] !== null) return false;
+            } else {
+              // Margin cells: must be empty if in-grid (spacing)
+              if (inGrid(c, r) && grid[r][c] !== null) return false;
+            }
+          }
+        }
+        return true;
+      }
+
+      function placeComponent(comp) {
+        for (let dr = 0; dr < comp.h; dr++) {
+          for (let dc = 0; dc < comp.w; dc++) {
+            grid[comp.row + dr][comp.col + dc] = comp;
+          }
+        }
+        components.push(comp);
+        spawnPlaceBurst(comp);
+      }
+
+      function findPlacement() {
+        // Try random positions in unlocked sectors, preferring newest sectors
+        const candidates = [];
+        for (let sr = 0; sr < SECTOR_COUNT; sr++) {
+          for (let sc = 0; sc < SECTOR_COUNT; sc++) {
+            if (!sectors[sr][sc].unlocked) continue;
+            candidates.push({ sc, sr, t: sectors[sr][sc].unlockTime });
+          }
+        }
+        if (!candidates.length) return null;
+
+        // Sort by unlock time, prefer newest
+        candidates.sort((a, b) => b.t - a.t);
+
+        // Pick a type and tier
+        const roll = rng();
+        let type, tier;
+        if (roll < 0.25) {
+          type = 'chip';
+          tier = 1 + ((rng() * 3) | 0);
+        } else if (roll < 0.55) {
+          type = 'capacitor';
+          tier = 1 + ((rng() * 3) | 0);
+        } else {
+          type = 'resistor';
+          tier = 1 + ((rng() * 3) | 0);
+        }
+
+        const dummy = makeComponent(type, tier, 0, 0);
+
+        // Try positions in newest sectors first
+        const sectorPool = rng() < 0.7
+          ? candidates.slice(0, Math.max(1, Math.ceil(candidates.length * 0.3)))
+          : candidates;
+
+        for (let attempt = 0; attempt < 40; attempt++) {
+          const sec = sectorPool[(rng() * sectorPool.length) | 0];
+          const baseCol = sec.sc * SECTOR_SIZE;
+          const baseRow = sec.sr * SECTOR_SIZE;
+          const col = baseCol + ((rng() * (SECTOR_SIZE - dummy.w + 1)) | 0);
+          const row = baseRow + ((rng() * (SECTOR_SIZE - dummy.h + 1)) | 0);
+          if (canPlace(col, row, dummy.w, dummy.h)) {
+            return makeComponent(type, tier, col, row);
+          }
+        }
+        return null;
+      }
+
+      // ─── Trace Routing (Manhattan) ──────────────────────
+      function routeTrace(compA, compB) {
+        // Route from center of compA to center of compB with Manhattan path
+        const ax = compA.col + Math.floor(compA.w / 2);
+        const ay = compA.row + Math.floor(compA.h / 2);
+        const bx = compB.col + Math.floor(compB.w / 2);
+        const by = compB.row + Math.floor(compB.h / 2);
+
+        const cells = [];
+        let cx = ax, cy = ay;
+
+        // Go horizontal first, then vertical (with some randomness)
+        const hFirst = rng() > 0.5;
+
+        if (hFirst) {
+          const dx = cx < bx ? 1 : -1;
+          while (cx !== bx) { cells.push({ col: cx, row: cy }); cx += dx; }
+          const dy = cy < by ? 1 : -1;
+          while (cy !== by) { cells.push({ col: cx, row: cy }); cy += dy; }
+        } else {
+          const dy = cy < by ? 1 : -1;
+          while (cy !== by) { cells.push({ col: cx, row: cy }); cy += dy; }
+          const dx = cx < bx ? 1 : -1;
+          while (cx !== bx) { cells.push({ col: cx, row: cy }); cx += dx; }
+        }
+        cells.push({ col: bx, row: by });
+
+        if (cells.length < 2) return null;
+
+        const trace = {
+          cells,
+          drawnProgress: 0,
+          fromComp: compA,
+          toComp: compB,
+          seed: rng() * 1000,
+        };
+        traces.push(trace);
+        totalTraceLength += cells.length;
+        return trace;
+      }
+
+      // Find a pair of components to connect
+      function findTraceTargets() {
+        if (components.length < 2) return null;
+
+        // Find components that have fewer connections
+        const connCount = new Map();
+        for (const comp of components) connCount.set(comp, 0);
+        for (const tr of traces) {
+          connCount.set(tr.fromComp, (connCount.get(tr.fromComp) || 0) + 1);
+          connCount.set(tr.toComp, (connCount.get(tr.toComp) || 0) + 1);
+        }
+
+        // Prefer connecting to chips (they have more pins)
+        const sorted = [...components].sort((a, b) => {
+          const ca = connCount.get(a) || 0;
+          const cb = connCount.get(b) || 0;
+          return ca - cb;
+        });
+
+        // Pick the least-connected component and connect to a nearby one
+        for (let i = 0; i < Math.min(sorted.length, 5); i++) {
+          const a = sorted[i];
+          // Find nearest unconnected or least-connected neighbor
+          let bestB = null, bestDist = Infinity;
+          for (const b of components) {
+            if (b === a) continue;
+            // Don't duplicate exact same trace
+            const alreadyConnected = traces.some(
+              t => (t.fromComp === a && t.toComp === b) || (t.fromComp === b && t.toComp === a)
+            );
+            if (alreadyConnected && (connCount.get(b) || 0) > 0) continue;
+
+            const d = dist(
+              a.col + a.w / 2, a.row + a.h / 2,
+              b.col + b.w / 2, b.row + b.h / 2,
+            );
+            if (d < bestDist) { bestDist = d; bestB = b; }
+          }
+          if (bestB && bestDist < GRID_SIZE * 0.6) return [a, bestB];
+        }
+        return null;
+      }
+
+      // ─── Sector Expansion ──────────────────────────────
+      function getNextSector() {
+        const candidates = [];
+        let cx = 0, cy = 0;
+        for (let sr = 0; sr < SECTOR_COUNT; sr++)
+          for (let sc = 0; sc < SECTOR_COUNT; sc++)
+            if (sectors[sr][sc].unlocked) { cx += sc; cy += sr; }
+        cx /= unlockedCount; cy /= unlockedCount;
+
+        for (let sr = 0; sr < SECTOR_COUNT; sr++) {
+          for (let sc = 0; sc < SECTOR_COUNT; sc++) {
+            if (sectors[sr][sc].unlocked) continue;
+            let adj = false;
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+              const nr = sr + dr, nc = sc + dc;
+              if (nr >= 0 && nr < SECTOR_COUNT && nc >= 0 && nc < SECTOR_COUNT && sectors[nr][nc].unlocked) {
+                adj = true; break;
+              }
+            }
+            if (adj) candidates.push({ sc, sr, dist: Math.abs(sc - cx) + Math.abs(sr - cy) });
+          }
+        }
+        if (!candidates.length) return null;
+        candidates.sort((a, b) => a.dist - b.dist);
+        const best = candidates.filter(c => c.dist <= candidates[0].dist + 0.5);
+        return best[(rng() * best.length) | 0];
+      }
+
+      function unlockSector(sc, sr) {
+        sectors[sr][sc].unlocked = true;
+        sectors[sr][sc].unlockTime = time;
+        unlockedCount++;
+        spawnSectorBurst(sc, sr);
+      }
+
+      // ─── Particles ──────────────────────────────────────
+      function spawnPlaceBurst(comp) {
+        const wx = (comp.col + comp.w / 2 - HALF_GRID) * CELL;
+        const wy = (comp.row + comp.h / 2 - HALF_GRID) * CELL;
+        const hue = comp.type === 'chip' ? 180 : comp.type === 'capacitor' ? 40 : 20;
+
+        particles.emit(16, (i) => {
+          const angle = (i / 16) * Math.PI * 2 + rng() * 0.3;
+          const spd = 40 + rng() * 80;
+          return {
+            x: wx, y: wy,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd,
+            life: 0.4 + rng() * 0.4,
+            size: 2 + rng() * 3,
+            color: COL_GOLD,
+            alpha: 1,
+            type: 'spark',
+            worldSpace: true,
+          };
+        });
+
+        // Small flash particles
+        particles.emit(8, (i) => {
+          return {
+            x: wx + (rng() - 0.5) * comp.w * CELL,
+            y: wy + (rng() - 0.5) * comp.h * CELL,
+            vx: (rng() - 0.5) * 20,
+            vy: (rng() - 0.5) * 20,
+            life: 0.2 + rng() * 0.3,
+            size: 4 + rng() * 4,
+            color: [255, 255, 255],
+            alpha: 0.8,
+            type: 'flash',
+            worldSpace: true,
+          };
+        });
+      }
+
+      function spawnSectorBurst(sc, sr) {
+        const wx = (sc * SECTOR_SIZE + SECTOR_SIZE / 2 - HALF_GRID) * CELL;
+        const wy = (sr * SECTOR_SIZE + SECTOR_SIZE / 2 - HALF_GRID) * CELL;
+
+        particles.emit(24, (i) => {
+          const angle = (i / 24) * Math.PI * 2;
+          const spd = 60 + rng() * 100;
+          return {
+            x: wx, y: wy,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd,
+            life: 0.6 + rng() * 0.6,
+            size: 2 + rng() * 3,
+            color: COL_SIGNAL,
+            alpha: 0.9,
+            type: 'expand',
+            worldSpace: true,
+          };
+        });
+      }
+
+      function spawnSignalParticles(wx, wy) {
+        particles.emit(3, () => {
+          return {
+            x: wx + (rng() - 0.5) * 6,
+            y: wy + (rng() - 0.5) * 6,
+            vx: (rng() - 0.5) * 30,
+            vy: (rng() - 0.5) * 30,
+            life: 0.15 + rng() * 0.2,
+            size: 1.5 + rng() * 2,
+            color: COL_SIGNAL,
+            alpha: 0.7,
+            type: 'signal',
+            worldSpace: true,
+          };
+        });
+      }
+
+      function spawnBootGlow(comp) {
+        const wx = (comp.col + comp.w / 2 - HALF_GRID) * CELL;
+        const wy = (comp.row + comp.h / 2 - HALF_GRID) * CELL;
+
+        particles.emit(20, (i) => {
+          const angle = (i / 20) * Math.PI * 2;
+          const spd = 30 + rng() * 60;
+          return {
+            x: wx, y: wy,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd,
+            life: 0.5 + rng() * 0.5,
+            size: 3 + rng() * 4,
+            color: COL_BOOT_GLOW,
+            alpha: 1,
+            type: 'boot',
+            worldSpace: true,
+          };
+        });
+      }
+
+      function spawnDissolveBurst() {
+        for (const comp of components) {
+          const wx = (comp.col + comp.w / 2 - HALF_GRID) * CELL;
+          const wy = (comp.row + comp.h / 2 - HALF_GRID) * CELL;
+
+          particles.emit(6, () => {
+            const angle = rng() * Math.PI * 2;
+            const spd = 20 + rng() * 50;
+            return {
+              x: wx, y: wy,
+              vx: Math.cos(angle) * spd,
+              vy: Math.sin(angle) * spd - 20,
+              life: 1.0 + rng() * 1.5,
+              size: 2 + rng() * 3,
+              color: lerpColor(COL_COPPER, COL_SIGNAL, rng()),
+              alpha: 0.8,
+              type: 'dissolve',
+              worldSpace: true,
+              gravity: -30,
+            };
+          });
+        }
+      }
+
+      // ─── Camera ─────────────────────────────────────────
+      function computeStartZoom() {
+        const sectorWorldSize = SECTOR_SIZE * CELL;
+        return Math.min(app.width * 0.35 / sectorWorldSize, app.height * 0.35 / sectorWorldSize);
+      }
+
+      function getUnlockedBounds() {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (let sr = 0; sr < SECTOR_COUNT; sr++) {
+          for (let sc = 0; sc < SECTOR_COUNT; sc++) {
+            if (!sectors[sr][sc].unlocked) continue;
+            const x0 = (sc * SECTOR_SIZE - HALF_GRID) * CELL;
+            const y0 = (sr * SECTOR_SIZE - HALF_GRID) * CELL;
+            const x1 = x0 + SECTOR_SIZE * CELL;
+            const y1 = y0 + SECTOR_SIZE * CELL;
+            minX = Math.min(minX, x0); maxX = Math.max(maxX, x1);
+            minY = Math.min(minY, y0); maxY = Math.max(maxY, y1);
+          }
+        }
+        return {
+          cx: (minX + maxX) / 2, cy: (minY + maxY) / 2,
+          w: maxX - minX, h: maxY - minY,
+        };
+      }
+
+      function getPlayTargetZoom() {
+        const b = getUnlockedBounds();
+        return Math.min(
+          app.width * 0.85 / Math.max(b.w, 1),
+          app.height * 0.85 / Math.max(b.h, 1),
+        );
+      }
+
+      function updateCamera(dt) {
+        if (!startZoomReady) {
+          startZoom = computeStartZoom();
+          camZoom = startZoom;
+          camTargetZoom = startZoom;
+          camX = 0; camY = 0;
+          camTargetX = 0; camTargetY = 0;
+          startZoomReady = true;
+        }
+
+        if (loopPhase === 0) {
+          const b = getUnlockedBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          camTargetZoom = getPlayTargetZoom();
+        }
+        // Phase 2 targets set in updateLoop
+
+        const speed = loopPhase === 2 ? 0.8 : 2.5;
+        const t = Math.min(1, dt * speed);
+        camZoom += (camTargetZoom - camZoom) * t;
+        camX += (camTargetX - camX) * t;
+        camY += (camTargetY - camY) * t;
+      }
+
+      // ─── Signal Propagation ─────────────────────────────
+      function spawnSignal(trace) {
+        if (trace.drawnProgress < 1) return;
+        signals.push({
+          trace,
+          progress: 0,       // 0..1 along the trace
+          speed: 0.8 + rng() * 0.6,
+          forward: rng() > 0.5,
+        });
+      }
+
+      function updateSignals(dt) {
+        let len = signals.length;
+        for (let i = len - 1; i >= 0; i--) {
+          const s = signals[i];
+          s.progress += s.speed * dt;
+
+          // Emit glow particles along the signal position
+          const idx = Math.floor(s.progress * (s.trace.cells.length - 1));
+          if (idx >= 0 && idx < s.trace.cells.length) {
+            const cell = s.trace.cells[idx];
+            const w = cellToWorld(cell.col, cell.row);
+            if (rng() < 0.4) spawnSignalParticles(w.x + CELL / 2, w.y + CELL / 2);
+          }
+
+          if (s.progress >= 1) {
+            signals[i] = signals[len - 1];
+            len--;
+          }
+        }
+        signals.length = len;
+      }
+
+      // ─── Auto-Play Logic ────────────────────────────────
+      let placementsThisSector = 0;
+      const PLACEMENTS_PER_SECTOR = 6;
+
+      function autoPlay(dt) {
+        if (loopPhase !== 0) return;
+        if (expandPause > 0) { expandPause -= dt; return; }
+
+        // Animate trace drawing
+        for (const tr of traces) {
+          if (tr.drawnProgress < 1) {
+            tr.drawnProgress = Math.min(1, tr.drawnProgress + dt * 3);
+            if (tr.drawnProgress >= 1 && rng() < 0.6) {
+              spawnSignal(tr);
+            }
+          }
+        }
+
+        routeTimer -= dt;
+        if (routeTimer > 0) return;
+
+        // Try to place a component
+        const comp = findPlacement();
+        if (comp) {
+          placeComponent(comp);
+          placementsThisSector++;
+          routeTimer = 0.12 + rng() * 0.06;
+
+          // Route a trace to connect it
+          if (components.length >= 2) {
+            const targets = findTraceTargets();
+            if (targets) routeTrace(targets[0], targets[1]);
+          }
+
+          // Periodically spawn signals on existing traces
+          if (components.length % 4 === 0) {
+            const fullyDrawn = traces.filter(t => t.drawnProgress >= 1);
+            if (fullyDrawn.length > 0) {
+              spawnSignal(fullyDrawn[(rng() * fullyDrawn.length) | 0]);
+            }
+          }
+        } else {
+          // No valid placement: try expanding
+          if (unlockedCount >= TOTAL_SECTORS) {
+            // Board is full — route remaining connections then enter boot
+            const targets = findTraceTargets();
+            if (targets) {
+              routeTrace(targets[0], targets[1]);
+              routeTimer = 0.1;
+              return;
+            }
+            loopPhase = 1;
+            loopTimer = 0;
+            bootIndex = 0;
+            bootTimer = 0;
+            return;
+          }
+
+          const next = getNextSector();
+          if (next) {
+            unlockSector(next.sc, next.sr);
+            expandPause = 0.3;
+            placementsThisSector = 0;
+          } else {
+            // Force boot phase if stuck
+            loopPhase = 1;
+            loopTimer = 0;
+            bootIndex = 0;
+            bootTimer = 0;
+          }
+          return;
+        }
+
+        // Expand if enough placed in current wave
+        if (placementsThisSector >= PLACEMENTS_PER_SECTOR && unlockedCount < TOTAL_SECTORS) {
+          const next = getNextSector();
+          if (next) {
+            unlockSector(next.sc, next.sr);
+            expandPause = 0.2;
+            placementsThisSector = 0;
+          }
+        }
+      }
+
+      // ─── Boot Test Phase ────────────────────────────────
+      function updateBootTest(dt) {
+        if (loopPhase !== 1) return;
+
+        bootTimer -= dt;
+        if (bootTimer > 0) return;
+
+        if (bootIndex < components.length) {
+          const comp = components[bootIndex];
+          comp.bootLit = true;
+          comp.bootLitTime = time;
+          spawnBootGlow(comp);
+          bootIndex++;
+          bootTimer = 0.04 + 0.02 * (1 - bootIndex / components.length);
+
+          // Fire signals along all traces connected to this component
+          for (const tr of traces) {
+            if ((tr.fromComp === comp || tr.toComp === comp) && tr.drawnProgress >= 1) {
+              spawnSignal(tr);
+            }
+          }
+        } else {
+          // All lit — pause then zoom out
+          loopTimer -= dt;
+          if (loopTimer <= 0 && bootIndex >= components.length) {
+            loopTimer = 2.0;
+            loopPhase = 2;
+            spawnDissolveBurst();
+            // Camera target: zoomed way out to show board as tile
+            camTargetX = 0;
+            camTargetY = 0;
+            camTargetZoom = startZoom / (SECTOR_COUNT * 1.5);
+          }
+        }
+      }
+
+      // ─── Loop Phase Management ──────────────────────────
+      function updateLoop(dt) {
+        if (loopPhase === 0 || loopPhase === 1) return;
+        loopTimer -= dt;
+
+        if (loopPhase === 2 && loopTimer <= 0) {
+          loopPhase = 3;
+          loopTimer = 1.2;
+        } else if (loopPhase === 3 && loopTimer <= 0) {
+          generation++;
+          resetState();
+        }
+      }
+
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        autoPlay(dt);
+        updateBootTest(dt);
+        updateLoop(dt);
+        updateSignals(dt);
+        particles.update(dt);
+
+        // Periodically spawn ambient signals on fully drawn traces
+        if (loopPhase === 0 && traces.length > 0) {
+          traceDrawTimer -= dt;
+          if (traceDrawTimer <= 0) {
+            traceDrawTimer = 0.5 + rng() * 0.5;
+            const fullyDrawn = traces.filter(t => t.drawnProgress >= 1);
+            if (fullyDrawn.length > 0) {
+              spawnSignal(fullyDrawn[(rng() * fullyDrawn.length) | 0]);
+            }
+          }
+        }
+      }
+
+      // ─── Drawing: PCB Background ───────────────────────
+      function drawPCBBackground(ctx) {
+        // Draw solder mask (dark green) for unlocked sectors
+        for (let sr = 0; sr < SECTOR_COUNT; sr++) {
+          for (let sc = 0; sc < SECTOR_COUNT; sc++) {
+            const sector = sectors[sr][sc];
+            const x0 = (sc * SECTOR_SIZE - HALF_GRID) * CELL;
+            const y0 = (sr * SECTOR_SIZE - HALF_GRID) * CELL;
+            const sw = SECTOR_SIZE * CELL;
+
+            if (sector.unlocked) {
+              const age = Math.max(0, time - sector.unlockTime);
+              const fadeIn = Math.min(1, age * 2);
+
+              // PCB base
+              ctx.fillStyle = rgb(lerpColor(COL_PCB_DARK, COL_PCB_BG, fadeIn));
+              ctx.fillRect(x0, y0, sw, sw);
+
+              // Subtle grid lines
+              if (camZoom > 0.3) {
+                const gridAlpha = Math.min(0.15, (camZoom - 0.3) * 0.3) * fadeIn;
+                ctx.strokeStyle = `rgba(30, 80, 40, ${gridAlpha})`;
+                ctx.lineWidth = 0.5;
+                for (let r = 0; r <= SECTOR_SIZE; r++) {
+                  ctx.beginPath();
+                  ctx.moveTo(x0, y0 + r * CELL);
+                  ctx.lineTo(x0 + sw, y0 + r * CELL);
+                  ctx.stroke();
+                }
+                for (let c = 0; c <= SECTOR_SIZE; c++) {
+                  ctx.beginPath();
+                  ctx.moveTo(x0 + c * CELL, y0);
+                  ctx.lineTo(x0 + c * CELL, y0 + sw);
+                  ctx.stroke();
+                }
+              }
+
+              // Unlock flash
+              if (age < 0.4) {
+                ctx.fillStyle = `rgba(80, 255, 120, ${0.15 * (1 - age / 0.4)})`;
+                ctx.fillRect(x0, y0, sw, sw);
+              }
+
+              // Sector border
+              ctx.strokeStyle = `rgba(40, 100, 50, ${0.3 * fadeIn})`;
+              ctx.lineWidth = 1;
+              ctx.strokeRect(x0, y0, sw, sw);
+            } else {
+              // Unplaced board area — very dark
+              ctx.fillStyle = 'rgba(4, 12, 6, 0.3)';
+              ctx.fillRect(x0, y0, sw, sw);
+            }
+          }
+        }
+      }
+
+      // ─── Drawing: Solder Pads ──────────────────────────
+      function drawSolderPads(ctx) {
+        if (camZoom < 0.5) return;
+        const padAlpha = clamp((camZoom - 0.5) / 0.5, 0, 1);
+
+        for (const comp of components) {
+          const age = Math.max(0, time - comp.placeTime);
+          if (age < 0.05) continue;
+          const fadeIn = Math.min(1, age * 4);
+          const alpha = padAlpha * fadeIn;
+
+          // Draw pads on component edges
+          ctx.fillStyle = rgb(COL_SOLDER, alpha * 0.6);
+          if (comp.type === 'chip') {
+            // Pads along all 4 sides
+            const pinSpacing = CELL * 0.5;
+            for (let side = 0; side < 4; side++) {
+              const isHoriz = side === 0 || side === 2;
+              const len = isHoriz ? comp.w : comp.h;
+              for (let p = 0; p < len * 2; p++) {
+                let px, py;
+                const t = (p + 0.5) / (len * 2);
+                if (side === 0) {       // top
+                  px = comp.col * CELL + t * comp.w * CELL - HALF_GRID * CELL;
+                  py = comp.row * CELL - HALF_GRID * CELL - 1;
+                } else if (side === 1) { // right
+                  px = (comp.col + comp.w) * CELL - HALF_GRID * CELL + 1;
+                  py = comp.row * CELL + t * comp.h * CELL - HALF_GRID * CELL;
+                } else if (side === 2) { // bottom
+                  px = comp.col * CELL + t * comp.w * CELL - HALF_GRID * CELL;
+                  py = (comp.row + comp.h) * CELL - HALF_GRID * CELL + 1;
+                } else {                  // left
+                  px = comp.col * CELL - HALF_GRID * CELL - 1;
+                  py = comp.row * CELL + t * comp.h * CELL - HALF_GRID * CELL;
+                }
+                ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
+              }
+            }
+          } else {
+            // Small pads on ends
+            const cx = (comp.col - HALF_GRID) * CELL;
+            const cy = (comp.row - HALF_GRID) * CELL;
+            ctx.fillRect(cx - 2, cy + comp.h * CELL / 2 - 2, 4, 4);
+            ctx.fillRect(cx + comp.w * CELL - 2, cy + comp.h * CELL / 2 - 2, 4, 4);
+          }
+        }
+      }
+
+      // ─── Drawing: Traces ───────────────────────────────
+      function drawTraces(ctx) {
+        for (const tr of traces) {
+          if (tr.drawnProgress <= 0) continue;
+          const drawnCells = Math.ceil(tr.cells.length * tr.drawnProgress);
+
+          // Copper trace
+          ctx.strokeStyle = rgb(COL_COPPER, 0.8);
+          ctx.lineWidth = 3;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          for (let i = 0; i < drawnCells && i < tr.cells.length; i++) {
+            const cell = tr.cells[i];
+            const wx = (cell.col - HALF_GRID) * CELL + CELL / 2;
+            const wy = (cell.row - HALF_GRID) * CELL + CELL / 2;
+            if (i === 0) ctx.moveTo(wx, wy);
+            else ctx.lineTo(wx, wy);
+          }
+          ctx.stroke();
+
+          // Thinner bright center line
+          ctx.strokeStyle = rgb(COL_COPPER_DIM, 0.3);
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          for (let i = 0; i < drawnCells && i < tr.cells.length; i++) {
+            const cell = tr.cells[i];
+            const wx = (cell.col - HALF_GRID) * CELL + CELL / 2;
+            const wy = (cell.row - HALF_GRID) * CELL + CELL / 2;
+            if (i === 0) ctx.moveTo(wx, wy);
+            else ctx.lineTo(wx, wy);
+          }
+          ctx.stroke();
+
+          // Draw tip glow if still animating
+          if (tr.drawnProgress < 1 && drawnCells > 0) {
+            const tipCell = tr.cells[drawnCells - 1];
+            const tx = (tipCell.col - HALF_GRID) * CELL + CELL / 2;
+            const ty = (tipCell.row - HALF_GRID) * CELL + CELL / 2;
+            const grad = ctx.createRadialGradient(tx, ty, 0, tx, ty, 15);
+            grad.addColorStop(0, 'rgba(255, 200, 50, 0.6)');
+            grad.addColorStop(1, 'rgba(255, 200, 50, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(tx - 15, ty - 15, 30, 30);
+          }
+        }
+      }
+
+      // ─── Drawing: Signals ──────────────────────────────
+      function drawSignals(ctx) {
+        for (const sig of signals) {
+          const tr = sig.trace;
+          const idx = sig.forward
+            ? sig.progress * (tr.cells.length - 1)
+            : (1 - sig.progress) * (tr.cells.length - 1);
+          const cellIdx = Math.floor(idx);
+          const frac = idx - cellIdx;
+
+          if (cellIdx < 0 || cellIdx >= tr.cells.length - 1) continue;
+
+          const c0 = tr.cells[cellIdx];
+          const c1 = tr.cells[Math.min(cellIdx + 1, tr.cells.length - 1)];
+          const wx = lerp(
+            (c0.col - HALF_GRID) * CELL + CELL / 2,
+            (c1.col - HALF_GRID) * CELL + CELL / 2,
+            frac,
+          );
+          const wy = lerp(
+            (c0.row - HALF_GRID) * CELL + CELL / 2,
+            (c1.row - HALF_GRID) * CELL + CELL / 2,
+            frac,
+          );
+
+          // Glow
+          const alpha = 1 - Math.abs(sig.progress - 0.5) * 1.2;
+          const grad = ctx.createRadialGradient(wx, wy, 0, wx, wy, 12);
+          grad.addColorStop(0, `rgba(80, 255, 180, ${0.7 * alpha})`);
+          grad.addColorStop(0.4, `rgba(80, 255, 180, ${0.3 * alpha})`);
+          grad.addColorStop(1, `rgba(80, 255, 180, 0)`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(wx - 12, wy - 12, 24, 24);
+
+          // Bright core
+          ctx.fillStyle = `rgba(255, 255, 230, ${0.9 * alpha})`;
+          ctx.beginPath();
+          ctx.arc(wx, wy, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── Drawing: Components ───────────────────────────
+      function drawChip(ctx, comp) {
+        const x = (comp.col - HALF_GRID) * CELL;
+        const y = (comp.row - HALF_GRID) * CELL;
+        const w = comp.w * CELL;
+        const h = comp.h * CELL;
+        const age = Math.max(0, time - comp.placeTime);
+        const scale = Math.min(1, age * 6);
+
+        ctx.save();
+        if (scale < 1) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.scale(scale, scale);
+          ctx.translate(-(x + w / 2), -(y + h / 2));
+        }
+
+        // Body shadow
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+        ctx.fillRect(x + 2, y + 2, w, h);
+
+        // Body
+        ctx.fillStyle = rgb(COL_CHIP_BODY);
+        ctx.fillRect(x, y, w, h);
+
+        // Subtle body gradient
+        const bodyGrad = ctx.createLinearGradient(x, y, x, y + h);
+        bodyGrad.addColorStop(0, 'rgba(50, 50, 60, 0.3)');
+        bodyGrad.addColorStop(0.5, 'rgba(30, 30, 35, 0)');
+        bodyGrad.addColorStop(1, 'rgba(10, 10, 15, 0.3)');
+        ctx.fillStyle = bodyGrad;
+        ctx.fillRect(x, y, w, h);
+
+        // Pin 1 marker (dot)
+        ctx.fillStyle = rgb(COL_CHIP_MARK, 0.6);
+        ctx.beginPath();
+        ctx.arc(x + 4, y + 4, 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Chip label text
+        ctx.fillStyle = rgb(COL_CHIP_MARK, 0.5);
+        ctx.font = `${Math.max(6, Math.min(9, w * 0.18))}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const labels = ['CPU', 'RAM', 'FPGA', 'DSP', 'ADC', 'MCU', 'GPU', 'PHY'];
+        ctx.fillText(labels[(comp.seed * 8) | 0 % labels.length], x + w / 2, y + h / 2);
+
+        // Border / package outline
+        ctx.strokeStyle = 'rgba(60, 60, 70, 0.8)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        // Boot glow
+        if (comp.bootLit) {
+          const bootAge = Math.max(0, time - comp.bootLitTime);
+          const glow = Math.max(0, 0.5 - bootAge * 0.15);
+          if (glow > 0) {
+            ctx.fillStyle = `rgba(0, 255, 120, ${glow})`;
+            ctx.fillRect(x, y, w, h);
+          }
+          // Persistent LED indicator
+          ctx.fillStyle = `rgba(0, 255, 80, ${0.4 + 0.3 * Math.sin(time * 6 + comp.seed)})`;
+          ctx.beginPath();
+          ctx.arc(x + w - 4, y + 4, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
+      }
+
+      function drawCapacitor(ctx, comp) {
+        const x = (comp.col - HALF_GRID) * CELL;
+        const y = (comp.row - HALF_GRID) * CELL;
+        const w = comp.w * CELL;
+        const h = comp.h * CELL;
+        const age = Math.max(0, time - comp.placeTime);
+        const scale = Math.min(1, age * 6);
+
+        ctx.save();
+        if (scale < 1) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.scale(scale, scale);
+          ctx.translate(-(x + w / 2), -(y + h / 2));
+        }
+
+        const cx = x + w / 2;
+        const cy = y + h / 2;
+        const r = Math.min(w, h) * 0.4;
+
+        // Shadow
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.beginPath();
+        ctx.ellipse(cx + 1, cy + 1, r, r * 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Body
+        ctx.fillStyle = rgb(comp.capColor);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, r, r * 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Top marking (polarity stripe for electrolytic)
+        if (comp.tier >= 2) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cx - r * 0.3, cy - r * 0.6);
+          ctx.lineTo(cx - r * 0.3, cy + r * 0.6);
+          ctx.stroke();
+        }
+
+        // Value text
+        if (camZoom > 1) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.font = '4px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const vals = ['100n', '10u', '47p', '1u', '220n'];
+          ctx.fillText(vals[(comp.seed * 5) | 0 % vals.length], cx, cy);
+        }
+
+        // Boot glow
+        if (comp.bootLit) {
+          const bootAge = Math.max(0, time - comp.bootLitTime);
+          const glow = Math.max(0, 0.6 - bootAge * 0.2);
+          ctx.fillStyle = `rgba(0, 255, 120, ${glow})`;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * 1.2, r, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
+      }
+
+      function drawResistor(ctx, comp) {
+        const x = (comp.col - HALF_GRID) * CELL;
+        const y = (comp.row - HALF_GRID) * CELL;
+        const w = comp.w * CELL;
+        const h = comp.h * CELL;
+        const age = Math.max(0, time - comp.placeTime);
+        const scale = Math.min(1, age * 6);
+
+        ctx.save();
+        if (scale < 1) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.scale(scale, scale);
+          ctx.translate(-(x + w / 2), -(y + h / 2));
+        }
+
+        const bodyX = x + w * 0.15;
+        const bodyW = w * 0.7;
+        const bodyH = h * 0.6;
+        const bodyY = y + (h - bodyH) / 2;
+
+        // Lead wires
+        ctx.strokeStyle = rgb(COL_SOLDER, 0.6);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y + h / 2);
+        ctx.lineTo(bodyX, y + h / 2);
+        ctx.moveTo(bodyX + bodyW, y + h / 2);
+        ctx.lineTo(x + w, y + h / 2);
+        ctx.stroke();
+
+        // Body
+        ctx.fillStyle = rgb(COL_RES_BODY);
+        const rr = 2; // corner radius
+        ctx.beginPath();
+        ctx.moveTo(bodyX + rr, bodyY);
+        ctx.lineTo(bodyX + bodyW - rr, bodyY);
+        ctx.quadraticCurveTo(bodyX + bodyW, bodyY, bodyX + bodyW, bodyY + rr);
+        ctx.lineTo(bodyX + bodyW, bodyY + bodyH - rr);
+        ctx.quadraticCurveTo(bodyX + bodyW, bodyY + bodyH, bodyX + bodyW - rr, bodyY + bodyH);
+        ctx.lineTo(bodyX + rr, bodyY + bodyH);
+        ctx.quadraticCurveTo(bodyX, bodyY + bodyH, bodyX, bodyY + bodyH - rr);
+        ctx.lineTo(bodyX, bodyY + rr);
+        ctx.quadraticCurveTo(bodyX, bodyY, bodyX + rr, bodyY);
+        ctx.closePath();
+        ctx.fill();
+
+        // Color bands
+        if (comp.bandColors) {
+          const bandW = bodyW * 0.12;
+          const bandGap = bodyW * 0.18;
+          const startX = bodyX + bodyW * 0.15;
+          for (let b = 0; b < 3; b++) {
+            ctx.fillStyle = rgb(comp.bandColors[b]);
+            ctx.fillRect(startX + b * bandGap, bodyY + 1, bandW, bodyH - 2);
+          }
+        }
+
+        // Boot glow
+        if (comp.bootLit) {
+          const bootAge = Math.max(0, time - comp.bootLitTime);
+          const glow = Math.max(0, 0.5 - bootAge * 0.2);
+          ctx.fillStyle = `rgba(0, 255, 120, ${glow})`;
+          ctx.fillRect(bodyX - 2, bodyY - 2, bodyW + 4, bodyH + 4);
+        }
+
+        ctx.restore();
+      }
+
+      function drawComponents(ctx) {
+        for (const comp of components) {
+          if (comp.type === 'chip') drawChip(ctx, comp);
+          else if (comp.type === 'capacitor') drawCapacitor(ctx, comp);
+          else if (comp.type === 'resistor') drawResistor(ctx, comp);
+        }
+      }
+
+      // ─── Drawing: Particles ────────────────────────────
+      function drawParticles(ctx, inWorldSpace) {
+        particles.forEach((p) => {
+          if (!!p.worldSpace !== inWorldSpace) return;
+          const alpha = clamp(p.life / 0.5, 0, 1) * (p.alpha || 1);
+          if (alpha <= 0) return;
+
+          let sx, sy;
+          if (p.worldSpace) {
+            sx = p.x; sy = p.y;  // Already in world transform
+          } else {
+            sx = p.x; sy = p.y;
+          }
+
+          if (p.type === 'spark' || p.type === 'expand') {
+            // Bright spark with trail
+            ctx.fillStyle = rgb(p.color, alpha);
+            ctx.beginPath();
+            ctx.arc(sx, sy, p.size * alpha, 0, Math.PI * 2);
+            ctx.fill();
+            // Glow
+            const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, p.size * 3);
+            grad.addColorStop(0, rgb(p.color, alpha * 0.4));
+            grad.addColorStop(1, rgb(p.color, 0));
+            ctx.fillStyle = grad;
+            ctx.fillRect(sx - p.size * 3, sy - p.size * 3, p.size * 6, p.size * 6);
+          } else if (p.type === 'flash') {
+            ctx.fillStyle = rgb(p.color, alpha * 0.5);
+            ctx.beginPath();
+            ctx.arc(sx, sy, p.size, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (p.type === 'signal') {
+            ctx.fillStyle = rgb(p.color, alpha * 0.6);
+            ctx.beginPath();
+            ctx.arc(sx, sy, p.size * alpha, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (p.type === 'boot') {
+            ctx.fillStyle = rgb(p.color, alpha * 0.8);
+            ctx.beginPath();
+            ctx.arc(sx, sy, p.size * alpha, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (p.type === 'dissolve') {
+            ctx.fillStyle = rgb(p.color, alpha * 0.6);
+            ctx.beginPath();
+            ctx.arc(sx, sy, p.size * Math.max(0.3, alpha), 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
+      }
+
+      // ─── Drawing: Board Edge / Silkscreen ──────────────
+      function drawBoardEdge(ctx) {
+        // Only draw around the full unlocked area
+        const b = getUnlockedBounds();
+        const pad = 4;
+        ctx.strokeStyle = 'rgba(255, 220, 50, 0.15)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(
+          b.cx - b.w / 2 - pad,
+          b.cy - b.h / 2 - pad,
+          b.w + pad * 2,
+          b.h + pad * 2,
+        );
+        ctx.setLineDash([]);
+
+        // Corner mounting holes
+        const holeR = 4;
+        const corners = [
+          [b.cx - b.w / 2, b.cy - b.h / 2],
+          [b.cx + b.w / 2, b.cy - b.h / 2],
+          [b.cx + b.w / 2, b.cy + b.h / 2],
+          [b.cx - b.w / 2, b.cy + b.h / 2],
+        ];
+        for (const [cx, cy] of corners) {
+          ctx.strokeStyle = 'rgba(255, 220, 50, 0.15)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(180, 160, 40, 0.08)';
+          ctx.fill();
+        }
+      }
+
+      // ─── Drawing: Tiled Boards (zoom-out reveal) ──────
+      function drawTiledBoards(ctx) {
+        // Only visible during zoom-out phases
+        if (loopPhase < 2) return;
+        const boardW = GRID_SIZE * CELL;
+        const boardH = GRID_SIZE * CELL;
+
+        ctx.globalAlpha = 0.15;
+        for (let tr = -2; tr <= 2; tr++) {
+          for (let tc = -2; tc <= 2; tc++) {
+            if (tr === 0 && tc === 0) continue; // skip center (that's the real board)
+            const ox = tc * (boardW + 20);
+            const oy = tr * (boardH + 20);
+
+            // Draw a ghost outline of a board
+            ctx.strokeStyle = 'rgba(40, 100, 50, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(
+              ox - boardW / 2,
+              oy - boardH / 2,
+              boardW,
+              boardH,
+            );
+
+            // Fill with PCB green
+            ctx.fillStyle = rgb(COL_PCB_DARK, 0.5);
+            ctx.fillRect(
+              ox - boardW / 2,
+              oy - boardH / 2,
+              boardW,
+              boardH,
+            );
+
+            // Ghost traces (simple lines)
+            ctx.strokeStyle = 'rgba(200, 140, 60, 0.2)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 12; i++) {
+              const x1 = ox - boardW / 2 + rng() * boardW;
+              const y1 = oy - boardH / 2 + rng() * boardH;
+              const x2 = x1 + (rng() - 0.5) * boardW * 0.4;
+              const y2 = y1;
+              ctx.beginPath();
+              ctx.moveTo(x1, y1);
+              ctx.lineTo(x2, y2);
+              ctx.lineTo(x2, y2 + (rng() - 0.5) * boardH * 0.3);
+              ctx.stroke();
+            }
+
+            // Ghost chips
+            ctx.fillStyle = 'rgba(20, 20, 25, 0.5)';
+            for (let i = 0; i < 6; i++) {
+              const gx = ox - boardW / 2 + rng() * boardW * 0.8 + boardW * 0.1;
+              const gy = oy - boardH / 2 + rng() * boardH * 0.8 + boardH * 0.1;
+              ctx.fillRect(gx, gy, 30 + rng() * 40, 20 + rng() * 30);
+            }
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // ─── Drawing: HUD ──────────────────────────────────
+      function drawHUD(ctx, w, h) {
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // Component count
+        ctx.fillStyle = '#44cc88';
+        ctx.fillText(`Components ${components.length}`, 18, 18);
+
+        // Trace length
+        ctx.fillStyle = 'rgba(200, 140, 60, 0.6)';
+        ctx.font = '12px monospace';
+        ctx.fillText(`Traces ${traces.length} (${totalTraceLength} cells)`, 18, 38);
+
+        // Board coverage
+        let filledCells = 0;
+        for (let r = 0; r < GRID_SIZE; r++)
+          for (let c = 0; c < GRID_SIZE; c++)
+            if (grid[r][c]) filledCells++;
+        const coverage = unlockedCount > 0
+          ? (filledCells / (unlockedCount * SECTOR_SIZE * SECTOR_SIZE) * 100).toFixed(1)
+          : '0.0';
+        ctx.fillStyle = 'rgba(80, 200, 120, 0.5)';
+        ctx.fillText(`Coverage ${coverage}%`, 18, 54);
+
+        // Progress bar
+        const barW = 120, barH = 3;
+        ctx.fillStyle = 'rgba(20, 60, 30, 0.4)';
+        ctx.fillRect(18, 72, barW, barH);
+        ctx.fillStyle = 'rgba(40, 200, 80, 0.6)';
+        ctx.fillRect(18, 72, barW * (unlockedCount / TOTAL_SECTORS), barH);
+
+        // Generation
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(80, 200, 120, 0.5)';
+        ctx.fillText(`Gen ${generation}`, w - 18, 18);
+
+        // Sector minimap
+        const mapSize = 5;
+        const gap = 1;
+        const totalW = SECTOR_COUNT * (mapSize + gap);
+        const sx = w - 18 - totalW;
+        const sy = 40;
+        for (let sr = 0; sr < SECTOR_COUNT; sr++) {
+          for (let sc = 0; sc < SECTOR_COUNT; sc++) {
+            const mx = sx + sc * (mapSize + gap);
+            const my = sy + sr * (mapSize + gap);
+            if (sectors[sr][sc].unlocked) {
+              const age = Math.max(0, time - sectors[sr][sc].unlockTime);
+              const flash = age < 0.4 ? 0.4 * (1 - age / 0.4) : 0;
+              ctx.fillStyle = `rgba(40, 180, 80, ${0.5 + flash})`;
+            } else {
+              ctx.fillStyle = 'rgba(20, 40, 25, 0.3)';
+            }
+            ctx.fillRect(mx, my, mapSize, mapSize);
+          }
+        }
+
+        // Phase text
+        if (loopPhase === 1) {
+          ctx.font = 'bold 18px monospace';
+          ctx.textAlign = 'center';
+          const bootPct = components.length > 0 ? ((bootIndex / components.length) * 100).toFixed(0) : '0';
+          ctx.fillStyle = `rgba(0, 255, 120, ${0.5 + 0.5 * Math.sin(time * 10)})`;
+          ctx.fillText(`BOOT TEST ${bootPct}%`, w / 2, h * 0.5 - 30);
+        } else if (loopPhase === 2) {
+          ctx.font = 'bold 16px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(0, 255, 120, ${0.3 + 0.2 * Math.sin(time * 6)})`;
+          ctx.fillText('PCB ARRAY', w / 2, h * 0.5 - 30);
+        }
+
+        // Footer
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.fillText('circuit board \u00b7 signal propagation', w / 2, h - 16);
+      }
+
+      // ─── Drawing: Ambient Background ───────────────────
+      function drawBackground(ctx, w, h) {
+        // Dark background with subtle noise
+        ctx.fillStyle = '#050e08';
+        ctx.fillRect(0, 0, w, h);
+
+        // Very subtle vignette
+        const vigGrad = ctx.createRadialGradient(w / 2, h / 2, w * 0.2, w / 2, h / 2, w * 0.8);
+        vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        vigGrad.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
+        ctx.fillStyle = vigGrad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#050e08',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          { fontSize: 14, charset: 'blocks', colorScheme: 'neon', pattern: 'diamond', patternMix: 0.05, blendMode: 'replace', opacity: 1 },
+          { fontSize: 8, charset: 'density', colorScheme: 'fire', blendMode: 'add', opacity: 0.6 },
+          { fontSize: 5, charset: 'braille', colorScheme: 'neon', pattern: 'moiré', patternMix: 0.15, blendMode: 'add', opacity: 0.25 },
+        ],
+        onKeydown(e) {
+          if (e.key.toLowerCase() === 'r') {
+            generation = 1;
+            resetState();
+          }
+        },
+        draw(ctx, { time: rawTime, dt, width: w, height: h }) {
+          time = rawTime * 0.001;
+          updateCamera(dt);
+          update(dt);
+
+          // ── Clear ──
+          drawBackground(ctx, w, h);
+
+          // ── World (camera transform) ──
+          ctx.save();
+          ctx.translate(w / 2, h / 2);
+          ctx.scale(camZoom, camZoom);
+          ctx.translate(-camX, -camY);
+
+          // Tiled boards (visible during zoom-out)
+          drawTiledBoards(ctx);
+
+          // PCB background
+          drawPCBBackground(ctx);
+
+          // Board edge / silkscreen
+          drawBoardEdge(ctx);
+
+          // Solder pads
+          drawSolderPads(ctx);
+
+          // Traces (copper paths)
+          drawTraces(ctx);
+
+          // Signal wavefronts
+          drawSignals(ctx);
+
+          // Components with loop effects
+          let compAlpha = 1;
+          if (loopPhase === 1) compAlpha = 0.7 + 0.3 * Math.sin(time * 8);
+          else if (loopPhase === 2) compAlpha = Math.max(0, loopTimer / 2.0);
+          else if (loopPhase === 3) compAlpha = 0;
+
+          if (compAlpha > 0) {
+            ctx.globalAlpha = compAlpha;
+            drawComponents(ctx);
+            ctx.globalAlpha = 1;
+          }
+
+          // World-space particles
+          drawParticles(ctx, true);
+
+          ctx.restore();
+
+          // ── Screen-space particles ──
+          drawParticles(ctx, false);
+
+          // ── Celebrate flash ──
+          if (loopPhase === 1 && bootIndex >= components.length) {
+            const flashAge = -loopTimer;  // loopTimer counts down from 0 when boot finishes
+            if (flashAge < 0.3) {
+              ctx.fillStyle = `rgba(0, 255, 120, ${0.15 * (1 - flashAge / 0.3)})`;
+              ctx.fillRect(0, 0, w, h);
+            }
+          }
+
+          // ── HUD ──
+          drawHUD(ctx, w, h);
+        },
+      });
+    </script>
+  </body>
+</html>

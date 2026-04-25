@@ -1,0 +1,1282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Constellation Mapper</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, mulberry32 } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const MAX_STARS = 60;
+      const CONNECTION_DIST = 220;
+      const DISCOVERY_INTERVAL_BASE = 0.35;
+      const DISCOVERY_INTERVAL_MIN = 0.12;
+      const SECTOR_RADIUS = 400;
+      const GALAXY_ARMS = 4;
+      const GALAXY_STAR_COUNT = 300;
+
+      // Star type definitions
+      const STAR_TYPES = ['binary', 'redGiant', 'blueDwarf', 'nebula'];
+      const STAR_COLORS = {
+        binary:    { core: [255, 240, 200], glow: [255, 220, 150], label: 'BINARY' },
+        redGiant:  { core: [255, 120, 60],  glow: [200, 50, 20],  label: 'RED GIANT' },
+        blueDwarf: { core: [140, 180, 255], glow: [60, 100, 255], label: 'BLUE DWARF' },
+        nebula:    { core: [220, 140, 255], glow: [160, 60, 200], label: 'NEBULA CLUSTER' },
+      };
+
+      // ─── Seeded RNG ─────────────────────────────────────
+      let sectorSeed = 42;
+      let rng = mulberry32(sectorSeed);
+
+      // ─── State ──────────────────────────────────────────
+      let stars = [];
+      let connections = [];
+      let discoveredCount = 0;
+      let connectionsMapped = 0;
+      let bgStars = [];
+      let galaxyStars = [];
+      let time = 0;
+      let generation = 1;
+      let sectorId = 'A-01';
+
+      // Camera
+      let camX = 0, camY = 0;
+      let camTargetX = 0, camTargetY = 0;
+      let camZoom = 1, camTargetZoom = 1;
+      let startZoom = 1;
+
+      // Discovery queue
+      let discoveryQueue = [];
+      let discoveryTimer = 0;
+      let connectionQueue = [];
+      let connectionTimer = 0;
+      let scanLineProgress = {};  // connectionId -> progress 0..1
+
+      // Phases: 0=survey, 1=classify, 2=celebrate, 3=zoomout, 4=hold
+      let phase = 0;
+      let phaseTimer = 0;
+
+      // ─── Particles ──────────────────────────────────────
+      const sparkles = new ParticlePool({ maxParticles: 800, drag: 0.97 });
+      const nebulaParticles = new ParticlePool({ maxParticles: 600, drag: 0.995 });
+      const scanParticles = new ParticlePool({ maxParticles: 400, drag: 0.99 });
+      const ambientParticles = new ParticlePool({ maxParticles: 200, drag: 0.999 });
+
+      // ─── Background Stars ───────────────────────────────
+      function initBgStars() {
+        bgStars = [];
+        for (let i = 0; i < 200; i++) {
+          bgStars.push({
+            x: Math.random(),
+            y: Math.random(),
+            brightness: 0.15 + Math.random() * 0.35,
+            speed: 0.3 + Math.random() * 2.5,
+            phase: Math.random() * Math.PI * 2,
+            size: 0.4 + Math.random() * 1.0,
+          });
+        }
+      }
+
+      // ─── Galaxy Stars (for zoom-out reveal) ─────────────
+      function initGalaxyStars() {
+        galaxyStars = [];
+        const gRng = mulberry32(99);
+        for (let i = 0; i < GALAXY_STAR_COUNT; i++) {
+          const arm = Math.floor(gRng() * GALAXY_ARMS);
+          const armAngle = (arm / GALAXY_ARMS) * Math.PI * 2;
+          const distFromCenter = 0.1 + gRng() * 0.9;
+          const spiralAngle = armAngle + distFromCenter * 2.5 + (gRng() - 0.5) * 0.6;
+          const spread = (gRng() - 0.5) * 0.15 * (1 + distFromCenter * 0.5);
+          const r = distFromCenter * 0.45;
+          galaxyStars.push({
+            x: 0.5 + Math.cos(spiralAngle) * r + Math.cos(spiralAngle + Math.PI / 2) * spread,
+            y: 0.5 + Math.sin(spiralAngle) * r * 0.6 + Math.sin(spiralAngle + Math.PI / 2) * spread * 0.6,
+            brightness: 0.2 + gRng() * 0.6,
+            size: 0.5 + gRng() * 1.5,
+            hue: gRng() < 0.3 ? 220 + gRng() * 40 : (gRng() < 0.5 ? 30 + gRng() * 20 : 200 + gRng() * 60),
+            phase: gRng() * Math.PI * 2,
+          });
+        }
+      }
+
+      // ─── Sector Generation ──────────────────────────────
+      function generateSector() {
+        stars = [];
+        connections = [];
+        discoveryQueue = [];
+        connectionQueue = [];
+        scanLineProgress = {};
+        discoveredCount = 0;
+        connectionsMapped = 0;
+        discoveryTimer = 0;
+        connectionTimer = 0;
+
+        rng = mulberry32(sectorSeed);
+
+        // Place the origin star at center
+        const originType = STAR_TYPES[Math.floor(rng() * 2)]; // binary or blueDwarf for origin
+        stars.push({
+          x: 0,
+          y: 0,
+          type: originType === 0 ? 'binary' : 'blueDwarf',
+          discovered: true,
+          discoverTime: 0,
+          classified: false,
+          classifyTime: -1,
+          seed: rng() * 1000,
+          size: 3 + rng() * 2,
+          labelAlpha: 0,
+          pulsePhase: rng() * Math.PI * 2,
+        });
+        discoveredCount = 1;
+
+        // Generate remaining stars in expanding rings
+        const ringCount = 4;
+        const starsPerRing = [6, 10, 14, 18];
+        let totalPlaced = 1;
+
+        for (let ring = 0; ring < ringCount && totalPlaced < MAX_STARS; ring++) {
+          const ringRadius = 100 + ring * 100;
+          const count = Math.min(starsPerRing[ring], MAX_STARS - totalPlaced);
+          const angleOffset = rng() * Math.PI * 2;
+
+          for (let i = 0; i < count; i++) {
+            const baseAngle = angleOffset + (i / count) * Math.PI * 2;
+            const angle = baseAngle + (rng() - 0.5) * (Math.PI * 2 / count) * 0.6;
+            const r = ringRadius + (rng() - 0.5) * 60;
+            const x = Math.cos(angle) * r;
+            const y = Math.sin(angle) * r;
+
+            // Ensure minimum distance from existing stars
+            let tooClose = false;
+            for (const s of stars) {
+              if (dist(x, y, s.x, s.y) < 50) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+
+            const typeRoll = rng();
+            let type;
+            if (typeRoll < 0.25) type = 'binary';
+            else if (typeRoll < 0.45) type = 'redGiant';
+            else if (typeRoll < 0.7) type = 'blueDwarf';
+            else type = 'nebula';
+
+            stars.push({
+              x, y, type,
+              discovered: false,
+              discoverTime: -1,
+              classified: false,
+              classifyTime: -1,
+              seed: rng() * 1000,
+              size: type === 'redGiant' ? 5 + rng() * 3 : (type === 'blueDwarf' ? 2 + rng() : 3 + rng() * 2),
+              labelAlpha: 0,
+              pulsePhase: rng() * Math.PI * 2,
+            });
+            totalPlaced++;
+          }
+        }
+
+        // Pre-compute possible connections
+        for (let i = 0; i < stars.length; i++) {
+          for (let j = i + 1; j < stars.length; j++) {
+            const d = dist(stars[i].x, stars[i].y, stars[j].x, stars[j].y);
+            if (d < CONNECTION_DIST) {
+              connections.push({
+                a: i, b: j,
+                discovered: false,
+                discoverTime: -1,
+                progress: 0,
+                dist: d,
+              });
+            }
+          }
+        }
+
+        // Build discovery queue: BFS from origin star
+        const visited = new Set([0]);
+        const bfsQueue = [0];
+
+        while (bfsQueue.length > 0) {
+          const current = bfsQueue.shift();
+          // Find all connected undiscovered stars
+          const neighbors = [];
+          for (const conn of connections) {
+            let neighbor = -1;
+            if (conn.a === current && !visited.has(conn.b)) neighbor = conn.b;
+            if (conn.b === current && !visited.has(conn.a)) neighbor = conn.a;
+            if (neighbor >= 0) {
+              neighbors.push({ starIdx: neighbor, connIdx: connections.indexOf(conn), dist: conn.dist });
+            }
+          }
+          // Sort by distance for natural expansion
+          neighbors.sort((a, b) => a.dist - b.dist);
+          for (const n of neighbors) {
+            visited.add(n.starIdx);
+            discoveryQueue.push({ starIdx: n.starIdx, connIdx: n.connIdx, fromStar: current });
+            bfsQueue.push(n.starIdx);
+          }
+        }
+
+        // Also discover any isolated stars (not reachable by connections)
+        for (let i = 1; i < stars.length; i++) {
+          if (!visited.has(i)) {
+            // Find nearest discovered star for a "long-range scan" connection
+            let nearestDist = Infinity;
+            let nearestIdx = 0;
+            for (const v of visited) {
+              const d = dist(stars[i].x, stars[i].y, stars[v].x, stars[v].y);
+              if (d < nearestDist) { nearestDist = d; nearestIdx = v; }
+            }
+            discoveryQueue.push({ starIdx: i, connIdx: -1, fromStar: nearestIdx });
+            visited.add(i);
+          }
+        }
+      }
+
+      // ─── Coordinate Transforms ──────────────────────────
+      function worldToScreen(wx, wy) {
+        return {
+          x: app.width / 2 + (wx - camX) * camZoom,
+          y: app.height / 2 + (wy - camY) * camZoom,
+        };
+      }
+
+      // ─── Camera ─────────────────────────────────────────
+      function computeStartZoom() {
+        return Math.min(app.width, app.height) / 350;
+      }
+
+      function getDiscoveredBounds() {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        let count = 0;
+        for (const s of stars) {
+          if (!s.discovered) continue;
+          count++;
+          minX = Math.min(minX, s.x);
+          maxX = Math.max(maxX, s.x);
+          minY = Math.min(minY, s.y);
+          maxY = Math.max(maxY, s.y);
+        }
+        if (count === 0) return { cx: 0, cy: 0, w: 100, h: 100 };
+        const pad = 120;
+        return {
+          cx: (minX + maxX) / 2,
+          cy: (minY + maxY) / 2,
+          w: Math.max(maxX - minX + pad * 2, 200),
+          h: Math.max(maxY - minY + pad * 2, 200),
+        };
+      }
+
+      function updateCamera(dt) {
+        if (phase === 0) {
+          // Survey: track discovered stars, zoom to fit
+          const b = getDiscoveredBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          const zoomW = app.width * 0.85 / Math.max(b.w, 1);
+          const zoomH = app.height * 0.85 / Math.max(b.h, 1);
+          camTargetZoom = Math.min(zoomW, zoomH, startZoom);
+        } else if (phase === 1 || phase === 2) {
+          // Classification and celebrate: show full chart
+          const b = getDiscoveredBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          const zoomW = app.width * 0.75 / Math.max(b.w, 1);
+          const zoomH = app.height * 0.75 / Math.max(b.h, 1);
+          camTargetZoom = Math.min(zoomW, zoomH);
+        } else if (phase === 3) {
+          // Zoom out: galaxy reveal
+          camTargetX = 0;
+          camTargetY = 0;
+          camTargetZoom = startZoom * 0.04;
+        }
+
+        const speed = phase === 3 ? 0.8 : (phase === 4 ? 5.0 : 2.5);
+        const t = Math.min(1, dt * speed);
+        camZoom += (camTargetZoom - camZoom) * t;
+        camX += (camTargetX - camX) * t;
+        camY += (camTargetY - camY) * t;
+      }
+
+      // ─── Discovery Logic ────────────────────────────────
+      function updateDiscovery(dt) {
+        if (phase !== 0) return;
+
+        discoveryTimer -= dt;
+        if (discoveryTimer > 0) return;
+
+        if (discoveryQueue.length === 0) {
+          // All stars discovered, begin classification
+          phase = 1;
+          phaseTimer = 0;
+          return;
+        }
+
+        const next = discoveryQueue.shift();
+        const star = stars[next.starIdx];
+        star.discovered = true;
+        star.discoverTime = time;
+        discoveredCount++;
+
+        // Discover the connection too
+        if (next.connIdx >= 0) {
+          const conn = connections[next.connIdx];
+          conn.discovered = true;
+          conn.discoverTime = time;
+          conn.progress = 0;
+          connectionsMapped++;
+        }
+
+        // Also discover any other connections between already-discovered stars
+        for (const conn of connections) {
+          if (conn.discovered) continue;
+          if (stars[conn.a].discovered && stars[conn.b].discovered) {
+            conn.discovered = true;
+            conn.discoverTime = time;
+            conn.progress = 0;
+            connectionsMapped++;
+          }
+        }
+
+        // Spawn discovery burst
+        spawnDiscoveryBurst(star);
+
+        // Speed up as more stars are found
+        const progress = discoveredCount / stars.length;
+        discoveryTimer = lerp(DISCOVERY_INTERVAL_BASE, DISCOVERY_INTERVAL_MIN, progress);
+      }
+
+      // ─── Classification Phase ───────────────────────────
+      function updateClassification(dt) {
+        if (phase !== 1) return;
+
+        phaseTimer += dt;
+        const interval = 0.15;
+        const classifyIdx = Math.floor(phaseTimer / interval);
+
+        for (let i = 0; i < stars.length && i <= classifyIdx; i++) {
+          const s = stars[i];
+          if (s.discovered && !s.classified) {
+            s.classified = true;
+            s.classifyTime = time;
+            s.labelAlpha = 1.0;
+            spawnClassifyBurst(s);
+          }
+        }
+
+        if (classifyIdx >= stars.length) {
+          phase = 2;
+          phaseTimer = 3.0;
+        }
+      }
+
+      // ─── Celebrate Phase ────────────────────────────────
+      function updateCelebrate(dt) {
+        if (phase !== 2) return;
+        phaseTimer -= dt;
+        if (phaseTimer <= 0) {
+          phase = 3;
+          phaseTimer = 5.0;
+          spawnDissolveBurst();
+        }
+      }
+
+      // ─── Zoom-out Phase ─────────────────────────────────
+      function updateZoomOut(dt) {
+        if (phase !== 3) return;
+        phaseTimer -= dt;
+        if (phaseTimer <= 0) {
+          phase = 4;
+          phaseTimer = 1.5;
+        }
+      }
+
+      // ─── Hold Phase → Reset ─────────────────────────────
+      function updateHold(dt) {
+        if (phase !== 4) return;
+        phaseTimer -= dt;
+        if (phaseTimer <= 0) {
+          resetToNewSector();
+        }
+      }
+
+      function resetToNewSector() {
+        generation++;
+        sectorSeed = (sectorSeed * 1103515245 + 12345) & 0x7fffffff;
+        sectorId = String.fromCharCode(65 + ((generation - 1) % 26)) + '-' + String(generation).padStart(2, '0');
+
+        sparkles.clear();
+        nebulaParticles.clear();
+        scanParticles.clear();
+        // Keep some ambient particles
+
+        generateSector();
+        phase = 0;
+        phaseTimer = 0;
+
+        // Snap camera to origin
+        camX = 0; camY = 0;
+        camTargetX = 0; camTargetY = 0;
+        startZoom = computeStartZoom();
+        camZoom = startZoom;
+        camTargetZoom = startZoom;
+      }
+
+      // ─── Particle Spawners ──────────────────────────────
+      function spawnDiscoveryBurst(star) {
+        const colors = STAR_COLORS[star.type];
+        sparkles.emit(18, (i, count) => {
+          const angle = (i / count) * Math.PI * 2;
+          const spd = 40 + Math.random() * 60;
+          return {
+            x: star.x, y: star.y,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd,
+            life: 0.6 + Math.random() * 0.4,
+            size: 1.5 + Math.random() * 2,
+            color: colors.core,
+            alpha: 1,
+          };
+        });
+      }
+
+      function spawnClassifyBurst(star) {
+        const colors = STAR_COLORS[star.type];
+        sparkles.emit(12, (i, count) => {
+          const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
+          const spd = 20 + Math.random() * 40;
+          return {
+            x: star.x + (Math.random() - 0.5) * 8,
+            y: star.y + (Math.random() - 0.5) * 8,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd,
+            life: 0.8 + Math.random() * 0.6,
+            size: 1 + Math.random() * 2.5,
+            color: colors.glow,
+            alpha: 0.9,
+          };
+        });
+      }
+
+      function spawnDissolveBurst() {
+        for (const star of stars) {
+          if (!star.discovered) continue;
+          const colors = STAR_COLORS[star.type];
+          sparkles.emit(6, () => {
+            const angle = Math.random() * Math.PI * 2;
+            const spd = 10 + Math.random() * 30;
+            return {
+              x: star.x, y: star.y,
+              vx: Math.cos(angle) * spd,
+              vy: Math.sin(angle) * spd,
+              life: 1.5 + Math.random() * 2.0,
+              size: 1 + Math.random() * 3,
+              color: colors.core,
+              alpha: 0.7,
+            };
+          });
+        }
+      }
+
+      function updateNebulaAmbient(dt) {
+        // Spawn ambient nebula particles near nebula-type stars
+        for (const star of stars) {
+          if (!star.discovered || star.type !== 'nebula') continue;
+          if (Math.random() > dt * 3) continue;
+          const colors = STAR_COLORS.nebula;
+          nebulaParticles.emit(2, () => {
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.random() * 30;
+            return {
+              x: star.x + Math.cos(angle) * r,
+              y: star.y + Math.sin(angle) * r,
+              vx: (Math.random() - 0.5) * 8,
+              vy: (Math.random() - 0.5) * 8,
+              life: 2 + Math.random() * 3,
+              size: 4 + Math.random() * 8,
+              color: [
+                colors.glow[0] + Math.random() * 60,
+                colors.glow[1] + Math.random() * 40,
+                colors.glow[2] + Math.random() * 40,
+              ],
+              alpha: 0.15 + Math.random() * 0.15,
+            };
+          });
+        }
+      }
+
+      function updateScanParticles(dt) {
+        // Particles that travel along connection lines during discovery
+        for (const conn of connections) {
+          if (!conn.discovered) continue;
+          const age = time - conn.discoverTime;
+          if (age > 1.5) continue;  // only during scan animation
+          if (Math.random() > dt * 12) continue;
+
+          const a = stars[conn.a];
+          const b = stars[conn.b];
+          const t = Math.random();
+          const px = lerp(a.x, b.x, t);
+          const py = lerp(a.y, b.y, t);
+
+          scanParticles.emit(1, () => ({
+            x: px + (Math.random() - 0.5) * 6,
+            y: py + (Math.random() - 0.5) * 6,
+            vx: (Math.random() - 0.5) * 15,
+            vy: (Math.random() - 0.5) * 15,
+            life: 0.4 + Math.random() * 0.4,
+            size: 0.8 + Math.random() * 1.2,
+            color: [100, 200, 255],
+            alpha: 0.6,
+          }));
+        }
+      }
+
+      function updateAmbientParticles(dt) {
+        // Screen-space floating dust
+        if (Math.random() < dt * 2 && ambientParticles.length < 80) {
+          ambientParticles.emit(1, () => ({
+            x: Math.random() * app.width,
+            y: Math.random() * app.height,
+            vx: (Math.random() - 0.5) * 3,
+            vy: (Math.random() - 0.5) * 3,
+            life: 4 + Math.random() * 6,
+            size: 0.5 + Math.random() * 1,
+            color: [150, 140, 200],
+            alpha: 0.2,
+            screenSpace: true,
+          }));
+        }
+      }
+
+      // ─── Drawing: Background ────────────────────────────
+      function drawBackground(ctx, w, h) {
+        // Deep space gradient
+        const grad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
+        grad.addColorStop(0, '#0c0820');
+        grad.addColorStop(0.5, '#060412');
+        grad.addColorStop(1, '#020208');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawBgStars(ctx, w, h) {
+        for (const s of bgStars) {
+          const twinkle = 0.5 + 0.5 * Math.sin(time * s.speed + s.phase);
+          const alpha = s.brightness * twinkle;
+          ctx.fillStyle = `rgba(190, 185, 220, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x * w, s.y * h, s.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ─── Drawing: Galaxy (zoom-out reveal) ──────────────
+      function drawGalaxy(ctx, w, h) {
+        if (phase < 3) return;
+        const revealAlpha = phase === 3 ? smoothstep(0, 3, 5.0 - phaseTimer) : 1;
+        if (revealAlpha <= 0) return;
+
+        ctx.save();
+        ctx.globalAlpha = revealAlpha * 0.7;
+
+        // Draw spiral arm glow
+        for (const gs of galaxyStars) {
+          const twinkle = 0.6 + 0.4 * Math.sin(time * 1.5 + gs.phase);
+          const sx = gs.x * w;
+          const sy = gs.y * h;
+          const size = gs.size * twinkle;
+
+          // Soft glow
+          if (gs.brightness > 0.4) {
+            const glowSize = size * 4;
+            const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowSize);
+            const hue = gs.hue;
+            grad.addColorStop(0, `hsla(${hue}, 60%, 70%, ${gs.brightness * 0.15 * twinkle})`);
+            grad.addColorStop(1, `hsla(${hue}, 60%, 70%, 0)`);
+            ctx.fillStyle = grad;
+            ctx.fillRect(sx - glowSize, sy - glowSize, glowSize * 2, glowSize * 2);
+          }
+
+          ctx.fillStyle = `hsla(${gs.hue}, 50%, 75%, ${gs.brightness * twinkle * 0.8})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Draw sector indicator (highlight where our mapped region is)
+        const sectorAngle = ((generation - 1) % 8) * (Math.PI * 2 / 8);
+        const sectorDist = 0.2 + ((generation - 1) % 3) * 0.1;
+        const sectorX = w * (0.5 + Math.cos(sectorAngle) * sectorDist);
+        const sectorY = h * (0.5 + Math.sin(sectorAngle) * sectorDist * 0.6);
+        const pulse = 0.5 + 0.5 * Math.sin(time * 4);
+
+        ctx.strokeStyle = `rgba(100, 200, 255, ${(0.4 + pulse * 0.4) * revealAlpha})`;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(sectorX, sectorY, 20 + pulse * 5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = `rgba(100, 200, 255, ${0.6 * revealAlpha})`;
+        ctx.fillText(`SECTOR ${sectorId}`, sectorX, sectorY + 35);
+
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      }
+
+      // ─── Drawing: Stars ─────────────────────────────────
+      function drawStarGlow(ctx, sx, sy, star, glowMult) {
+        const colors = STAR_COLORS[star.type];
+        const pulse = 1 + 0.15 * Math.sin(time * 2.5 + star.pulsePhase);
+        const baseRadius = star.size * 3 * pulse * glowMult;
+
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, baseRadius * camZoom);
+        const c = colors.glow;
+        grad.addColorStop(0, `rgba(${c[0]}, ${c[1]}, ${c[2]}, 0.5)`);
+        grad.addColorStop(0.4, `rgba(${c[0]}, ${c[1]}, ${c[2]}, 0.15)`);
+        grad.addColorStop(1, `rgba(${c[0]}, ${c[1]}, ${c[2]}, 0)`);
+        ctx.fillStyle = grad;
+        const r = baseRadius * camZoom;
+        ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+      }
+
+      function drawBinaryStar(ctx, x, y, star) {
+        const colors = STAR_COLORS.binary;
+        const orbitRadius = star.size * 0.6;
+        const orbitAngle = time * 3 + star.seed;
+
+        // Two orbiting components
+        const ax = x + Math.cos(orbitAngle) * orbitRadius;
+        const ay = y + Math.sin(orbitAngle) * orbitRadius;
+        const bx = x - Math.cos(orbitAngle) * orbitRadius;
+        const by = y - Math.sin(orbitAngle) * orbitRadius;
+
+        // Shared glow bridge
+        ctx.strokeStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.2)`;
+        ctx.lineWidth = star.size * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+
+        // Star A
+        ctx.fillStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.95)`;
+        ctx.beginPath();
+        ctx.arc(ax, ay, star.size * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Star B (slightly dimmer)
+        ctx.fillStyle = `rgba(${colors.core[0]}, ${colors.core[1] - 30}, ${colors.core[2] - 40}, 0.85)`;
+        ctx.beginPath();
+        ctx.arc(bx, by, star.size * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Hot white center
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.beginPath();
+        ctx.arc(ax, ay, star.size * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawRedGiant(ctx, x, y, star) {
+        const colors = STAR_COLORS.redGiant;
+        const pulse = 1 + 0.12 * Math.sin(time * 1.5 + star.seed);
+        const radius = star.size * pulse;
+
+        // Outer haze
+        const hazeGrad = ctx.createRadialGradient(x, y, radius * 0.3, x, y, radius * 1.8);
+        hazeGrad.addColorStop(0, `rgba(${colors.glow[0]}, ${colors.glow[1]}, ${colors.glow[2]}, 0.3)`);
+        hazeGrad.addColorStop(0.5, `rgba(${colors.glow[0]}, ${colors.glow[1] + 20}, ${colors.glow[2]}, 0.1)`);
+        hazeGrad.addColorStop(1, `rgba(${colors.glow[0]}, ${colors.glow[1]}, ${colors.glow[2]}, 0)`);
+        ctx.fillStyle = hazeGrad;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 1.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Core
+        const coreGrad = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        coreGrad.addColorStop(0, `rgba(255, 200, 120, 0.95)`);
+        coreGrad.addColorStop(0.4, `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.8)`);
+        coreGrad.addColorStop(1, `rgba(${colors.glow[0]}, ${colors.glow[1]}, ${colors.glow[2]}, 0.2)`);
+        ctx.fillStyle = coreGrad;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawBlueDwarf(ctx, x, y, star) {
+        const colors = STAR_COLORS.blueDwarf;
+        const flicker = 1 + 0.08 * Math.sin(time * 5 + star.seed);
+        const radius = star.size * flicker;
+
+        // Sharp bright core
+        ctx.fillStyle = `rgba(220, 235, 255, 0.95)`;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Blue ring
+        ctx.fillStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.6)`;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Spikes (diffraction cross)
+        ctx.strokeStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.35)`;
+        ctx.lineWidth = 0.5;
+        const spikeLen = radius * 2.5 * flicker;
+        for (let i = 0; i < 4; i++) {
+          const angle = (i / 4) * Math.PI * 2 + Math.PI / 8;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + Math.cos(angle) * spikeLen, y + Math.sin(angle) * spikeLen);
+          ctx.stroke();
+        }
+      }
+
+      function drawNebulaStar(ctx, x, y, star) {
+        const colors = STAR_COLORS.nebula;
+        const breathe = 1 + 0.2 * Math.sin(time * 1.2 + star.seed);
+        const radius = star.size * breathe;
+
+        // Diffuse cloud layers
+        for (let layer = 3; layer >= 0; layer--) {
+          const lr = radius * (1 + layer * 0.8);
+          const layerAngle = time * 0.3 * (layer % 2 === 0 ? 1 : -1) + star.seed + layer;
+          const ox = Math.cos(layerAngle) * 2;
+          const oy = Math.sin(layerAngle) * 2;
+
+          const grad = ctx.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, lr);
+          const alpha = 0.12 - layer * 0.025;
+          const r = clamp(colors.glow[0] + layer * 20, 0, 255) | 0;
+          const g = clamp(colors.glow[1] + layer * 15 - 10, 0, 255) | 0;
+          const b = clamp(colors.glow[2] + layer * 10, 0, 255) | 0;
+          grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${alpha})`);
+          grad.addColorStop(0.6, `rgba(${r}, ${g}, ${b}, ${alpha * 0.4})`);
+          grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(x + ox, y + oy, lr, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Small bright center
+        ctx.fillStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.7)`;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawStar(ctx, star, screenX, screenY) {
+        // Scale star rendering by zoom
+        ctx.save();
+        ctx.translate(screenX, screenY);
+        ctx.scale(camZoom, camZoom);
+
+        const drawFn = {
+          binary: drawBinaryStar,
+          redGiant: drawRedGiant,
+          blueDwarf: drawBlueDwarf,
+          nebula: drawNebulaStar,
+        }[star.type];
+
+        if (drawFn) drawFn(ctx, 0, 0, star);
+        ctx.restore();
+      }
+
+      // ─── Drawing: Connections ───────────────────────────
+      function drawConnections(ctx) {
+        for (const conn of connections) {
+          if (!conn.discovered) continue;
+
+          const a = stars[conn.a];
+          const b = stars[conn.b];
+          const sa = worldToScreen(a.x, a.y);
+          const sb = worldToScreen(b.x, b.y);
+
+          const age = time - conn.discoverTime;
+          const scanProgress = clamp(age / 1.0, 0, 1);  // 1 second scan animation
+
+          // Scanning beam endpoint
+          const ex = lerp(sa.x, sb.x, scanProgress);
+          const ey = lerp(sa.y, sb.y, scanProgress);
+
+          // Line alpha based on phase
+          let alpha = 0.35;
+          if (phase === 2) {
+            alpha = 0.35 + 0.25 * Math.sin(time * 6 + conn.dist);
+          } else if (phase >= 3) {
+            alpha = Math.max(0, 0.35 * clamp(phaseTimer / 3, 0, 1));
+          }
+
+          // Draw scanned portion
+          ctx.strokeStyle = `rgba(70, 150, 220, ${alpha * smoothstep(0, 0.3, scanProgress)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sa.x, sa.y);
+          ctx.lineTo(ex, ey);
+          ctx.stroke();
+
+          // Bright scan head
+          if (scanProgress < 1) {
+            const headBrightness = 0.8 * (1 - scanProgress * 0.5);
+            ctx.fillStyle = `rgba(120, 200, 255, ${headBrightness})`;
+            ctx.beginPath();
+            ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Scan head glow
+            const glowGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, 8);
+            glowGrad.addColorStop(0, `rgba(120, 200, 255, ${headBrightness * 0.5})`);
+            glowGrad.addColorStop(1, 'rgba(120, 200, 255, 0)');
+            ctx.fillStyle = glowGrad;
+            ctx.fillRect(ex - 8, ey - 8, 16, 16);
+          }
+
+          // Dashed overlay for established connections
+          if (scanProgress >= 1 && phase < 3) {
+            ctx.setLineDash([3, 6]);
+            ctx.strokeStyle = `rgba(100, 180, 240, ${alpha * 0.3})`;
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(sa.x, sa.y);
+            ctx.lineTo(sb.x, sb.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
+
+      // ─── Drawing: Stars (main loop) ─────────────────────
+      function drawStars(ctx) {
+        for (const star of stars) {
+          if (!star.discovered) continue;
+
+          const age = time - star.discoverTime;
+          const fadeIn = smoothstep(0, 0.5, age);
+          const s = worldToScreen(star.x, star.y);
+
+          // Dissolve fade during zoom-out
+          let dissolve = 1;
+          if (phase === 3) dissolve = clamp(phaseTimer / 3, 0, 1);
+          if (phase === 4) dissolve = 0;
+
+          const totalAlpha = fadeIn * dissolve;
+          if (totalAlpha <= 0.01) continue;
+
+          ctx.save();
+          ctx.globalAlpha = totalAlpha;
+
+          // Glow
+          let glowMult = 1;
+          if (phase === 2) glowMult = 1 + 0.5 * Math.sin(time * 6 + star.pulsePhase);
+          drawStarGlow(ctx, s.x, s.y, star, glowMult);
+
+          // Star body
+          drawStar(ctx, star, s.x, s.y);
+
+          // Classification label
+          if (star.classified && phase < 3) {
+            const labelAge = time - star.classifyTime;
+            const labelFade = labelAge < 2 ? smoothstep(0, 0.3, labelAge) * smoothstep(2, 1.2, labelAge) : 0;
+            if (labelFade > 0.01) {
+              ctx.font = `${Math.max(8, 9 * camZoom)}px monospace`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'top';
+              const colors = STAR_COLORS[star.type];
+              ctx.fillStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, ${labelFade * 0.8})`;
+              ctx.fillText(colors.label, s.x, s.y + star.size * camZoom + 8);
+            }
+          }
+
+          ctx.globalAlpha = 1;
+          ctx.restore();
+        }
+      }
+
+      // ─── Drawing: World Particles ───────────────────────
+      function drawWorldParticles(ctx, pool) {
+        pool.forEach((p) => {
+          if (p.screenSpace) return;  // skip screen-space particles here
+          const s = worldToScreen(p.x, p.y);
+          const lifeRatio = p.life / (p.life + 0.5);  // rough estimate since we don't store maxLife in pool
+          const alpha = clamp(p.alpha * lifeRatio, 0, 1);
+          if (alpha <= 0.01) return;
+
+          const c = p.color;
+          ctx.fillStyle = `rgba(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0}, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, Math.max(0.5, p.size * camZoom * lifeRatio), 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawScreenParticles(ctx, pool) {
+        pool.forEach((p) => {
+          if (!p.screenSpace) return;
+          const lifeRatio = p.life / (p.life + 0.5);
+          const alpha = clamp(p.alpha * lifeRatio, 0, 1);
+          if (alpha <= 0.01) return;
+
+          const c = p.color;
+          ctx.fillStyle = `rgba(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0}, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * lifeRatio, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // ─── Drawing: Nebula regions ────────────────────────
+      function drawNebulaRegions(ctx) {
+        // Draw soft clouds between nebula stars and their neighbors
+        for (const star of stars) {
+          if (!star.discovered || star.type !== 'nebula') continue;
+
+          const age = time - star.discoverTime;
+          if (age < 0) continue;
+          const fadeIn = smoothstep(0, 2.0, age);
+
+          // Dissolve during zoom-out
+          let dissolve = 1;
+          if (phase === 3) dissolve = clamp(phaseTimer / 3, 0, 1);
+          if (phase === 4) dissolve = 0;
+          if (fadeIn * dissolve < 0.01) continue;
+
+          // Find nearby discovered stars to create a nebula region
+          const nearbyStars = [];
+          for (const other of stars) {
+            if (other === star || !other.discovered) continue;
+            const d = dist(star.x, star.y, other.x, other.y);
+            if (d < CONNECTION_DIST * 0.8) nearbyStars.push(other);
+          }
+
+          // Draw diffuse cloud between this star and neighbors
+          const s = worldToScreen(star.x, star.y);
+          const breathe = 1 + 0.15 * Math.sin(time * 0.8 + star.seed);
+          const cloudRadius = 35 * camZoom * breathe;
+
+          const colors = STAR_COLORS.nebula;
+          const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, cloudRadius);
+          const a = 0.06 * fadeIn * dissolve;
+          grad.addColorStop(0, `rgba(${colors.glow[0]}, ${colors.glow[1]}, ${colors.glow[2]}, ${a})`);
+          grad.addColorStop(0.5, `rgba(${colors.glow[0] + 30}, ${colors.glow[1]}, ${colors.glow[2] + 20}, ${a * 0.5})`);
+          grad.addColorStop(1, `rgba(${colors.glow[0]}, ${colors.glow[1]}, ${colors.glow[2]}, 0)`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(s.x - cloudRadius, s.y - cloudRadius, cloudRadius * 2, cloudRadius * 2);
+
+          // Clouds between nebula and nearby stars
+          for (const other of nearbyStars) {
+            const os = worldToScreen(other.x, other.y);
+            const mx = (s.x + os.x) / 2;
+            const my = (s.y + os.y) / 2;
+            const midRadius = 25 * camZoom * breathe;
+
+            const midGrad = ctx.createRadialGradient(mx, my, 0, mx, my, midRadius);
+            const ma = 0.04 * fadeIn * dissolve;
+            midGrad.addColorStop(0, `rgba(${colors.glow[0] + 40}, ${colors.glow[1] + 20}, ${colors.glow[2]}, ${ma})`);
+            midGrad.addColorStop(1, `rgba(${colors.glow[0]}, ${colors.glow[1]}, ${colors.glow[2]}, 0)`);
+            ctx.fillStyle = midGrad;
+            ctx.fillRect(mx - midRadius, my - midRadius, midRadius * 2, midRadius * 2);
+          }
+        }
+      }
+
+      // ─── Drawing: HUD ───────────────────────────────────
+      function drawHUD(ctx, w, h) {
+        // Top-left: stats
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        ctx.fillStyle = 'rgba(100, 200, 255, 0.7)';
+        ctx.fillText(`Stars ${discoveredCount}/${stars.length}`, 18, 18);
+
+        ctx.fillStyle = 'rgba(70, 150, 220, 0.5)';
+        ctx.font = '12px monospace';
+        const totalConns = connections.filter(c => c.discovered).length;
+        ctx.fillText(`${totalConns} connections`, 18, 38);
+
+        // Progress bar
+        const barW = 120, barH = 3;
+        ctx.fillStyle = 'rgba(40, 80, 120, 0.3)';
+        ctx.fillRect(18, 56, barW, barH);
+        const progress = stars.length > 0 ? discoveredCount / stars.length : 0;
+        ctx.fillStyle = 'rgba(100, 200, 255, 0.6)';
+        ctx.fillRect(18, 56, barW * progress, barH);
+
+        // Top-right: sector and generation
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(200, 180, 255, 0.5)';
+        ctx.fillText(`Sector ${sectorId}`, w - 18, 18);
+
+        ctx.font = '12px monospace';
+        ctx.fillStyle = 'rgba(160, 140, 200, 0.4)';
+        ctx.fillText(`Gen ${generation}`, w - 18, 38);
+
+        // Mini star map (top-right area below gen)
+        drawMiniMap(ctx, w);
+
+        // Phase text
+        if (phase === 1) {
+          ctx.font = '11px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(100, 200, 255, ${0.3 + 0.3 * Math.sin(time * 8)})`;
+          ctx.fillText('CLASSIFYING...', w / 2, h * 0.5 - 25);
+        } else if (phase === 2) {
+          ctx.font = 'bold 16px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(120, 220, 255, ${0.5 + 0.5 * Math.sin(time * 10)})`;
+          ctx.fillText('SURVEY COMPLETE', w / 2, h * 0.5 - 25);
+          ctx.font = '11px monospace';
+          ctx.fillStyle = `rgba(100, 180, 220, ${0.3 + 0.2 * Math.sin(time * 6)})`;
+          ctx.fillText(`${stars.length} stars mapped in sector ${sectorId}`, w / 2, h * 0.5);
+        } else if (phase === 3) {
+          const revealProgress = 1 - phaseTimer / 5.0;
+          if (revealProgress > 0.3) {
+            ctx.font = 'bold 14px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = `rgba(150, 200, 255, ${smoothstep(0.3, 0.6, revealProgress) * 0.6})`;
+            ctx.fillText('GALACTIC OVERVIEW', w / 2, 18);
+          }
+        }
+
+        // Bottom center: status
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        const statusTexts = [
+          'surveying sector...',
+          'classifying stellar objects...',
+          'survey complete',
+          'zooming to galactic view...',
+          'preparing next sector...',
+        ];
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.fillText(`constellation mapper \u00b7 ${statusTexts[phase]}`, w / 2, h - 16);
+      }
+
+      function drawMiniMap(ctx, w) {
+        const mapSize = 60;
+        const sx = w - 18 - mapSize;
+        const sy = 58;
+
+        // Border
+        ctx.strokeStyle = 'rgba(60, 100, 160, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(sx, sy, mapSize, mapSize);
+
+        // Background
+        ctx.fillStyle = 'rgba(10, 15, 30, 0.3)';
+        ctx.fillRect(sx, sy, mapSize, mapSize);
+
+        // Find bounds for mapping
+        let minX = -SECTOR_RADIUS, maxX = SECTOR_RADIUS;
+        let minY = -SECTOR_RADIUS, maxY = SECTOR_RADIUS;
+        for (const star of stars) {
+          minX = Math.min(minX, star.x - 20);
+          maxX = Math.max(maxX, star.x + 20);
+          minY = Math.min(minY, star.y - 20);
+          maxY = Math.max(maxY, star.y + 20);
+        }
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+
+        // Connections
+        for (const conn of connections) {
+          if (!conn.discovered) continue;
+          const a = stars[conn.a];
+          const b = stars[conn.b];
+          const ax = sx + ((a.x - minX) / rangeX) * mapSize;
+          const ay = sy + ((a.y - minY) / rangeY) * mapSize;
+          const bx = sx + ((b.x - minX) / rangeX) * mapSize;
+          const by = sy + ((b.y - minY) / rangeY) * mapSize;
+
+          ctx.strokeStyle = 'rgba(70, 130, 200, 0.15)';
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(bx, by);
+          ctx.stroke();
+        }
+
+        // Stars
+        for (const star of stars) {
+          const px = sx + ((star.x - minX) / rangeX) * mapSize;
+          const py = sy + ((star.y - minY) / rangeY) * mapSize;
+
+          if (star.discovered) {
+            const colors = STAR_COLORS[star.type];
+            ctx.fillStyle = `rgba(${colors.core[0]}, ${colors.core[1]}, ${colors.core[2]}, 0.7)`;
+            ctx.beginPath();
+            ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = 'rgba(60, 60, 80, 0.2)';
+            ctx.beginPath();
+            ctx.arc(px, py, 1, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      // ─── Drawing: Celebrate flash ───────────────────────
+      function drawCelebrateFlash(ctx, w, h) {
+        if (phase !== 2) return;
+        const age = 3.0 - phaseTimer;
+        if (age < 0.4) {
+          ctx.fillStyle = `rgba(80, 150, 220, ${0.15 * (1 - age / 0.4)})`;
+          ctx.fillRect(0, 0, w, h);
+        }
+      }
+
+      // ─── Drawing: Scanning grid overlay ─────────────────
+      function drawScanOverlay(ctx, w, h) {
+        if (phase > 2) return;
+
+        // Subtle scanning grid lines
+        const gridSpacing = 80;
+        const scrollOffset = (time * 15) % gridSpacing;
+        const gridAlpha = phase === 0 ? 0.03 : 0.01;
+
+        ctx.strokeStyle = `rgba(60, 120, 180, ${gridAlpha})`;
+        ctx.lineWidth = 0.5;
+
+        // Horizontal lines
+        for (let y = -gridSpacing + scrollOffset; y < h + gridSpacing; y += gridSpacing) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+        }
+        // Vertical lines
+        for (let x = -gridSpacing + scrollOffset * 0.7; x < w + gridSpacing; x += gridSpacing) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, h);
+          ctx.stroke();
+        }
+
+        // Scanning sweep line during survey
+        if (phase === 0 && discoveredCount < stars.length) {
+          const sweepX = (time * 40) % (w + 100) - 50;
+          const sweepGrad = ctx.createLinearGradient(sweepX - 30, 0, sweepX + 30, 0);
+          sweepGrad.addColorStop(0, 'rgba(60, 160, 255, 0)');
+          sweepGrad.addColorStop(0.5, 'rgba(60, 160, 255, 0.04)');
+          sweepGrad.addColorStop(1, 'rgba(60, 160, 255, 0)');
+          ctx.fillStyle = sweepGrad;
+          ctx.fillRect(sweepX - 30, 0, 60, h);
+        }
+      }
+
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        updateDiscovery(dt);
+        updateClassification(dt);
+        updateCelebrate(dt);
+        updateZoomOut(dt);
+        updateHold(dt);
+        updateNebulaAmbient(dt);
+        updateScanParticles(dt);
+        updateAmbientParticles(dt);
+
+        sparkles.update(dt);
+        nebulaParticles.update(dt);
+        scanParticles.update(dt);
+        ambientParticles.update(dt);
+      }
+
+      // ─── Init ───────────────────────────────────────────
+      initBgStars();
+      initGalaxyStars();
+      generateSector();
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#060412',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          { fontSize: 14, charset: 'blocks', colorScheme: 'ocean', pattern: 'moiré', patternMix: 0.08, blendMode: 'replace', opacity: 1 },
+          { fontSize: 9, charset: 'density', colorScheme: 'vapor', blendMode: 'add', opacity: 0.7 },
+          { fontSize: 5, charset: 'braille', colorScheme: 'ocean', pattern: 'spiral', patternMix: 0.2, blendMode: 'add', opacity: 0.3 },
+        ],
+        onKeydown(e) {
+          if (e.key.toLowerCase() === 'r') {
+            generation = 0;
+            sectorSeed = 42;
+            sparkles.clear();
+            nebulaParticles.clear();
+            scanParticles.clear();
+            ambientParticles.clear();
+            resetToNewSector();
+          }
+        },
+        draw(ctx, { time: rawTime, dt, width: w, height: h }) {
+          time = rawTime * 0.001;
+          startZoom = computeStartZoom();
+          updateCamera(dt);
+          update(dt);
+
+          // ── Clear ──
+          drawBackground(ctx, w, h);
+
+          // ── Background stars ──
+          drawBgStars(ctx, w, h);
+
+          // ── Galaxy (visible during zoom-out) ──
+          drawGalaxy(ctx, w, h);
+
+          // ── Scan overlay ──
+          drawScanOverlay(ctx, w, h);
+
+          // ── Nebula regions (behind stars) ──
+          drawNebulaRegions(ctx);
+
+          // ── Nebula particles (world space) ──
+          drawWorldParticles(ctx, nebulaParticles);
+
+          // ── Connection lines ──
+          drawConnections(ctx);
+
+          // ── Scan particles (world space) ──
+          drawWorldParticles(ctx, scanParticles);
+
+          // ── Stars ──
+          drawStars(ctx);
+
+          // ── Sparkle particles (world space) ──
+          drawWorldParticles(ctx, sparkles);
+
+          // ── Celebrate flash ──
+          drawCelebrateFlash(ctx, w, h);
+
+          // ── Ambient particles (screen space) ──
+          drawScreenParticles(ctx, ambientParticles);
+
+          // ── HUD ──
+          drawHUD(ctx, w, h);
+        },
+      });
+    </script>
+  </body>
+</html>

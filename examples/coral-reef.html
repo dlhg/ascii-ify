@@ -1,0 +1,1446 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Coral Reef</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, dist, mulberry32, rgb, lerpColor } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const TWO_PI = Math.PI * 2;
+      const PI = Math.PI;
+      const MAX_BRANCHES = 600;
+      const MAX_CORALS = 180;
+      const GROWTH_INTERVAL = 0.12;
+      const SECTOR_COLS = 8;
+      const SECTOR_ROWS = 6;
+
+      function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
+      function randInt(lo, hi) { return Math.floor(rand(lo, hi + 1)); }
+
+      // ─── Color Palettes ─────────────────────────────────
+      const WATER_TOP    = [5, 15, 40];
+      const WATER_MID    = [8, 30, 65];
+      const WATER_BOT    = [12, 45, 55];
+      const SAND_COLOR   = [60, 50, 35];
+      const SAND_HI      = [85, 75, 55];
+
+      const CORAL_PALETTES = {
+        branching: {
+          tiers: [
+            { base: [180, 60, 80],  tip: [255, 100, 110], glow: [255, 120, 140] },
+            { base: [200, 80, 50],  tip: [255, 140, 70],  glow: [255, 170, 100] },
+            { base: [160, 40, 90],  tip: [220, 70, 140],  glow: [255, 100, 180] },
+          ],
+        },
+        brain: {
+          tiers: [
+            { base: [100, 140, 80],  tip: [140, 200, 100], glow: [180, 240, 130] },
+            { base: [80, 150, 120],  tip: [110, 210, 160], glow: [150, 255, 200] },
+            { base: [120, 130, 60],  tip: [170, 190, 80],  glow: [210, 230, 100] },
+          ],
+        },
+        fan: {
+          tiers: [
+            { base: [140, 60, 180],  tip: [190, 100, 240], glow: [220, 140, 255] },
+            { base: [60, 100, 200],  tip: [90, 150, 255],  glow: [130, 190, 255] },
+            { base: [100, 50, 160],  tip: [160, 80, 220],  glow: [200, 120, 255] },
+          ],
+        },
+      };
+
+      const ANEMONE_COLORS = [
+        { base: [200, 100, 255], tip: [255, 180, 255], glow: [230, 140, 255] },
+        { base: [80, 200, 220],  tip: [140, 255, 255], glow: [100, 240, 255] },
+        { base: [255, 140, 80],  tip: [255, 200, 140], glow: [255, 170, 100] },
+      ];
+
+      const FISH_COLORS = [
+        [255, 180, 40],
+        [40, 180, 255],
+        [255, 80, 80],
+        [100, 255, 180],
+        [255, 140, 200],
+        [200, 200, 60],
+      ];
+
+      // ─── State ──────────────────────────────────────────
+      let w = 0, h = 0;
+      let time = 0;
+      let generation = 1;
+
+      // Coral growth
+      let corals = [];         // placed coral formations
+      let branches = [];       // individual branch segments for branching corals
+      let anemones = [];       // anemone creatures
+      let growQueue = [];      // pending growth points
+      let growTimer = 0;
+      let coralCount = 0;
+      let reefCoverage = 0;
+
+      // Sectors for coverage tracking
+      let sectors = [];
+
+      // Camera
+      let camZoom = 1, camTargetZoom = 1;
+      let camX = 0, camY = 0;
+      let camTargetX = 0, camTargetY = 0;
+      let startZoom = 1;
+      let camReady = false;
+
+      // Loop phases: 0=grow, 1=celebrate, 2=current sweep, 3=hold, 4=reset
+      let loopPhase = 0;
+      let loopTimer = 0;
+      let growPause = 1.5;
+
+      // Seeded random for deterministic growth
+      let rng = mulberry32(42);
+
+      // Light rays
+      let lightRays = [];
+
+      // ─── Particle Pools ─────────────────────────────────
+      const bubbles    = new ParticlePool({ maxParticles: 300, gravity: 0, drag: 0.999 });
+      const fishPool   = new ParticlePool({ maxParticles: 40, gravity: 0, drag: 0.998 });
+      const burstPool  = new ParticlePool({ maxParticles: 500, gravity: 0, drag: 0.99 });
+      const dissolvePool = new ParticlePool({ maxParticles: 800, gravity: 0, drag: 0.995 });
+
+      // ─── Sector System (coverage tracking) ──────────────
+      function initSectors() {
+        sectors = [];
+        for (let r = 0; r < SECTOR_ROWS; r++) {
+          sectors[r] = [];
+          for (let c = 0; c < SECTOR_COLS; c++) {
+            sectors[r][c] = { filled: false, density: 0 };
+          }
+        }
+      }
+
+      function updateCoverage() {
+        let filled = 0;
+        const sectorW = w / SECTOR_COLS;
+        const sectorH = h / SECTOR_ROWS;
+
+        // Reset densities
+        for (let r = 0; r < SECTOR_ROWS; r++)
+          for (let c = 0; c < SECTOR_COLS; c++)
+            sectors[r][c].density = 0;
+
+        // Count corals per sector
+        for (const coral of corals) {
+          const sc = clamp(Math.floor(coral.x / sectorW), 0, SECTOR_COLS - 1);
+          const sr = clamp(Math.floor(coral.y / sectorH), 0, SECTOR_ROWS - 1);
+          sectors[sr][sc].density++;
+        }
+
+        for (let r = 0; r < SECTOR_ROWS; r++) {
+          for (let c = 0; c < SECTOR_COLS; c++) {
+            if (sectors[r][c].density >= 2) {
+              sectors[r][c].filled = true;
+              filled++;
+            }
+          }
+        }
+        reefCoverage = filled / (SECTOR_ROWS * SECTOR_COLS);
+      }
+
+      // ─── Light Rays ─────────────────────────────────────
+      function initLightRays() {
+        lightRays = [];
+        for (let i = 0; i < 5; i++) {
+          lightRays.push({
+            x: rand(0.1, 0.9),
+            width: rand(0.04, 0.12),
+            speed: rand(0.02, 0.06),
+            phase: rand(0, TWO_PI),
+            opacity: rand(0.02, 0.06),
+          });
+        }
+      }
+
+      // ─── Coral Growth System ────────────────────────────
+      function seedReef() {
+        rng = mulberry32(Date.now());
+        corals = [];
+        branches = [];
+        anemones = [];
+        growQueue = [];
+        coralCount = 0;
+        growTimer = 0;
+
+        // Plant initial polyp at center
+        const cx = w / 2;
+        const cy = h * 0.75;
+
+        addGrowPoint(cx, cy, -PI / 2, 'branching', 0, null);
+      }
+
+      function addGrowPoint(x, y, angle, type, depth, parent) {
+        growQueue.push({ x, y, angle, type, depth, parent });
+      }
+
+      function processGrowth() {
+        if (growQueue.length === 0) return false;
+
+        const g = growQueue.shift();
+        if (corals.length >= MAX_CORALS) return false;
+
+        // Skip if too close to existing coral
+        for (const c of corals) {
+          const minDist = (c.type === 'brain' ? c.radius + 20 : 25);
+          if (dist(g.x, g.y, c.x, c.y) < minDist) return true; // skip but keep processing
+        }
+
+        // Skip if out of reasonable bounds
+        const margin = 40;
+        if (g.x < margin || g.x > w - margin || g.y < margin * 2 || g.y > h - margin) return true;
+
+        const type = g.depth === 0 ? g.type : pickCoralType(g.depth);
+        const tier = clamp(Math.floor(rng() * 3), 0, 2);
+
+        const coral = {
+          x: g.x,
+          y: g.y,
+          type,
+          tier,
+          depth: g.depth,
+          growTime: time,
+          seed: rng() * 1000,
+          radius: 0,
+          targetRadius: 0,
+          angle: g.angle,
+          branches: [],
+          tentacles: [],
+        };
+
+        if (type === 'branching') {
+          coral.targetRadius = 8 + rng() * 6;
+          generateBranches(coral);
+        } else if (type === 'brain') {
+          coral.targetRadius = 15 + rng() * 15;
+          coral.ridgeSeed = rng() * 1000;
+        } else if (type === 'fan') {
+          coral.targetRadius = 12 + rng() * 10;
+          coral.fanAngle = g.angle + (rng() - 0.5) * 0.3;
+          coral.fanSpread = 0.6 + rng() * 0.5;
+          coral.ribCount = 5 + Math.floor(rng() * 4);
+        }
+
+        corals.push(coral);
+        coralCount++;
+
+        // Spawn growth burst particles
+        spawnGrowBurst(coral);
+
+        // Schedule child growth points
+        scheduleChildren(coral);
+
+        // Occasionally add anemone near new coral
+        if (rng() < 0.15 && anemones.length < 30) {
+          spawnAnemone(coral.x + (rng() - 0.5) * 40, coral.y + rng() * 10);
+        }
+
+        return true;
+      }
+
+      function pickCoralType(depth) {
+        const r = rng();
+        if (depth < 3) {
+          if (r < 0.55) return 'branching';
+          if (r < 0.80) return 'fan';
+          return 'brain';
+        } else {
+          if (r < 0.35) return 'branching';
+          if (r < 0.65) return 'brain';
+          return 'fan';
+        }
+      }
+
+      function scheduleChildren(coral) {
+        const spread = coral.type === 'branching' ? 3 : coral.type === 'fan' ? 2 : 2;
+        const childCount = 1 + Math.floor(rng() * spread);
+        const maxDepth = 8;
+        if (coral.depth >= maxDepth) return;
+
+        for (let i = 0; i < childCount; i++) {
+          const angleSpread = coral.type === 'branching' ? 1.2 : 0.8;
+          const childAngle = coral.angle + (rng() - 0.5) * angleSpread;
+          // Bias upward slightly
+          const biasedAngle = childAngle * 0.8 + (-PI / 2) * 0.2;
+          const distance = 25 + rng() * 35;
+          const nx = coral.x + Math.cos(biasedAngle) * distance;
+          const ny = coral.y + Math.sin(biasedAngle) * distance;
+          const childType = pickCoralType(coral.depth + 1);
+          addGrowPoint(nx, ny, biasedAngle, childType, coral.depth + 1, coral);
+        }
+      }
+
+      function generateBranches(coral) {
+        const count = 3 + Math.floor(rng() * 4);
+        for (let i = 0; i < count; i++) {
+          if (branches.length >= MAX_BRANCHES) break;
+          const angle = coral.angle + (rng() - 0.5) * 1.5;
+          const len = 10 + rng() * 20;
+          const branch = {
+            x1: coral.x + (rng() - 0.5) * 6,
+            y1: coral.y + (rng() - 0.5) * 6,
+            angle,
+            length: len,
+            width: 2 + rng() * 3,
+            segments: generateBranchSegments(coral.x, coral.y, angle, len, 2 + Math.floor(rng() * 2)),
+            tier: coral.tier,
+            growTime: time + i * 0.15,
+            seed: rng() * 1000,
+          };
+          branches.push(branch);
+          coral.branches.push(branch);
+        }
+      }
+
+      function generateBranchSegments(x, y, angle, totalLen, depth) {
+        const segs = [];
+        let cx = x, cy = y;
+        let curAngle = angle;
+        const segCount = 3 + Math.floor(rng() * 3);
+
+        for (let i = 0; i < segCount; i++) {
+          const segLen = totalLen / segCount * (0.8 + rng() * 0.4);
+          const ex = cx + Math.cos(curAngle) * segLen;
+          const ey = cy + Math.sin(curAngle) * segLen;
+          segs.push({ x1: cx, y1: cy, x2: ex, y2: ey });
+          cx = ex;
+          cy = ey;
+          curAngle += (rng() - 0.5) * 0.6;
+        }
+
+        // Recursive sub-branches
+        if (depth > 0 && rng() < 0.7) {
+          const lastSeg = segs[segs.length - 1];
+          const forkAngle1 = curAngle + 0.3 + rng() * 0.4;
+          const forkAngle2 = curAngle - 0.3 - rng() * 0.4;
+          const childLen = totalLen * 0.5;
+          segs.push(...generateBranchSegments(lastSeg.x2, lastSeg.y2, forkAngle1, childLen, depth - 1));
+          segs.push(...generateBranchSegments(lastSeg.x2, lastSeg.y2, forkAngle2, childLen, depth - 1));
+        }
+
+        return segs;
+      }
+
+      // ─── Anemones ───────────────────────────────────────
+      function spawnAnemone(x, y) {
+        const palette = ANEMONE_COLORS[Math.floor(rng() * ANEMONE_COLORS.length)];
+        const tentCount = 8 + Math.floor(rng() * 8);
+        const tentacles = [];
+        for (let i = 0; i < tentCount; i++) {
+          const angle = (i / tentCount) * TWO_PI;
+          tentacles.push({
+            angle,
+            length: 10 + rng() * 15,
+            freq: 1 + rng() * 2,
+            phase: rng() * TWO_PI,
+            amp: 3 + rng() * 5,
+          });
+        }
+        anemones.push({
+          x, y,
+          palette,
+          tentacles,
+          baseRadius: 5 + rng() * 4,
+          pulsePhase: rng() * TWO_PI,
+          pulseSpeed: 0.5 + rng() * 0.8,
+          growTime: time,
+          seed: rng() * 1000,
+        });
+      }
+
+      // ─── Fish Particles ─────────────────────────────────
+      let fishSpawnTimer = 0;
+
+      function spawnFish() {
+        const color = FISH_COLORS[Math.floor(rng() * FISH_COLORS.length)];
+        const fromLeft = rng() > 0.5;
+        const startX = fromLeft ? -30 : w + 30;
+        const dirX = fromLeft ? 1 : -1;
+        const speed = 30 + rng() * 50;
+
+        fishPool.emit(1, () => ({
+          x: startX,
+          y: rand(h * 0.15, h * 0.85),
+          vx: dirX * speed,
+          vy: (rng() - 0.5) * 10,
+          life: 12 + rng() * 8,
+          maxLife: 20,
+          size: 3 + rng() * 4,
+          color,
+          tailPhase: rng() * TWO_PI,
+          tailFreq: 4 + rng() * 4,
+          wobblePhase: rng() * TWO_PI,
+          wobbleAmp: 8 + rng() * 12,
+          gravity: 0,
+          drag: 1,
+        }));
+      }
+
+      function updateFish(dt) {
+        fishSpawnTimer -= dt;
+        if (fishSpawnTimer <= 0 && loopPhase === 0) {
+          fishSpawnTimer = 1.5 + rng() * 3;
+          const count = 1 + Math.floor(rng() * 3);
+          for (let i = 0; i < count; i++) spawnFish();
+        }
+
+        fishPool.forEach((f) => {
+          // Wobble vertically
+          f.vy += Math.sin(time * f.tailFreq + f.wobblePhase) * f.wobbleAmp * dt;
+          f.vy *= 0.95;
+
+          // Avoid corals (gentle repulsion)
+          for (let i = 0; i < corals.length; i += 3) {
+            const c = corals[i];
+            const d = dist(f.x, f.y, c.x, c.y);
+            const repelR = (c.radius || 15) + 30;
+            if (d < repelR && d > 1) {
+              const force = (1 - d / repelR) * 40 * dt;
+              f.vx += ((f.x - c.x) / d) * force;
+              f.vy += ((f.y - c.y) / d) * force;
+            }
+          }
+        });
+
+        fishPool.update(dt);
+      }
+
+      // ─── Bubble Particles ───────────────────────────────
+      let bubbleTimer = 0;
+
+      function updateBubbles(dt) {
+        bubbleTimer -= dt;
+        if (bubbleTimer <= 0 && loopPhase < 2) {
+          bubbleTimer = 0.3 + rng() * 0.5;
+
+          // Emit from coral formations
+          if (corals.length > 0) {
+            const source = corals[Math.floor(rng() * corals.length)];
+            const count = 1 + Math.floor(rng() * 3);
+            bubbles.emit(count, () => ({
+              x: source.x + (rng() - 0.5) * 20,
+              y: source.y - 5,
+              vx: (rng() - 0.5) * 8,
+              vy: -20 - rng() * 30,
+              life: 3 + rng() * 4,
+              maxLife: 7,
+              size: 1 + rng() * 3,
+              opacity: 0.15 + rng() * 0.25,
+              wobblePhase: rng() * TWO_PI,
+              wobbleAmp: 5 + rng() * 10,
+              gravity: 0,
+              drag: 0.998,
+            }));
+          }
+        }
+
+        // Apply wobble to bubbles
+        bubbles.forEach((b) => {
+          b.vx += Math.sin(time * 2 + b.wobblePhase) * b.wobbleAmp * dt;
+          b.vy -= 5 * dt; // extra upward force
+        });
+
+        bubbles.update(dt);
+      }
+
+      // ─── Growth Burst Particles ─────────────────────────
+      function spawnGrowBurst(coral) {
+        const palette = CORAL_PALETTES[coral.type]?.tiers[coral.tier];
+        if (!palette) return;
+
+        burstPool.emit(10, (i) => {
+          const angle = (i / 10) * TWO_PI;
+          const speed = 15 + rng() * 25;
+          return {
+            x: coral.x,
+            y: coral.y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 0.6 + rng() * 0.6,
+            maxLife: 1.2,
+            size: 2 + rng() * 3,
+            color: lerpColor(palette.base, palette.glow, rng()),
+            gravity: 0,
+            drag: 0.92,
+          };
+        });
+      }
+
+      // ─── Dissolve / Current Sweep ───────────────────────
+      function spawnDissolveSweep() {
+        for (const coral of corals) {
+          const palette = CORAL_PALETTES[coral.type]?.tiers[coral.tier];
+          if (!palette) continue;
+
+          dissolvePool.emit(5, () => {
+            const angle = rng() * TWO_PI;
+            return {
+              x: coral.x + (rng() - 0.5) * 10,
+              y: coral.y + (rng() - 0.5) * 10,
+              vx: 60 + rng() * 80,  // swept to the right by current
+              vy: (rng() - 0.5) * 30 - 10,
+              life: 2 + rng() * 3,
+              maxLife: 5,
+              size: 2 + rng() * 4,
+              color: lerpColor(palette.base, palette.tip, rng()),
+              gravity: 0,
+              drag: 0.985,
+            };
+          });
+        }
+
+        // Seed particles — some will drift down to "plant" new reef
+        dissolvePool.emit(15, (i) => ({
+          x: rand(w * 0.1, w * 0.9),
+          y: rand(h * 0.2, h * 0.5),
+          vx: 20 + rng() * 30,
+          vy: 15 + rng() * 20,
+          life: 4 + rng() * 3,
+          maxLife: 7,
+          size: 3 + rng() * 3,
+          color: [255, 255, 200],
+          gravity: 0,
+          drag: 0.99,
+          isSeed: true,
+        }));
+      }
+
+      // ─── Camera System ──────────────────────────────────
+      function computeStartZoom() {
+        return Math.min(w, h) / 120;
+      }
+
+      function getReefBounds() {
+        if (corals.length === 0) {
+          return { cx: w / 2, cy: h * 0.75, bw: 100, bh: 100 };
+        }
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const c of corals) {
+          const r = c.radius || 15;
+          minX = Math.min(minX, c.x - r);
+          maxX = Math.max(maxX, c.x + r);
+          minY = Math.min(minY, c.y - r);
+          maxY = Math.max(maxY, c.y + r);
+        }
+        return {
+          cx: (minX + maxX) / 2,
+          cy: (minY + maxY) / 2,
+          bw: maxX - minX,
+          bh: maxY - minY,
+        };
+      }
+
+      function getPlayTargetZoom() {
+        const b = getReefBounds();
+        const pad = 1.3;
+        return Math.min(
+          w / Math.max(b.bw * pad, 200),
+          h / Math.max(b.bh * pad, 150)
+        );
+      }
+
+      function updateCamera(dt) {
+        if (!camReady) {
+          startZoom = computeStartZoom();
+          camZoom = startZoom;
+          camTargetZoom = startZoom;
+          camX = w / 2;
+          camY = h * 0.75;
+          camTargetX = camX;
+          camTargetY = camY;
+          camReady = true;
+        }
+
+        if (loopPhase === 0) {
+          const b = getReefBounds();
+          camTargetX = b.cx;
+          camTargetY = b.cy;
+          camTargetZoom = getPlayTargetZoom();
+          // Don't let zoom go above start zoom
+          camTargetZoom = Math.min(camTargetZoom, startZoom);
+        }
+        // loopPhase 2: targets set in updateLoop
+
+        const speed = loopPhase === 2 ? 0.8 : 2.5;
+        const t = Math.min(1, dt * speed);
+        camZoom += (camTargetZoom - camZoom) * t;
+        camX += (camTargetX - camX) * t;
+        camY += (camTargetY - camY) * t;
+      }
+
+      function worldToScreen(wx, wy) {
+        return {
+          x: w / 2 + (wx - camX) * camZoom,
+          y: h / 2 + (wy - camY) * camZoom,
+        };
+      }
+
+      // ─── Drawing: Water Background ──────────────────────
+      function drawWater(ctx) {
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        const pulse = 0.5 + 0.5 * Math.sin(time * 0.15);
+        const top = [
+          WATER_TOP[0] + pulse * 3,
+          WATER_TOP[1] + pulse * 5,
+          WATER_TOP[2] + pulse * 10,
+        ];
+        grad.addColorStop(0, rgb(top));
+        grad.addColorStop(0.5, rgb(WATER_MID));
+        grad.addColorStop(1, rgb(WATER_BOT));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawLightRays(ctx) {
+        ctx.save();
+        for (const ray of lightRays) {
+          const x = ray.x * w + Math.sin(time * ray.speed + ray.phase) * w * 0.05;
+          const rayW = ray.width * w;
+          const shimmer = 0.7 + 0.3 * Math.sin(time * 0.5 + ray.phase);
+          const alpha = ray.opacity * shimmer;
+
+          const grad = ctx.createLinearGradient(0, 0, 0, h);
+          grad.addColorStop(0, `rgba(100, 180, 255, ${alpha})`);
+          grad.addColorStop(0.6, `rgba(60, 140, 200, ${alpha * 0.3})`);
+          grad.addColorStop(1, `rgba(30, 80, 120, 0)`);
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(x - rayW * 0.3, 0);
+          ctx.lineTo(x + rayW * 0.3, 0);
+          ctx.lineTo(x + rayW * 1.5, h);
+          ctx.lineTo(x - rayW * 1.5, h);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // ─── Drawing: Sandy Floor ───────────────────────────
+      function drawSandFloor(ctx) {
+        const floorY = h * 0.85;
+        const grad = ctx.createLinearGradient(0, floorY - 20, 0, h);
+        grad.addColorStop(0, 'rgba(12, 45, 55, 0)');
+        grad.addColorStop(0.15, rgb(SAND_COLOR, 0.6));
+        grad.addColorStop(0.5, rgb(SAND_COLOR, 0.8));
+        grad.addColorStop(1, rgb([40, 35, 25], 0.9));
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, floorY - 20, w, h - floorY + 20);
+
+        // Sand ripples
+        ctx.strokeStyle = rgb(SAND_HI, 0.15);
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 12; i++) {
+          const y = floorY + 5 + i * 8 + Math.sin(time * 0.3 + i) * 2;
+          const offset = Math.sin(time * 0.2 + i * 0.7) * 15;
+          ctx.beginPath();
+          for (let x = 0; x < w; x += 4) {
+            const ry = y + Math.sin(x * 0.02 + time * 0.1 + i) * 2;
+            if (x === 0) ctx.moveTo(x + offset, ry);
+            else ctx.lineTo(x + offset, ry);
+          }
+          ctx.stroke();
+        }
+      }
+
+      // ─── Drawing: Branching Coral ───────────────────────
+      function drawBranchingCoral(ctx, coral) {
+        const age = Math.max(0, time - coral.growTime);
+        const growScale = smoothstep(0, 1.5, age);
+        if (growScale < 0.01) return;
+
+        const palette = CORAL_PALETTES.branching.tiers[coral.tier];
+
+        for (const branch of coral.branches) {
+          const branchAge = Math.max(0, time - branch.growTime);
+          const bScale = smoothstep(0, 0.8, branchAge);
+          if (bScale < 0.01) continue;
+
+          const sway = Math.sin(time * 0.8 + branch.seed) * 2;
+
+          for (let i = 0; i < branch.segments.length; i++) {
+            const seg = branch.segments[i];
+            const segT = clamp(bScale * branch.segments.length - i, 0, 1);
+            if (segT < 0.01) continue;
+
+            const t = i / branch.segments.length;
+            const color = lerpColor(palette.base, palette.tip, t);
+            const lineW = lerp(branch.width, branch.width * 0.3, t) * segT;
+
+            ctx.strokeStyle = rgb(color, 0.8 * segT);
+            ctx.lineWidth = Math.max(0.5, lineW);
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(seg.x1 + sway * t, seg.y1);
+            ctx.lineTo(
+              lerp(seg.x1, seg.x2, segT) + sway * t,
+              lerp(seg.y1, seg.y2, segT)
+            );
+            ctx.stroke();
+
+            // Glow at tip
+            if (i === branch.segments.length - 1 && segT > 0.5) {
+              const tipX = seg.x2 + sway * t;
+              const tipY = seg.y2;
+              const glowR = 4 + Math.sin(time * 2 + branch.seed) * 1.5;
+              const grad = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, glowR);
+              grad.addColorStop(0, rgb(palette.glow, 0.4 * segT));
+              grad.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = grad;
+              ctx.fillRect(tipX - glowR, tipY - glowR, glowR * 2, glowR * 2);
+            }
+          }
+        }
+
+        // Base polyp
+        const baseGlow = 6 + Math.sin(time * 1.5 + coral.seed) * 2;
+        const grad = ctx.createRadialGradient(coral.x, coral.y, 0, coral.x, coral.y, baseGlow * growScale);
+        grad.addColorStop(0, rgb(palette.glow, 0.5 * growScale));
+        grad.addColorStop(0.6, rgb(palette.base, 0.2 * growScale));
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(
+          coral.x - baseGlow * 2, coral.y - baseGlow * 2,
+          baseGlow * 4, baseGlow * 4
+        );
+      }
+
+      // ─── Drawing: Brain Coral ───────────────────────────
+      function drawBrainCoral(ctx, coral) {
+        const age = Math.max(0, time - coral.growTime);
+        const growScale = smoothstep(0, 1.2, age);
+        if (growScale < 0.01) return;
+
+        const palette = CORAL_PALETTES.brain.tiers[coral.tier];
+        const r = coral.targetRadius * growScale;
+        coral.radius = r;
+
+        // Outer glow
+        const glowR = r * 2;
+        const outerGrad = ctx.createRadialGradient(coral.x, coral.y, r * 0.5, coral.x, coral.y, glowR);
+        outerGrad.addColorStop(0, rgb(palette.glow, 0.15 * growScale));
+        outerGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = outerGrad;
+        ctx.fillRect(coral.x - glowR, coral.y - glowR, glowR * 2, glowR * 2);
+
+        // Main dome shape
+        ctx.beginPath();
+        ctx.ellipse(coral.x, coral.y, r, r * 0.7, 0, 0, TWO_PI);
+        const bodyGrad = ctx.createRadialGradient(coral.x, coral.y - r * 0.2, 0, coral.x, coral.y, r);
+        bodyGrad.addColorStop(0, rgb(palette.tip, 0.8 * growScale));
+        bodyGrad.addColorStop(0.7, rgb(palette.base, 0.7 * growScale));
+        bodyGrad.addColorStop(1, rgb(palette.base, 0.3 * growScale));
+        ctx.fillStyle = bodyGrad;
+        ctx.fill();
+
+        // Ridge/meander pattern
+        ctx.save();
+        ctx.clip();
+        ctx.strokeStyle = rgb(palette.glow, 0.25 * growScale);
+        ctx.lineWidth = 1.2;
+        const ridgeCount = 6 + Math.floor(r / 4);
+        for (let i = 0; i < ridgeCount; i++) {
+          const ry = coral.y - r * 0.6 + (i / ridgeCount) * r * 1.2;
+          const waveAmp = 3 + Math.sin(coral.ridgeSeed + i) * 2;
+          ctx.beginPath();
+          for (let px = coral.x - r; px <= coral.x + r; px += 2) {
+            const py = ry + Math.sin(px * 0.15 + coral.ridgeSeed + i * 2 + time * 0.3) * waveAmp;
+            if (px === coral.x - r) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Subtle breathing pulse ring
+        const pulseR = r * (1 + 0.05 * Math.sin(time * coral.seed * 0.003 + coral.seed));
+        ctx.strokeStyle = rgb(palette.glow, 0.15 * growScale * (0.5 + 0.5 * Math.sin(time * 1.5 + coral.seed)));
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(coral.x, coral.y, pulseR, pulseR * 0.7, 0, 0, TWO_PI);
+        ctx.stroke();
+      }
+
+      // ─── Drawing: Sea Fan ───────────────────────────────
+      function drawSeaFan(ctx, coral) {
+        const age = Math.max(0, time - coral.growTime);
+        const growScale = smoothstep(0, 1.0, age);
+        if (growScale < 0.01) return;
+
+        const palette = CORAL_PALETTES.fan.tiers[coral.tier];
+        const r = coral.targetRadius * growScale;
+        coral.radius = r;
+
+        // Sway
+        const sway = Math.sin(time * 0.6 + coral.seed) * 3;
+
+        // Stem
+        ctx.strokeStyle = rgb(palette.base, 0.8 * growScale);
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(coral.x, coral.y);
+        ctx.lineTo(coral.x + sway * 0.5, coral.y - r * 0.3);
+        ctx.stroke();
+
+        // Fan ribs
+        const spread = coral.fanSpread;
+        const baseAngle = coral.fanAngle;
+
+        for (let i = 0; i < coral.ribCount; i++) {
+          const t = i / (coral.ribCount - 1);
+          const ribAngle = baseAngle - spread + t * spread * 2;
+          const ribLen = r * (0.7 + 0.3 * Math.sin(t * PI)) * growScale;
+          const tipX = coral.x + sway + Math.cos(ribAngle) * ribLen;
+          const tipY = coral.y - r * 0.3 + Math.sin(ribAngle) * ribLen;
+
+          const ribColor = lerpColor(palette.base, palette.tip, t);
+          ctx.strokeStyle = rgb(ribColor, 0.7 * growScale);
+          ctx.lineWidth = lerp(2, 0.5, t < 0.5 ? t * 2 : (1 - t) * 2);
+          ctx.beginPath();
+          ctx.moveTo(coral.x + sway * 0.5, coral.y - r * 0.3);
+
+          // Curved rib with sway
+          const midX = coral.x + sway * 0.7 + Math.cos(ribAngle) * ribLen * 0.5;
+          const midY = coral.y - r * 0.3 + Math.sin(ribAngle) * ribLen * 0.5;
+          ctx.quadraticCurveTo(
+            midX + Math.sin(time * 0.8 + i + coral.seed) * 3,
+            midY,
+            tipX + Math.sin(time * 0.5 + i * 0.5) * 2,
+            tipY
+          );
+          ctx.stroke();
+        }
+
+        // Cross-webbing between ribs
+        ctx.strokeStyle = rgb(palette.tip, 0.12 * growScale);
+        ctx.lineWidth = 0.5;
+        const webSteps = 4;
+        for (let s = 1; s <= webSteps; s++) {
+          const wt = s / (webSteps + 1);
+          ctx.beginPath();
+          for (let i = 0; i < coral.ribCount; i++) {
+            const t = i / (coral.ribCount - 1);
+            const ribAngle = baseAngle - spread + t * spread * 2;
+            const ribLen = r * (0.7 + 0.3 * Math.sin(t * PI)) * growScale;
+            const px = coral.x + sway * (0.5 + 0.5 * wt) + Math.cos(ribAngle) * ribLen * wt;
+            const py = coral.y - r * 0.3 + Math.sin(ribAngle) * ribLen * wt;
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+        }
+
+        // Glow at center
+        const glowR = 8 * growScale;
+        const gGrad = ctx.createRadialGradient(coral.x, coral.y - r * 0.2, 0, coral.x, coral.y - r * 0.2, glowR);
+        gGrad.addColorStop(0, rgb(palette.glow, 0.3 * growScale));
+        gGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gGrad;
+        ctx.fillRect(coral.x - glowR, coral.y - r * 0.2 - glowR, glowR * 2, glowR * 2);
+      }
+
+      // ─── Drawing: Anemones ──────────────────────────────
+      function drawAnemone(ctx, anem) {
+        const age = Math.max(0, time - anem.growTime);
+        const growScale = smoothstep(0, 1.0, age);
+        if (growScale < 0.01) return;
+
+        const breathe = 1 + 0.08 * Math.sin(time * anem.pulseSpeed + anem.pulsePhase);
+        const r = anem.baseRadius * growScale * breathe;
+
+        // Base disc
+        const baseGrad = ctx.createRadialGradient(anem.x, anem.y, 0, anem.x, anem.y, r * 1.5);
+        baseGrad.addColorStop(0, rgb(anem.palette.base, 0.6 * growScale));
+        baseGrad.addColorStop(1, rgb(anem.palette.base, 0.1 * growScale));
+        ctx.fillStyle = baseGrad;
+        ctx.beginPath();
+        ctx.ellipse(anem.x, anem.y, r * 1.2, r * 0.6, 0, 0, TWO_PI);
+        ctx.fill();
+
+        // Tentacles
+        for (const tent of anem.tentacles) {
+          const swayOffset = Math.sin(time * tent.freq + tent.phase) * tent.amp * breathe;
+          const tipX = anem.x + Math.cos(tent.angle) * (r + tent.length * growScale) + swayOffset;
+          const tipY = anem.y + Math.sin(tent.angle) * (r * 0.5 + tent.length * 0.6 * growScale);
+
+          const t = (Math.sin(time * tent.freq * 0.5 + tent.phase) + 1) * 0.5;
+          const tentColor = lerpColor(anem.palette.base, anem.palette.tip, t);
+
+          ctx.strokeStyle = rgb(tentColor, 0.6 * growScale);
+          ctx.lineWidth = 1.5;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(
+            anem.x + Math.cos(tent.angle) * r * 0.5,
+            anem.y + Math.sin(tent.angle) * r * 0.3
+          );
+          ctx.quadraticCurveTo(
+            anem.x + Math.cos(tent.angle) * (r + tent.length * 0.5) + swayOffset * 0.5,
+            anem.y + Math.sin(tent.angle) * (r * 0.4 + tent.length * 0.3),
+            tipX, tipY
+          );
+          ctx.stroke();
+
+          // Tiny glow dot at tentacle tip
+          if (growScale > 0.5) {
+            const dotR = 1.5 + Math.sin(time * 3 + tent.phase) * 0.5;
+            ctx.fillStyle = rgb(anem.palette.glow, 0.5 * growScale);
+            ctx.beginPath();
+            ctx.arc(tipX, tipY, dotR, 0, TWO_PI);
+            ctx.fill();
+          }
+        }
+      }
+
+      // ─── Drawing: All Corals ────────────────────────────
+      function drawCorals(ctx) {
+        // Sort by Y for depth ordering
+        const sorted = [...corals].sort((a, b) => a.y - b.y);
+
+        for (const coral of sorted) {
+          if (coral.type === 'branching') drawBranchingCoral(ctx, coral);
+          else if (coral.type === 'brain') drawBrainCoral(ctx, coral);
+          else if (coral.type === 'fan') drawSeaFan(ctx, coral);
+        }
+      }
+
+      function drawAnemones(ctx) {
+        for (const anem of anemones) {
+          drawAnemone(ctx, anem);
+        }
+      }
+
+      // ─── Drawing: Fish ──────────────────────────────────
+      function drawFish(ctx) {
+        fishPool.forEach((f) => {
+          const alpha = clamp(f.life / f.maxLife, 0, 1);
+          const fadeAlpha = f.life < 2 ? f.life / 2 : (f.maxLife - f.life < 2 ? (f.maxLife - f.life) / 2 : 1);
+          const a = alpha * fadeAlpha;
+          const dir = f.vx > 0 ? 1 : -1;
+          const bodyLen = f.size * 2.5;
+          const bodyH = f.size;
+
+          // Tail wag
+          const tailAngle = Math.sin(time * f.tailFreq + f.tailPhase) * 0.4;
+
+          ctx.save();
+          ctx.translate(f.x, f.y);
+          ctx.scale(dir, 1);
+
+          // Body
+          ctx.fillStyle = rgb(f.color, 0.8 * a);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, bodyLen, bodyH, 0, 0, TWO_PI);
+          ctx.fill();
+
+          // Eye
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.9 * a})`;
+          ctx.beginPath();
+          ctx.arc(bodyLen * 0.5, -bodyH * 0.2, bodyH * 0.25, 0, TWO_PI);
+          ctx.fill();
+          ctx.fillStyle = `rgba(0, 0, 0, ${0.8 * a})`;
+          ctx.beginPath();
+          ctx.arc(bodyLen * 0.55, -bodyH * 0.2, bodyH * 0.12, 0, TWO_PI);
+          ctx.fill();
+
+          // Tail
+          ctx.save();
+          ctx.translate(-bodyLen, 0);
+          ctx.rotate(tailAngle);
+          ctx.fillStyle = rgb(f.color, 0.7 * a);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(-bodyLen * 0.5, -bodyH * 0.8);
+          ctx.lineTo(-bodyLen * 0.5, bodyH * 0.8);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+
+          // Dorsal fin
+          ctx.fillStyle = rgb(f.color, 0.5 * a);
+          ctx.beginPath();
+          ctx.moveTo(bodyLen * 0.1, -bodyH);
+          ctx.quadraticCurveTo(0, -bodyH * 1.8, -bodyLen * 0.3, -bodyH * 0.9);
+          ctx.lineTo(-bodyLen * 0.1, -bodyH * 0.3);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.restore();
+        });
+      }
+
+      // ─── Drawing: Bubbles ───────────────────────────────
+      function drawBubbles(ctx) {
+        bubbles.forEach((b) => {
+          const alpha = clamp(b.life / b.maxLife, 0, 1);
+          const fadeAlpha = b.life < 1 ? b.life : 1;
+          const a = alpha * fadeAlpha * b.opacity;
+          const r = b.size * (0.8 + 0.2 * alpha);
+
+          // Bubble body
+          ctx.strokeStyle = `rgba(150, 220, 255, ${a})`;
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, r, 0, TWO_PI);
+          ctx.stroke();
+
+          // Highlight
+          ctx.fillStyle = `rgba(200, 240, 255, ${a * 0.6})`;
+          ctx.beginPath();
+          ctx.arc(b.x - r * 0.3, b.y - r * 0.3, r * 0.3, 0, TWO_PI);
+          ctx.fill();
+        });
+      }
+
+      // ─── Drawing: Burst Particles ───────────────────────
+      function drawBurstParticles(ctx) {
+        burstPool.forEach((p) => {
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          const r = p.size * alpha;
+          ctx.fillStyle = rgb(p.color, 0.7 * alpha);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, TWO_PI);
+          ctx.fill();
+        });
+      }
+
+      // ─── Drawing: Dissolve Particles ────────────────────
+      function drawDissolveParticles(ctx) {
+        dissolvePool.forEach((p) => {
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          const r = p.size * (p.isSeed ? (1 + 0.5 * Math.sin(time * 5 + p.x)) : alpha);
+          ctx.fillStyle = rgb(p.color, (p.isSeed ? 0.9 : 0.6) * alpha);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, TWO_PI);
+          ctx.fill();
+
+          if (p.isSeed) {
+            const glowR = r * 3;
+            const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowR);
+            grad.addColorStop(0, `rgba(255, 255, 200, ${0.2 * alpha})`);
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(p.x - glowR, p.y - glowR, glowR * 2, glowR * 2);
+          }
+        });
+      }
+
+      // ─── Drawing: Floating Plankton (ambient) ───────────
+      let planktonList = [];
+
+      function initPlankton() {
+        planktonList = [];
+        for (let i = 0; i < 80; i++) {
+          planktonList.push({
+            x: rand(0, 1),
+            y: rand(0, 1),
+            size: 0.5 + rng() * 1.5,
+            speed: 0.1 + rng() * 0.3,
+            phase: rng() * TWO_PI,
+            brightness: 0.1 + rng() * 0.2,
+          });
+        }
+      }
+
+      function drawPlankton(ctx) {
+        for (const p of planktonList) {
+          const px = (p.x + Math.sin(time * p.speed * 0.3 + p.phase) * 0.02) * w;
+          const py = (p.y + Math.cos(time * p.speed * 0.2 + p.phase) * 0.01) * h;
+          const twinkle = 0.5 + 0.5 * Math.sin(time * p.speed * 2 + p.phase);
+          const alpha = p.brightness * twinkle;
+
+          ctx.fillStyle = `rgba(120, 200, 255, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(px, py, p.size, 0, TWO_PI);
+          ctx.fill();
+        }
+      }
+
+      // ─── Drawing: Caustics (light patterns on floor) ────
+      function drawCaustics(ctx) {
+        const floorY = h * 0.82;
+        ctx.save();
+        ctx.globalAlpha = 0.06;
+
+        for (let i = 0; i < 20; i++) {
+          const cx = (Math.sin(time * 0.15 + i * 1.3) * 0.5 + 0.5) * w;
+          const cy = floorY + (Math.cos(time * 0.1 + i * 0.9) * 0.5 + 0.5) * (h - floorY);
+          const r = 20 + Math.sin(time * 0.3 + i * 2) * 15;
+
+          ctx.fillStyle = `rgba(80, 200, 180, 1)`;
+          ctx.beginPath();
+          // Diamond/caustic shape
+          const points = 4 + Math.floor(Math.sin(i * 3) * 2 + 2);
+          for (let j = 0; j <= points; j++) {
+            const angle = (j / points) * TWO_PI + time * 0.05 + i;
+            const wobble = 1 + 0.3 * Math.sin(time * 0.4 + j * 2 + i);
+            const px = cx + Math.cos(angle) * r * wobble;
+            const py = cy + Math.sin(angle) * r * 0.5 * wobble;
+            if (j === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        ctx.restore();
+      }
+
+      // ─── Drawing: HUD ──────────────────────────────────
+      function drawHUD(ctx) {
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // Coral count
+        ctx.fillStyle = 'rgba(80, 200, 220, 0.7)';
+        ctx.fillText(`Corals: ${coralCount}`, 18, 18);
+
+        // Coverage
+        const pct = Math.floor(reefCoverage * 100);
+        ctx.fillStyle = 'rgba(100, 220, 180, 0.5)';
+        ctx.font = '12px monospace';
+        ctx.fillText(`Coverage: ${pct}%`, 18, 38);
+
+        // Coverage bar
+        const barW = 120, barH = 3;
+        ctx.fillStyle = 'rgba(40, 80, 100, 0.3)';
+        ctx.fillRect(18, 56, barW, barH);
+        ctx.fillStyle = 'rgba(80, 200, 180, 0.6)';
+        ctx.fillRect(18, 56, barW * reefCoverage, barH);
+
+        // Generation
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(120, 180, 220, 0.5)';
+        ctx.fillText(`Gen ${generation}`, w - 18, 18);
+
+        // Reef map (mini)
+        drawMiniMap(ctx);
+
+        // Phase text
+        if (loopPhase === 1) {
+          ctx.font = 'bold 18px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = `rgba(80, 220, 255, ${0.5 + 0.5 * Math.sin(time * 10)})`;
+          ctx.fillText('REEF COMPLETE', w / 2, h * 0.5 - 30);
+        } else if (loopPhase === 2) {
+          ctx.font = 'bold 16px monospace';
+          ctx.textAlign = 'center';
+          const sweepAlpha = clamp(loopTimer / 5, 0, 1);
+          ctx.fillStyle = `rgba(100, 200, 255, ${0.6 * sweepAlpha})`;
+          ctx.fillText('Current sweeps through...', w / 2, h * 0.5 - 30);
+        }
+
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.fillText('coral reef \u00b7 organic growth', w / 2, h - 16);
+      }
+
+      function drawMiniMap(ctx) {
+        const mapSize = 6;
+        const gap = 1;
+        const totalW = SECTOR_COLS * (mapSize + gap);
+        const sx = w - 18 - totalW;
+        const sy = 38;
+
+        for (let r = 0; r < SECTOR_ROWS; r++) {
+          for (let c = 0; c < SECTOR_COLS; c++) {
+            const x = sx + c * (mapSize + gap);
+            const y = sy + r * (mapSize + gap);
+            const density = sectors[r]?.[c]?.density || 0;
+            if (density >= 2) {
+              const brightness = clamp(density / 6, 0.3, 1);
+              ctx.fillStyle = `rgba(80, 200, 180, ${brightness * 0.5})`;
+            } else if (density > 0) {
+              ctx.fillStyle = 'rgba(60, 140, 120, 0.2)';
+            } else {
+              ctx.fillStyle = 'rgba(30, 60, 80, 0.15)';
+            }
+            ctx.fillRect(x, y, mapSize, mapSize);
+          }
+        }
+      }
+
+      // ─── Auto-Play / Growth Loop ────────────────────────
+      function autoGrow(dt) {
+        if (loopPhase !== 0) return;
+        if (growPause > 0) { growPause -= dt; return; }
+
+        growTimer -= dt;
+        if (growTimer > 0) return;
+
+        const grew = processGrowth();
+
+        if (!grew && growQueue.length === 0) {
+          // Check if reef is sufficiently grown
+          updateCoverage();
+          if (coralCount >= 20) {
+            loopPhase = 1;
+            loopTimer = 2.0;
+            return;
+          }
+          // Try spawning more growth if reef is sparse
+          if (corals.length > 0 && corals.length < MAX_CORALS) {
+            const src = corals[Math.floor(rng() * corals.length)];
+            const angle = rng() * TWO_PI;
+            const distance = 30 + rng() * 60;
+            addGrowPoint(
+              src.x + Math.cos(angle) * distance,
+              src.y + Math.sin(angle) * distance,
+              angle, pickCoralType(src.depth + 1), src.depth + 1, null
+            );
+          }
+        }
+
+        growTimer = GROWTH_INTERVAL;
+      }
+
+      // ─── Loop Phase Management ──────────────────────────
+      function updateLoop(dt) {
+        if (loopPhase === 0) return;
+        loopTimer -= dt;
+
+        if (loopPhase === 1 && loopTimer <= 0) {
+          // Celebrate -> current sweep
+          loopPhase = 2;
+          loopTimer = 5.0;
+          spawnDissolveSweep();
+
+          // Camera: zoom way out
+          camTargetZoom = 0.4;
+          camTargetX = w / 2;
+          camTargetY = h / 2;
+
+        } else if (loopPhase === 2 && loopTimer <= 0) {
+          // Current sweep done -> hold
+          loopPhase = 3;
+          loopTimer = 1.5;
+
+        } else if (loopPhase === 3 && loopTimer <= 0) {
+          // Hold -> reset
+          loopPhase = 4;
+          loopTimer = 0.5;
+
+        } else if (loopPhase === 4 && loopTimer <= 0) {
+          // Reset and start new generation
+          generation++;
+          corals = [];
+          branches = [];
+          anemones = [];
+          growQueue = [];
+          coralCount = 0;
+          reefCoverage = 0;
+          burstPool.clear();
+          dissolvePool.clear();
+          bubbles.clear();
+          initSectors();
+
+          loopPhase = 0;
+          growPause = 1.5;
+          growTimer = 0;
+
+          // Reset camera to tight view on center
+          startZoom = computeStartZoom();
+          camZoom = startZoom;
+          camTargetZoom = startZoom;
+          camX = w / 2;
+          camY = h * 0.75;
+          camTargetX = camX;
+          camTargetY = camY;
+
+          seedReef();
+        }
+      }
+
+      // ─── Update ─────────────────────────────────────────
+      function update(dt) {
+        autoGrow(dt);
+        updateLoop(dt);
+        updateFish(dt);
+        updateBubbles(dt);
+        burstPool.update(dt);
+        dissolvePool.update(dt);
+
+        // Update coverage periodically
+        if (Math.floor(time * 2) !== Math.floor((time - dt) * 2)) {
+          updateCoverage();
+        }
+      }
+
+      // ─── Init ───────────────────────────────────────────
+      initSectors();
+      initLightRays();
+      initPlankton();
+
+      // ─── App ────────────────────────────────────────────
+      const app = createApp({
+        asciiConfig: {
+          background: '#030a18',
+          sourceOpacity: 0,
+          speed: 1,
+        },
+        layers: [
+          { fontSize: 16, charset: 'blocks', colorScheme: 'ocean', pattern: 'breathing', patternMix: 0.1, blendMode: 'replace', opacity: 1 },
+          { fontSize: 10, charset: 'density', colorScheme: 'vapor', blendMode: 'add', opacity: 0.7 },
+          { fontSize: 6, charset: 'braille', colorScheme: 'ocean', pattern: 'waves', patternMix: 0.25, blendMode: 'add', opacity: 0.3 },
+        ],
+        onResize(ctx, newW, newH) {
+          w = newW;
+          h = newH;
+          camReady = false;
+          initLightRays();
+          initPlankton();
+          if (corals.length === 0) {
+            initSectors();
+            seedReef();
+          }
+        },
+        onKeydown(e) {
+          if (e.key.toLowerCase() === 'r') {
+            generation = 1;
+            corals = [];
+            branches = [];
+            anemones = [];
+            growQueue = [];
+            coralCount = 0;
+            reefCoverage = 0;
+            burstPool.clear();
+            dissolvePool.clear();
+            bubbles.clear();
+            fishPool.clear();
+            initSectors();
+            loopPhase = 0;
+            growPause = 1.5;
+            growTimer = 0;
+            camReady = false;
+            seedReef();
+          }
+        },
+        draw(ctx, { time: rawTime, dt, width: canvasW, height: canvasH }) {
+          time = rawTime * 0.001;
+          w = canvasW;
+          h = canvasH;
+
+          updateCamera(dt);
+          update(dt);
+
+          // ── Clear ──
+          ctx.fillStyle = '#030a18';
+          ctx.fillRect(0, 0, w, h);
+
+          // ── Water background (screen space) ──
+          drawWater(ctx);
+          drawLightRays(ctx);
+
+          // ── Plankton (screen space, behind world) ──
+          drawPlankton(ctx);
+
+          // ── World (camera transform) ──
+          ctx.save();
+          ctx.translate(w / 2, h / 2);
+          ctx.scale(camZoom, camZoom);
+          ctx.translate(-camX, -camY);
+
+          // Caustics on floor
+          drawCaustics(ctx);
+
+          // Sandy floor
+          drawSandFloor(ctx);
+
+          // Corals with loop effects
+          let coralAlpha = 1;
+          if (loopPhase === 1) coralAlpha = 0.7 + 0.3 * Math.sin(time * 8);
+          else if (loopPhase === 2) coralAlpha = clamp(loopTimer / 5.0, 0, 1);
+          else if (loopPhase >= 3) coralAlpha = 0;
+
+          if (coralAlpha > 0) {
+            ctx.globalAlpha = coralAlpha;
+            drawAnemones(ctx);
+            drawCorals(ctx);
+            ctx.globalAlpha = 1;
+          }
+
+          // Burst particles (world space)
+          drawBurstParticles(ctx);
+
+          // Bubbles (world space)
+          drawBubbles(ctx);
+
+          // Fish (world space)
+          drawFish(ctx);
+
+          ctx.restore();
+
+          // ── Dissolve particles (screen space) ──
+          drawDissolveParticles(ctx);
+
+          // ── Celebrate flash (screen space) ──
+          if (loopPhase === 1) {
+            const age = 2.0 - loopTimer;
+            if (age < 0.4) {
+              ctx.fillStyle = `rgba(80, 200, 255, ${0.15 * (1 - age / 0.4)})`;
+              ctx.fillRect(0, 0, w, h);
+            }
+          }
+
+          // ── Current sweep overlay ──
+          if (loopPhase === 2) {
+            const sweepT = 1 - loopTimer / 5.0;
+            // Moving gradient to simulate current
+            const sweepX = sweepT * w * 1.5 - w * 0.25;
+            const grad = ctx.createLinearGradient(sweepX - 200, 0, sweepX + 200, 0);
+            grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+            grad.addColorStop(0.4, `rgba(20, 60, 100, ${0.15 * (1 - sweepT)})`);
+            grad.addColorStop(0.6, `rgba(40, 100, 150, ${0.2 * (1 - sweepT)})`);
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          // ── Vignette ──
+          drawVignette(ctx);
+
+          // ── HUD (screen space) ──
+          drawHUD(ctx);
+        },
+      });
+
+      // ─── Vignette ───────────────────────────────────────
+      function drawVignette(ctx) {
+        const grad = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.max(w, h) * 0.75);
+        grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        grad.addColorStop(1, 'rgba(0, 5, 15, 0.4)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // First seed after app is created
+      w = app.width;
+      h = app.height;
+      initSectors();
+      seedReef();
+    </script>
+  </body>
+</html>

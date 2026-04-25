@@ -1,0 +1,1515 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Sim City</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, smoothstep, mulberry32, rgb, lerpColor } from './utils.js';
+
+      // ─── Constants ──────────────────────────────────────
+      const CELL = 12;
+      const GRID = 80;
+      const TOTAL_PX = GRID * CELL;
+
+      // Terrain types
+      const T_EMPTY = 0, T_ROAD = 1, T_RES = 2, T_COM = 3, T_IND = 4;
+      const T_PARK = 5, T_WATER = 6, T_AVENUE = 8, T_BRIDGE = 9;
+
+      // Colors
+      const ROAD_COLOR = [55, 55, 60];
+      const AVENUE_COLOR = [65, 65, 70];
+      const GRASS_COLOR = [32, 68, 30];
+      const WATER_COLOR = [20, 50, 110];
+      const ZONE_RES = [45, 120, 45];
+      const ZONE_COM = [50, 80, 160];
+      const ZONE_IND = [160, 140, 40];
+      const PARK_COLOR = [25, 95, 28];
+
+      // Building palettes per zone and height
+      const BLDG_RES = [[55,125,55],[65,145,65],[75,165,75],[95,190,85]];
+      const BLDG_COM = [[45,85,155],[55,95,175],[65,115,200],[85,135,225]];
+      const BLDG_IND = [[140,120,45],[160,140,55],[170,150,50],[180,165,40]];
+
+      // Sky colors for day/night cycle
+      const SKY_NIGHT   = [8, 12, 28];
+      const SKY_DAWN    = [40, 25, 50];
+      const SKY_DAY     = [60, 110, 170];
+      const SKY_SUNSET  = [70, 30, 35];
+      const SKY_DUSK    = [25, 18, 45];
+
+      // ─── State ──────────────────────────────────────────
+      const rng = mulberry32(42);
+      let time = 0;
+      let population = 0;
+      let money = 10000;
+      let satisfaction = 75;
+      const cityName = 'ASCIVILLE';
+
+      let terrain = [];
+      let buildings = [];
+      let streetlights = [];   // { c, r } positions
+      let trafficLights = [];  // { c, r, phase }
+      let landmarks = [];      // { c, r, type, builtAt }
+      let trees = [];          // { c, r, size, phase }
+
+      // Day/night: 0=midnight, 0.25=dawn, 0.5=noon, 0.75=dusk
+      let dayPhase = 0.15; // start pre-dawn
+      const DAY_SPEED = 0.012; // full cycle ~83s
+
+      // Notifications
+      let notifications = [];  // { text, icon, color, spawnTime, life }
+      let lastPopMilestone = 0;
+      let lastMoneyMilestone = 0;
+
+      // Camera
+      let camX = 0, camY = 0, camTargetX = 0, camTargetY = 0;
+      let camZoom = 1, camTargetZoom = 1;
+      let camPanTimer = 0, camPanPhase = 0;
+
+      // Simulation
+      let actionQueue = [];
+      let totalActions = 0;
+      let simPhase = 0, simTimer = 0, cycleCount = 0;
+      let actionDelay = 0;
+
+      // City layout
+      const CX = 40, CY = 40;
+      let roadRadius = 0;
+      const MAX_ROAD_RADIUS = 32;
+
+      // River path (stored for bridge building)
+      let riverCols = [];
+
+      // Particle pools
+      const cars = new ParticlePool({ maxParticles: 250, gravity: 0, drag: 1 });
+      const dust = new ParticlePool({ maxParticles: 500, gravity: -18, drag: 0.96 });
+      const smoke = new ParticlePool({ maxParticles: 300, gravity: -8, drag: 0.99 });
+      let carSpawnTimer = 0;
+      let smokeTimer = 0;
+
+      // ─── Helpers ────────────────────────────────────────
+      function inBounds(c, r) { return c >= 0 && c < GRID && r >= 0 && r < GRID; }
+
+      function isRoad(c, r) {
+        if (!inBounds(c, r)) return false;
+        const t = terrain[r][c];
+        return t === T_ROAD || t === T_AVENUE || t === T_BRIDGE;
+      }
+
+      function getDaylight() {
+        // Returns 0 (night) to 1 (full day)
+        const p = dayPhase % 1;
+        if (p < 0.2) return 0;                          // night
+        if (p < 0.3) return smoothstep(0.2, 0.3, p);    // dawn
+        if (p < 0.65) return 1;                          // day
+        if (p < 0.75) return 1 - smoothstep(0.65, 0.75, p); // dusk
+        return 0;                                        // night
+      }
+
+      function getSkyColor() {
+        const p = dayPhase % 1;
+        if (p < 0.18) return SKY_NIGHT;
+        if (p < 0.25) return lerpColor(SKY_NIGHT, SKY_DAWN, (p - 0.18) / 0.07);
+        if (p < 0.32) return lerpColor(SKY_DAWN, SKY_DAY, (p - 0.25) / 0.07);
+        if (p < 0.6) return SKY_DAY;
+        if (p < 0.68) return lerpColor(SKY_DAY, SKY_SUNSET, (p - 0.6) / 0.08);
+        if (p < 0.75) return lerpColor(SKY_SUNSET, SKY_DUSK, (p - 0.68) / 0.07);
+        if (p < 0.82) return lerpColor(SKY_DUSK, SKY_NIGHT, (p - 0.75) / 0.07);
+        return SKY_NIGHT;
+      }
+
+      function applyDaylight(baseColor, daylight) {
+        const nightDim = 0.35 + daylight * 0.65;
+        return baseColor.map(v => Math.floor(v * nightDim));
+      }
+
+      function notify(text, icon, color, life = 4) {
+        notifications.push({ text, icon, color, spawnTime: time, life });
+      }
+
+      // ─── Terrain Generation ─────────────────────────────
+      function initTerrain() {
+        terrain = [];
+        buildings = [];
+        streetlights = [];
+        trafficLights = [];
+        landmarks = [];
+        trees = [];
+        riverCols = [];
+
+        for (let r = 0; r < GRID; r++) {
+          terrain[r] = [];
+          buildings[r] = [];
+          for (let c = 0; c < GRID; c++) {
+            terrain[r][c] = T_EMPTY;
+            buildings[r][c] = null;
+          }
+        }
+
+        // River - meanders across the map
+        let rx = 22 + Math.floor(rng() * 8);
+        for (let r = 0; r < GRID; r++) {
+          rx += Math.floor(rng() * 3) - 1;
+          rx = clamp(rx, 5, GRID - 5);
+          riverCols[r] = rx;
+          const width = (rng() < 0.15) ? 2 : 1; // occasional wide spots
+          for (let dx = -width; dx <= width; dx++) {
+            if (rx + dx >= 0 && rx + dx < GRID) {
+              terrain[r][rx + dx] = T_WATER;
+            }
+          }
+        }
+
+        // Lake
+        const lx = 52 + Math.floor(rng() * 8);
+        const ly = 55 + Math.floor(rng() * 8);
+        for (let dr = -4; dr <= 4; dr++) {
+          for (let dc = -5; dc <= 5; dc++) {
+            const d = Math.sqrt(dr * dr + dc * dc * 0.55);
+            if (d < 3.8) {
+              const rr = ly + dr, cc = lx + dc;
+              if (inBounds(cc, rr)) terrain[rr][cc] = T_WATER;
+            }
+          }
+        }
+
+        // Scatter initial trees on grass
+        for (let i = 0; i < 300; i++) {
+          const c = Math.floor(rng() * GRID);
+          const r = Math.floor(rng() * GRID);
+          if (terrain[r][c] === T_EMPTY) {
+            trees.push({
+              c, r,
+              size: 2 + rng() * 2.5,
+              phase: rng() * Math.PI * 2,
+              type: rng() < 0.3 ? 'pine' : 'round',
+            });
+          }
+        }
+      }
+
+      // ─── Road Building ──────────────────────────────────
+      function buildRoadPath(c1, r1, c2, r2, isAvenue) {
+        const steps = [];
+        const dc = c2 > c1 ? 1 : c2 < c1 ? -1 : 0;
+        const dr = r2 > r1 ? 1 : r2 < r1 ? -1 : 0;
+        let c = c1, r = r1;
+
+        // Horizontal
+        while (c !== c2) {
+          if (inBounds(c, r)) {
+            if (terrain[r][c] === T_WATER) {
+              steps.push({ c, r, type: T_BRIDGE });
+            } else if (terrain[r][c] === T_EMPTY || terrain[r][c] === T_ROAD) {
+              steps.push({ c, r, type: isAvenue ? T_AVENUE : T_ROAD });
+            }
+          }
+          c += dc;
+        }
+        // Vertical
+        while (r !== r2) {
+          if (inBounds(c, r)) {
+            if (terrain[r][c] === T_WATER) {
+              steps.push({ c, r, type: T_BRIDGE });
+            } else if (terrain[r][c] === T_EMPTY || terrain[r][c] === T_ROAD) {
+              steps.push({ c, r, type: isAvenue ? T_AVENUE : T_ROAD });
+            }
+          }
+          r += dr;
+        }
+        if (inBounds(c, r) && (terrain[r][c] === T_EMPTY || terrain[r][c] === T_ROAD || terrain[r][c] === T_WATER)) {
+          steps.push({ c, r, type: terrain[r][c] === T_WATER ? T_BRIDGE : (isAvenue ? T_AVENUE : T_ROAD) });
+        }
+        return steps;
+      }
+
+      function addRoadSegment(steps) {
+        for (const s of steps) {
+          actionQueue.push({ type: 'road', c: s.c, r: s.r, roadType: s.type, delay: 0.02 });
+        }
+      }
+
+      // ─── City Layout Planner ────────────────────────────
+      function planNextRoads() {
+        roadRadius += 6;
+        if (roadRadius > MAX_ROAD_RADIUS) return false;
+
+        const r = roadRadius;
+        const isFirst = r <= 6;
+        const isAvenue = r <= 12 || r % 12 === 0;  // inner roads and ring roads are avenues
+
+        // Ring roads
+        addRoadSegment(buildRoadPath(CX - r, CY - r, CX + r, CY - r, isAvenue));
+        addRoadSegment(buildRoadPath(CX - r, CY + r, CX + r, CY + r, isAvenue));
+        addRoadSegment(buildRoadPath(CX - r, CY - r, CX - r, CY + r, isAvenue));
+        addRoadSegment(buildRoadPath(CX + r, CY - r, CX + r, CY + r, isAvenue));
+
+        // Main arteries (avenues) through center
+        if (isFirst) {
+          addRoadSegment(buildRoadPath(CX - r, CY, CX + r, CY, true));
+          addRoadSegment(buildRoadPath(CX, CY - r, CX, CY + r, true));
+        }
+
+        // Internal cross streets
+        if (r > 6) {
+          const numStreets = 2 + Math.floor(rng() * 3);
+          for (let i = 0; i < numStreets; i++) {
+            const offset = Math.floor(rng() * r * 1.6) - r * 0.8;
+            if (rng() > 0.5) {
+              addRoadSegment(buildRoadPath(CX - r, CY + offset, CX + r, CY + offset, false));
+            } else {
+              addRoadSegment(buildRoadPath(CX + offset, CY - r, CX + offset, CY + r, false));
+            }
+          }
+        }
+
+        return true;
+      }
+
+      function planZones() {
+        const count = { total: 0 };
+        for (let r = CY - roadRadius; r <= CY + roadRadius; r++) {
+          for (let c = CX - roadRadius; c <= CX + roadRadius; c++) {
+            if (!inBounds(c, r)) continue;
+            if (terrain[r][c] !== T_EMPTY) continue;
+
+            // Must be adjacent to a road
+            let nearRoad = false;
+            let nearAvenue = false;
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+              const nr = r + dr, nc = c + dc;
+              if (inBounds(nc, nr)) {
+                if (isRoad(nc, nr)) nearRoad = true;
+                if (terrain[nr][nc] === T_AVENUE) nearAvenue = true;
+              }
+            }
+            if (!nearRoad) continue;
+
+            const d = Math.sqrt((c - CX) ** 2 + (r - CY) ** 2);
+            let zone;
+
+            // Commercial clusters along avenues and downtown
+            if (d < roadRadius * 0.3 || (nearAvenue && d < roadRadius * 0.5 && rng() > 0.3)) {
+              zone = T_COM;
+            } else if (d > roadRadius * 0.65 && rng() > 0.35) {
+              zone = T_IND;
+            } else {
+              zone = T_RES;
+            }
+
+            // Parks — more likely near residential, by water, or at intersections
+            if (rng() < 0.06 || (zone === T_RES && rng() < 0.04)) zone = T_PARK;
+
+            actionQueue.push({ type: 'zone', c, r, zone, delay: 0.012 });
+            count.total++;
+          }
+        }
+        return count.total > 0;
+      }
+
+      function planBuildings() {
+        let count = 0;
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const z = terrain[r][c];
+            if (z < T_RES || z > T_IND) continue;
+            if (buildings[r][c]) continue;
+
+            // Height based on distance + road importance
+            const d = Math.sqrt((c - CX) ** 2 + (r - CY) ** 2);
+            let maxH = d < 6 ? 3 : d < 14 ? 2 : d < 22 ? 1 : 0;
+
+            // Boost near avenues
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+              if (inBounds(c + dc, r + dr) && terrain[r + dr][c + dc] === T_AVENUE) {
+                maxH = Math.min(3, maxH + 1);
+                break;
+              }
+            }
+
+            const h = Math.min(maxH, Math.floor(rng() * 4));
+
+            actionQueue.push({
+              type: 'build', c, r, height: h, zone: z,
+              delay: 0.03 + rng() * 0.025,
+            });
+            count++;
+          }
+        }
+        return count > 0;
+      }
+
+      function upgradeBuildings() {
+        let count = 0;
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = buildings[r][c];
+            if (!b || b.height >= 3) continue;
+            if (rng() > 0.35) continue;
+
+            const d = Math.sqrt((c - CX) ** 2 + (r - CY) ** 2);
+            const maxH = d < 10 ? 3 : d < 18 ? 2 : 1;
+            if (b.height >= maxH) continue;
+
+            actionQueue.push({ type: 'upgrade', c, r, delay: 0.04 });
+            count++;
+          }
+        }
+        return count > 0;
+      }
+
+      // ─── Landmark Placement ─────────────────────────────
+      const LANDMARK_DEFS = [
+        { type: 'power_plant', trigger: 'pop', at: 100,  size: 3, color: [180, 80, 40],  label: 'PWR', smoker: true },
+        { type: 'school',      trigger: 'pop', at: 300,  size: 2, color: [180, 160, 60],  label: 'SCH', smoker: false },
+        { type: 'hospital',    trigger: 'pop', at: 600,  size: 2, color: [200, 60, 60],   label: '+',   smoker: false },
+        { type: 'fire_station',trigger: 'pop', at: 1000, size: 2, color: [220, 50, 30],   label: 'FD',  smoker: false },
+        { type: 'stadium',     trigger: 'pop', at: 2000, size: 4, color: [100, 140, 200], label: 'STD', smoker: false },
+        { type: 'university',  trigger: 'pop', at: 3500, size: 3, color: [140, 100, 180], label: 'UNI', smoker: false },
+        { type: 'airport',     trigger: 'pop', at: 5000, size: 5, color: [120, 120, 130], label: 'APT', smoker: false },
+      ];
+      let placedLandmarks = new Set();
+
+      function checkLandmarks() {
+        for (const def of LANDMARK_DEFS) {
+          if (placedLandmarks.has(def.type)) continue;
+          if (def.trigger === 'pop' && population < def.at) continue;
+
+          // Find a spot near the edge of developed area
+          let best = null, bestD = Infinity;
+          for (let attempts = 0; attempts < 80; attempts++) {
+            const c = CX + Math.floor((rng() - 0.5) * roadRadius * 1.5);
+            const r = CY + Math.floor((rng() - 0.5) * roadRadius * 1.5);
+            if (!inBounds(c, r) || !inBounds(c + def.size - 1, r + def.size - 1)) continue;
+
+            // Check area is clear
+            let clear = true;
+            for (let dr = 0; dr < def.size && clear; dr++) {
+              for (let dc = 0; dc < def.size && clear; dc++) {
+                const t = terrain[r + dr]?.[c + dc];
+                if (t !== T_EMPTY && t !== T_RES && t !== T_IND) clear = false;
+                if (buildings[r + dr]?.[c + dc]) clear = false;
+              }
+            }
+            if (!clear) continue;
+
+            // Prefer spots near roads
+            let nearRoad = false;
+            for (let dr = -1; dr <= def.size; dr++) {
+              for (let dc = -1; dc <= def.size; dc++) {
+                if (isRoad(c + dc, r + dr)) nearRoad = true;
+              }
+            }
+            if (!nearRoad) continue;
+
+            const d = Math.sqrt((c - CX) ** 2 + (r - CY) ** 2);
+            if (d < bestD) { bestD = d; best = { c, r }; }
+          }
+
+          if (best) {
+            placedLandmarks.add(def.type);
+            landmarks.push({
+              ...best, type: def.type, builtAt: time,
+              size: def.size, color: def.color, label: def.label,
+              smoker: def.smoker,
+            });
+
+            // Clear terrain under landmark
+            for (let dr = 0; dr < def.size; dr++) {
+              for (let dc = 0; dc < def.size; dc++) {
+                if (inBounds(best.c + dc, best.r + dr)) {
+                  terrain[best.r + dr][best.c + dc] = T_COM; // treat as developed
+                  buildings[best.r + dr][best.c + dc] = null;
+                }
+              }
+            }
+
+            const names = {
+              power_plant: 'Power Plant', school: 'School', hospital: 'Hospital',
+              fire_station: 'Fire Station', stadium: 'Stadium', university: 'University',
+              airport: 'Airport',
+            };
+            notify(`${names[def.type]} built!`, '\u{1F3D7}', '#ffa');
+
+            // Construction dust
+            const px = best.c * CELL + def.size * CELL / 2;
+            const py = best.r * CELL + def.size * CELL / 2;
+            dust.emit(15, () => ({
+              x: px + (rng() - 0.5) * def.size * CELL,
+              y: py + (rng() - 0.5) * def.size * CELL * 0.5,
+              vx: (rng() - 0.5) * 50, vy: -30 - rng() * 40,
+              life: 0.8 + rng() * 0.6, size: 3 + rng() * 4,
+              color: [200, 190, 150],
+            }));
+          }
+        }
+      }
+
+      // ─── Process Actions ────────────────────────────────
+      function processActions(dt) {
+        if (actionQueue.length === 0) return;
+        actionDelay -= dt;
+        if (actionDelay > 0) return;
+
+        const batch = Math.min(4, actionQueue.length);
+        for (let i = 0; i < batch; i++) {
+          const a = actionQueue.shift();
+          if (!a) break;
+          actionDelay = a.delay;
+          const { c, r } = a;
+
+          if (a.type === 'road') {
+            if (inBounds(c, r) && (terrain[r][c] === T_EMPTY || terrain[r][c] === T_WATER || terrain[r][c] === T_ROAD)) {
+              terrain[r][c] = a.roadType;
+
+              // Remove trees on this tile
+              trees = trees.filter(t => t.c !== c || t.r !== r);
+
+              // Streetlights every few tiles
+              if ((c + r) % 4 === 0 && a.roadType !== T_BRIDGE) {
+                streetlights.push({ c, r });
+              }
+
+              // Traffic lights at intersections (where roads cross)
+              let roadNeighbors = 0;
+              for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                if (isRoad(c + dc, r + dr)) roadNeighbors++;
+              }
+              if (roadNeighbors >= 3) {
+                trafficLights.push({ c, r, phase: rng() * Math.PI * 2 });
+              }
+
+              // Add trees along road edges
+              if (rng() < 0.25) {
+                for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                  if (inBounds(c + dc, r + dr) && terrain[r + dr][c + dc] === T_EMPTY && rng() < 0.4) {
+                    trees.push({
+                      c: c + dc, r: r + dr,
+                      size: 1.5 + rng() * 1.5,
+                      phase: rng() * Math.PI * 2,
+                      type: 'round',
+                    });
+                  }
+                }
+              }
+            }
+          } else if (a.type === 'zone') {
+            if (inBounds(c, r) && terrain[r][c] === T_EMPTY) {
+              terrain[r][c] = a.zone;
+              trees = trees.filter(t => t.c !== c || t.r !== r);
+
+              // Park gets extra trees
+              if (a.zone === T_PARK) {
+                for (let i = 0; i < 2; i++) {
+                  trees.push({
+                    c, r,
+                    size: 2 + rng() * 2,
+                    phase: rng() * Math.PI * 2,
+                    type: rng() < 0.3 ? 'pine' : 'round',
+                  });
+                }
+              }
+            }
+          } else if (a.type === 'build') {
+            if (inBounds(c, r) && !buildings[r][c] && terrain[r][c] >= T_RES && terrain[r][c] <= T_IND) {
+              buildings[r][c] = {
+                zone: a.zone, height: a.height, lit: rng() > 0.25,
+                builtAt: time, craneUntil: time + 0.8,
+                roofType: rng() < 0.3 ? 'antenna' : (rng() < 0.5 ? 'ac' : 'flat'),
+              };
+              population += (a.zone === T_RES) ? (8 + a.height * 15) : 0;
+              money += (a.zone === T_COM) ? 250 : (a.zone === T_IND) ? 120 : 0;
+
+              const px = c * CELL + CELL / 2, py = r * CELL + CELL / 2;
+              dust.emit(6, () => ({
+                x: px + (rng() - 0.5) * CELL, y: py,
+                vx: (rng() - 0.5) * 35, vy: -22 - rng() * 35,
+                life: 0.5 + rng() * 0.5, size: 2 + rng() * 3,
+                color: [190, 180, 150],
+              }));
+              totalActions++;
+            }
+          } else if (a.type === 'upgrade') {
+            const b = buildings[r]?.[c];
+            if (b && b.height < 3) {
+              b.height++;
+              b.builtAt = time;
+              b.craneUntil = time + 0.6;
+              population += (b.zone === T_RES) ? 20 : 0;
+              money += (b.zone === T_COM) ? 350 : 0;
+
+              const px = c * CELL + CELL / 2, py = r * CELL + CELL / 2;
+              dust.emit(4, () => ({
+                x: px, y: py,
+                vx: (rng() - 0.5) * 25, vy: -18 - rng() * 22,
+                life: 0.35 + rng() * 0.3, size: 1.5 + rng() * 2.5,
+                color: [210, 200, 170],
+              }));
+            }
+          }
+        }
+      }
+
+      // ─── Simulation Phases ──────────────────────────────
+      function advanceSimulation(dt) {
+        if (actionQueue.length > 0) return;
+        simTimer -= dt;
+        if (simTimer > 0) return;
+
+        if (simPhase === 0) {
+          if (!planNextRoads()) { simPhase = 1; simTimer = 0.3; }
+          else {
+            simTimer = 0.15;
+            if (roadRadius <= 6) notify('Road construction begins', '\u{1F6E3}', '#aaa');
+          }
+        } else if (simPhase === 1) {
+          planZones();
+          notify('Zoning areas designated', '\u{1F3D8}', '#8f8');
+          simPhase = 2; simTimer = 0.4;
+        } else if (simPhase === 2) {
+          planBuildings();
+          simPhase = 3; simTimer = 0.8;
+        } else if (simPhase === 3) {
+          if (planNextRoads()) {
+            simPhase = 4; simTimer = 0.25;
+            notify('City expanding...', '\u{1F4C8}', '#8cf');
+          } else {
+            simPhase = 6; simTimer = 0.4;
+          }
+        } else if (simPhase === 4) {
+          planZones(); simPhase = 5; simTimer = 0.4;
+        } else if (simPhase === 5) {
+          planBuildings(); cycleCount++; simPhase = 3; simTimer = 0.6;
+        } else if (simPhase === 6) {
+          upgradeBuildings();
+          notify('Buildings upgrading', '\u{2B06}', '#ff8');
+          simPhase = 7; simTimer = 1.2;
+        } else if (simPhase === 7) {
+          upgradeBuildings(); simPhase = 6; simTimer = 1.8;
+        }
+      }
+
+      // ─── Milestones ─────────────────────────────────────
+      function checkMilestones() {
+        const popMilestones = [100, 500, 1000, 2500, 5000, 10000, 25000, 50000];
+        for (const m of popMilestones) {
+          if (population >= m && lastPopMilestone < m) {
+            lastPopMilestone = m;
+            notify(`Population: ${m.toLocaleString()}!`, '\u{1F389}', '#6f6');
+            if (m >= 1000) satisfaction = Math.min(98, satisfaction + 3);
+          }
+        }
+
+        const moneyMilestones = [50000, 100000, 500000, 1000000];
+        for (const m of moneyMilestones) {
+          if (money >= m && lastMoneyMilestone < m) {
+            lastMoneyMilestone = m;
+            notify(`Treasury: $${(m / 1000).toFixed(0)}K`, '\u{1F4B0}', '#ff6');
+          }
+        }
+      }
+
+      // ─── Cars & Vehicles ───────────────────────────────
+      function spawnCar() {
+        // Collect road tiles (cached periodically would be better but this is fine)
+        let roadTile = null;
+        for (let attempt = 0; attempt < 30; attempt++) {
+          const c = Math.floor(rng() * GRID);
+          const r = Math.floor(rng() * GRID);
+          if (isRoad(c, r)) { roadTile = { c, r }; break; }
+        }
+        if (!roadTile) return;
+
+        const dirs = [];
+        for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          if (isRoad(roadTile.c + dc, roadTile.r + dr)) dirs.push({ dc, dr });
+        }
+        if (dirs.length === 0) return;
+
+        const dir = dirs[Math.floor(rng() * dirs.length)];
+        const isAvenueTile = terrain[roadTile.r][roadTile.c] === T_AVENUE;
+        const speed = isAvenueTile ? (45 + rng() * 40) : (25 + rng() * 35);
+
+        // Vehicle type
+        const roll = rng();
+        let vType, vColor, vSize;
+        if (roll < 0.03) {
+          vType = 'emergency'; vColor = [255, 60, 60]; vSize = 3.5;
+        } else if (roll < 0.1) {
+          vType = 'bus'; vColor = [60, 140, 220]; vSize = 5;
+        } else if (roll < 0.2) {
+          vType = 'truck'; vColor = [180, 160, 80]; vSize = 4;
+        } else {
+          vType = 'car';
+          const carColors = [[220,220,200],[200,200,220],[180,180,200],[240,240,220],[200,210,200]];
+          vColor = carColors[Math.floor(rng() * carColors.length)];
+          vSize = 3;
+        }
+
+        cars.emit(1, () => ({
+          x: roadTile.c * CELL + CELL / 2,
+          y: roadTile.r * CELL + CELL / 2,
+          vx: dir.dc * speed, vy: dir.dr * speed,
+          life: 4 + rng() * 6,
+          dirC: dir.dc, dirR: dir.dr, speed, turnTimer: 0,
+          vType, color: vColor, size: vSize,
+          flashPhase: 0, taillight: rng() > 0.5,
+        }));
+      }
+
+      function updateCars(dt) {
+        carSpawnTimer -= dt;
+        if (carSpawnTimer <= 0) {
+          const num = clamp(Math.floor(totalActions / 40) + 1, 1, 8);
+          for (let i = 0; i < num; i++) spawnCar();
+          carSpawnTimer = 0.3 + rng() * 0.4;
+        }
+
+        cars.forEach(car => {
+          car.turnTimer -= dt;
+          car.flashPhase += dt * 8;
+
+          const gc = Math.floor(car.x / CELL);
+          const gr = Math.floor(car.y / CELL);
+          const cx = gc * CELL + CELL / 2;
+          const cy = gr * CELL + CELL / 2;
+
+          if (car.turnTimer <= 0 && Math.abs(car.x - cx) < 3 && Math.abs(car.y - cy) < 3) {
+            const dirs = [];
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+              if (dc === -car.dirC && dr === -car.dirR) continue;
+              if (isRoad(gc + dc, gr + dr)) dirs.push({ dc, dr });
+            }
+            if (dirs.length > 0) {
+              // Prefer going straight, but occasionally turn
+              let chosen;
+              const straight = dirs.find(d => d.dc === car.dirC && d.dr === car.dirR);
+              if (straight && rng() > 0.3) {
+                chosen = straight;
+              } else {
+                chosen = dirs[Math.floor(rng() * dirs.length)];
+              }
+              car.dirC = chosen.dc;
+              car.dirR = chosen.dr;
+              car.vx = chosen.dc * car.speed;
+              car.vy = chosen.dr * car.speed;
+              car.x = cx;
+              car.y = cy;
+              car.turnTimer = 0.25;
+            }
+          }
+
+          if (!inBounds(gc, gr) || !isRoad(gc, gr)) car.life = 0;
+        });
+      }
+
+      // ─── Industrial Smoke ───────────────────────────────
+      function updateSmoke(dt) {
+        smokeTimer -= dt;
+        if (smokeTimer > 0) return;
+        smokeTimer = 0.3 + rng() * 0.4;
+
+        // Smoke from industrial buildings
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = buildings[r][c];
+            if (!b || b.zone !== T_IND || b.height < 2) continue;
+            if (rng() > 0.15) continue;
+
+            smoke.emit(1, () => ({
+              x: c * CELL + CELL / 2 + (rng() - 0.5) * 4,
+              y: r * CELL + 2,
+              vx: 3 + rng() * 6, vy: -5 - rng() * 8,
+              life: 1.5 + rng() * 2, size: 2 + rng() * 3,
+              color: [120, 115, 110],
+            }));
+          }
+        }
+
+        // Smoke from landmark smokers
+        for (const lm of landmarks) {
+          if (!lm.smoker) continue;
+          smoke.emit(2, () => ({
+            x: lm.c * CELL + lm.size * CELL * 0.7,
+            y: lm.r * CELL + 2,
+            vx: 4 + rng() * 8, vy: -8 - rng() * 12,
+            life: 2 + rng() * 2.5, size: 3 + rng() * 4,
+            color: [100, 95, 90],
+          }));
+        }
+      }
+
+      // ─── Camera ─────────────────────────────────────────
+      const camPoints = [
+        { x: TOTAL_PX / 2, y: TOTAL_PX / 2, zoom: 0.65, dur: 7 },
+        { x: CX * CELL, y: CY * CELL, zoom: 1.9, dur: 5 },
+        { x: CX * CELL - 160, y: CY * CELL - 120, zoom: 1.3, dur: 5 },
+        { x: TOTAL_PX / 2, y: TOTAL_PX / 2, zoom: 0.42, dur: 7 },
+        { x: (CX + 22) * CELL, y: (CY + 20) * CELL, zoom: 1.5, dur: 5 },
+        { x: TOTAL_PX / 2, y: TOTAL_PX / 2 - 60, zoom: 0.52, dur: 7 },
+        { x: 25 * CELL, y: 40 * CELL, zoom: 1.7, dur: 5 },
+        { x: TOTAL_PX / 2, y: TOTAL_PX / 2, zoom: 0.36, dur: 9 },
+      ];
+
+      function updateCamera(dt) {
+        camPanTimer -= dt;
+        if (camPanTimer <= 0) {
+          const pt = camPoints[camPanPhase % camPoints.length];
+          camTargetX = pt.x;
+          camTargetY = pt.y;
+          camTargetZoom = pt.zoom;
+          camPanTimer = pt.dur;
+          camPanPhase++;
+        }
+        const spd = 1.5 * dt;
+        camX = lerp(camX, camTargetX, spd);
+        camY = lerp(camY, camTargetY, spd);
+        camZoom = lerp(camZoom, camTargetZoom, spd);
+      }
+
+      // ─── Drawing ────────────────────────────────────────
+      function drawTerrain(ctx, daylight) {
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const px = c * CELL, py = r * CELL;
+            const tile = terrain[r][c];
+            let color;
+
+            switch (tile) {
+              case T_EMPTY: color = GRASS_COLOR; break;
+              case T_ROAD: color = ROAD_COLOR; break;
+              case T_AVENUE: color = AVENUE_COLOR; break;
+              case T_BRIDGE: color = [75, 70, 55]; break;
+              case T_RES: color = ZONE_RES; break;
+              case T_COM: color = ZONE_COM; break;
+              case T_IND: color = ZONE_IND; break;
+              case T_PARK: color = PARK_COLOR; break;
+              case T_WATER: {
+                const wave = Math.sin(time * 1.8 + c * 0.5 + r * 0.3) * 12;
+                const shimmer = daylight > 0.5 ? Math.sin(time * 3 + c * 2) * 8 * daylight : 0;
+                color = [WATER_COLOR[0], WATER_COLOR[1] + wave, WATER_COLOR[2] + wave * 0.5 + shimmer];
+                break;
+              }
+              default: color = GRASS_COLOR;
+            }
+
+            ctx.fillStyle = rgb(applyDaylight(color, daylight));
+            ctx.fillRect(px, py, CELL, CELL);
+
+            // Road markings
+            if (tile === T_ROAD || tile === T_AVENUE) {
+              const markAlpha = tile === T_AVENUE ? 0.5 : 0.3;
+              ctx.fillStyle = `rgba(100, 100, 70, ${markAlpha * (0.5 + daylight * 0.5)})`;
+
+              const vRoad = isRoad(c, r - 1) && isRoad(c, r + 1);
+              const hRoad = isRoad(c - 1, r) && isRoad(c + 1, r);
+
+              if (vRoad) {
+                // Dashed center line
+                if (tile === T_AVENUE) {
+                  ctx.fillRect(px + CELL / 2 - 0.5, py, 1, CELL);
+                } else if ((r % 3) < 2) {
+                  ctx.fillRect(px + CELL / 2 - 0.5, py, 0.5, CELL);
+                }
+              }
+              if (hRoad) {
+                if (tile === T_AVENUE) {
+                  ctx.fillRect(px, py + CELL / 2 - 0.5, CELL, 1);
+                } else if ((c % 3) < 2) {
+                  ctx.fillRect(px, py + CELL / 2 - 0.5, CELL, 0.5);
+                }
+              }
+
+              // Avenue edge lines
+              if (tile === T_AVENUE) {
+                ctx.fillStyle = `rgba(130, 130, 90, ${0.3 * (0.4 + daylight * 0.6)})`;
+                if (vRoad) {
+                  ctx.fillRect(px, py, 0.5, CELL);
+                  ctx.fillRect(px + CELL - 0.5, py, 0.5, CELL);
+                }
+                if (hRoad) {
+                  ctx.fillRect(px, py, CELL, 0.5);
+                  ctx.fillRect(px, py + CELL - 0.5, CELL, 0.5);
+                }
+              }
+            }
+
+            // Bridge railings
+            if (tile === T_BRIDGE) {
+              ctx.fillStyle = `rgba(130, 120, 90, ${0.6 * (0.5 + daylight * 0.5)})`;
+              ctx.fillRect(px, py, CELL, 1);
+              ctx.fillRect(px, py + CELL - 1, CELL, 1);
+            }
+          }
+        }
+      }
+
+      function drawTrees(ctx, daylight) {
+        for (const t of trees) {
+          const px = t.c * CELL + CELL / 2;
+          const py = t.r * CELL + CELL / 2;
+          const sway = Math.sin(time * 1.2 + t.phase) * 0.8;
+
+          if (t.type === 'pine') {
+            const g = Math.floor(60 + daylight * 50 + Math.sin(time * 0.5 + t.phase) * 10);
+            ctx.fillStyle = `rgba(${Math.floor(15 * (0.5 + daylight * 0.5))}, ${g}, ${Math.floor(20 * (0.5 + daylight * 0.5))}, 0.8)`;
+            ctx.beginPath();
+            ctx.moveTo(px + sway, py - t.size * 1.3);
+            ctx.lineTo(px - t.size * 0.7, py + t.size * 0.5);
+            ctx.lineTo(px + t.size * 0.7, py + t.size * 0.5);
+            ctx.fill();
+          } else {
+            const g = Math.floor(70 + daylight * 60 + Math.sin(time * 0.8 + t.phase) * 12);
+            ctx.fillStyle = `rgba(${Math.floor(20 * (0.5 + daylight * 0.5))}, ${g}, ${Math.floor(22 * (0.5 + daylight * 0.5))}, 0.75)`;
+            ctx.beginPath();
+            ctx.arc(px + sway, py, t.size, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      function drawBuildings(ctx, daylight) {
+        // Shadow direction from day cycle
+        const shadowAngle = dayPhase * Math.PI * 2;
+        const shadowLen = (1 - daylight) * 0.5 + daylight * 2;
+        const sdx = Math.cos(shadowAngle) * shadowLen;
+        const sdy = Math.abs(Math.sin(shadowAngle)) * shadowLen + 0.5;
+
+        for (let r = 0; r < GRID; r++) {
+          for (let c = 0; c < GRID; c++) {
+            const b = buildings[r][c];
+            if (!b) continue;
+
+            const px = c * CELL, py = r * CELL;
+            const age = time - b.builtAt;
+            const growT = clamp(age / 0.5, 0, 1);
+            const bh = (3 + b.height * 3.5) * growT;
+            const hasCrane = time < b.craneUntil;
+
+            let bColors = b.zone === T_RES ? BLDG_RES : b.zone === T_COM ? BLDG_COM : BLDG_IND;
+            let baseColor = applyDaylight(bColors[b.height], daylight);
+
+            // Shadow
+            ctx.fillStyle = `rgba(0,0,0,${0.15 + daylight * 0.15})`;
+            ctx.fillRect(px + sdx * b.height, py + sdy * b.height, CELL - 1, CELL - 1);
+
+            // Building body
+            ctx.fillStyle = rgb(baseColor);
+            ctx.fillRect(px + 1, py + (CELL - bh * 0.5), CELL - 2, bh * 0.5);
+
+            // Top highlight
+            const highlight = baseColor.map(v => Math.min(255, v + 30 + daylight * 20));
+            ctx.fillStyle = rgb(highlight);
+            ctx.fillRect(px + 1, py + (CELL - bh * 0.5), CELL - 2, 1);
+
+            // Construction crane
+            if (hasCrane) {
+              const craneProgress = clamp(age / 0.5, 0, 1);
+              ctx.strokeStyle = `rgba(220, 180, 40, ${0.8 * (0.5 + daylight * 0.5)})`;
+              ctx.lineWidth = 0.8;
+              ctx.beginPath();
+              // Vertical mast
+              const craneBase = py + CELL - bh * 0.5;
+              const craneTop = craneBase - 6 * craneProgress;
+              ctx.moveTo(px + CELL / 2, craneBase);
+              ctx.lineTo(px + CELL / 2, craneTop);
+              // Horizontal jib
+              ctx.moveTo(px + CELL / 2, craneTop);
+              ctx.lineTo(px + CELL / 2 + 6, craneTop);
+              // Cable
+              ctx.moveTo(px + CELL / 2 + 5, craneTop);
+              ctx.lineTo(px + CELL / 2 + 5, craneTop + 3);
+              ctx.stroke();
+            }
+
+            // Window lights — enhanced at night
+            if (b.lit && b.height >= 1 && growT >= 1) {
+              const nightBoost = 1 - daylight;
+              const windowAlpha = daylight > 0.7 ? 0.15 : (0.3 + nightBoost * 0.5);
+
+              for (let wy = 0; wy < Math.min(b.height + 1, 3); wy++) {
+                for (let wx = 0; wx < 2; wx++) {
+                  const winOn = Math.sin(time * 0.4 + c * 3.7 + r * 7.3 + wx * 2.1 + wy * 4.7) > -0.4;
+                  if (!winOn) continue;
+
+                  if (b.zone === T_COM) {
+                    ctx.fillStyle = `rgba(100, 180, 255, ${windowAlpha + Math.sin(time * 2.5 + c) * 0.1})`;
+                  } else if (b.zone === T_IND) {
+                    ctx.fillStyle = `rgba(255, 180, 80, ${windowAlpha * 0.8})`;
+                  } else {
+                    ctx.fillStyle = `rgba(255, 220, 120, ${windowAlpha + Math.sin(time * 1.5 + c + r) * 0.08})`;
+                  }
+                  ctx.fillRect(
+                    px + 2 + wx * (CELL / 2 - 1),
+                    py + CELL - bh * 0.5 + 2 + wy * 3,
+                    2, 1.5
+                  );
+                }
+              }
+
+              // Night glow around lit buildings
+              if (nightBoost > 0.3 && b.height >= 2) {
+                const glowR = CELL * 0.8;
+                const grad = ctx.createRadialGradient(
+                  px + CELL / 2, py + CELL / 2, 0,
+                  px + CELL / 2, py + CELL / 2, glowR
+                );
+                const gc = b.zone === T_COM ? '100,180,255' : '255,200,100';
+                grad.addColorStop(0, `rgba(${gc}, ${nightBoost * 0.12})`);
+                grad.addColorStop(1, `rgba(${gc}, 0)`);
+                ctx.fillStyle = grad;
+                ctx.fillRect(px - 2, py - 2, CELL + 4, CELL + 4);
+              }
+            }
+
+            // Rooftop details (only when fully grown)
+            if (growT >= 1 && !hasCrane) {
+              if (b.roofType === 'antenna' && b.height >= 2) {
+                ctx.strokeStyle = `rgba(180, 180, 180, ${0.5 + daylight * 0.3})`;
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                ctx.moveTo(px + CELL / 2, py + CELL - bh * 0.5);
+                ctx.lineTo(px + CELL / 2, py + CELL - bh * 0.5 - 3);
+                ctx.stroke();
+
+                // Blink on antenna at night
+                if (daylight < 0.3) {
+                  const blink = Math.sin(time * 5 + c * 2.3 + r) > 0.6;
+                  if (blink) {
+                    ctx.fillStyle = 'rgba(255, 40, 40, 0.9)';
+                    ctx.fillRect(px + CELL / 2 - 0.5, py + CELL - bh * 0.5 - 3.5, 1, 1);
+                  }
+                }
+              } else if (b.roofType === 'ac' && b.height >= 1) {
+                ctx.fillStyle = `rgba(${140 + daylight * 40}, ${140 + daylight * 40}, ${145 + daylight * 40}, 0.5)`;
+                ctx.fillRect(px + 3, py + CELL - bh * 0.5 - 1, 3, 1.5);
+              }
+            }
+
+            // Tall building beacon
+            if (b.height >= 3 && b.zone === T_COM && daylight < 0.5) {
+              const blink = Math.sin(time * 4 + c + r) > 0.65;
+              if (blink) {
+                ctx.fillStyle = 'rgba(255, 50, 50, 0.9)';
+                ctx.fillRect(px + CELL / 2 - 0.5, py + CELL - bh * 0.5 - 2, 1, 1);
+              }
+            }
+          }
+        }
+      }
+
+      function drawLandmarks(ctx, daylight) {
+        for (const lm of landmarks) {
+          const px = lm.c * CELL, py = lm.r * CELL;
+          const sz = lm.size * CELL;
+          const age = time - lm.builtAt;
+          const growT = clamp(age / 1.0, 0, 1);
+
+          // Shadow
+          ctx.fillStyle = `rgba(0,0,0,${0.2 + daylight * 0.1})`;
+          ctx.fillRect(px + 3, py + 3, sz - 2, sz - 2);
+
+          // Building body
+          const col = applyDaylight(lm.color, daylight);
+          ctx.fillStyle = rgb(col);
+          const h = sz * 0.6 * growT;
+          ctx.fillRect(px + 1, py + sz - h, sz - 2, h);
+
+          // Roof highlight
+          ctx.fillStyle = rgb(col.map(v => Math.min(255, v + 35)));
+          ctx.fillRect(px + 1, py + sz - h, sz - 2, 2);
+
+          // Label
+          if (growT >= 1) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.6 + daylight * 0.3})`;
+            ctx.font = `bold ${Math.max(7, lm.size * 2.5)}px monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(lm.label, px + sz / 2, py + sz / 2);
+            ctx.textAlign = 'left';
+          }
+
+          // Night lights on landmarks
+          if (daylight < 0.4 && growT >= 1) {
+            const nightBoost = 1 - daylight;
+            for (let i = 0; i < lm.size; i++) {
+              const winX = px + 3 + i * (sz / lm.size);
+              for (let j = 0; j < 2; j++) {
+                ctx.fillStyle = `rgba(255, 220, 130, ${nightBoost * 0.5})`;
+                ctx.fillRect(winX, py + sz - h + 4 + j * 6, 2, 2);
+              }
+            }
+
+            // Glow
+            const grad = ctx.createRadialGradient(
+              px + sz / 2, py + sz / 2, 0,
+              px + sz / 2, py + sz / 2, sz * 0.8
+            );
+            grad.addColorStop(0, `rgba(255, 200, 100, ${nightBoost * 0.08})`);
+            grad.addColorStop(1, 'rgba(255, 200, 100, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(px - sz * 0.3, py - sz * 0.3, sz * 1.6, sz * 1.6);
+          }
+
+          // Airport runway
+          if (lm.type === 'airport' && growT >= 1) {
+            ctx.fillStyle = `rgba(${60 + daylight * 40}, ${60 + daylight * 40}, ${65 + daylight * 40}, 0.9)`;
+            ctx.fillRect(px + 2, py + sz - 4, sz - 4, 3);
+            // Runway lights
+            if (daylight < 0.5) {
+              for (let i = 0; i < lm.size * 2; i++) {
+                const on = ((time * 3 + i * 0.5) % 2) < 1;
+                ctx.fillStyle = on ? 'rgba(255, 255, 255, 0.8)' : 'rgba(255, 100, 100, 0.4)';
+                ctx.fillRect(px + 3 + i * (sz - 6) / (lm.size * 2), py + sz - 3, 1, 1);
+              }
+            }
+          }
+        }
+      }
+
+      function drawStreetlights(ctx, daylight) {
+        if (daylight > 0.6) return;
+        const nightBoost = 1 - daylight;
+
+        for (const sl of streetlights) {
+          const px = sl.c * CELL + CELL / 2;
+          const py = sl.r * CELL + CELL / 2;
+
+          // Light dot
+          ctx.fillStyle = `rgba(255, 230, 160, ${nightBoost * 0.7})`;
+          ctx.fillRect(px - 0.5, py - 0.5, 1.5, 1.5);
+
+          // Glow pool
+          const grad = ctx.createRadialGradient(px, py, 0, px, py, CELL * 1.2);
+          grad.addColorStop(0, `rgba(255, 220, 140, ${nightBoost * 0.1})`);
+          grad.addColorStop(1, 'rgba(255, 220, 140, 0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(px - CELL * 1.2, py - CELL * 1.2, CELL * 2.4, CELL * 2.4);
+        }
+      }
+
+      function drawTrafficLights(ctx, daylight) {
+        for (const tl of trafficLights) {
+          const px = tl.c * CELL + CELL - 2;
+          const py = tl.r * CELL + 1;
+          const phase = Math.sin(time * 0.8 + tl.phase);
+
+          // Green or red
+          if (phase > 0) {
+            ctx.fillStyle = `rgba(50, 220, 50, ${0.5 + (1 - daylight) * 0.4})`;
+          } else {
+            ctx.fillStyle = `rgba(220, 50, 50, ${0.5 + (1 - daylight) * 0.4})`;
+          }
+          ctx.fillRect(px, py, 1.5, 1.5);
+        }
+      }
+
+      function drawCars(ctx, daylight) {
+        const nightBoost = 1 - daylight;
+
+        cars.forEach(car => {
+          // Car body
+          if (car.vType === 'emergency') {
+            const flash = Math.sin(car.flashPhase) > 0;
+            ctx.fillStyle = flash ? 'rgba(255, 40, 40, 0.9)' : 'rgba(40, 40, 255, 0.9)';
+          } else if (car.vType === 'bus') {
+            ctx.fillStyle = rgb(applyDaylight(car.color, daylight), 0.9);
+          } else if (car.vType === 'truck') {
+            ctx.fillStyle = rgb(applyDaylight(car.color, daylight), 0.85);
+          } else {
+            ctx.fillStyle = rgb(applyDaylight(car.color, daylight), 0.8);
+          }
+
+          const half = car.size / 2;
+          // Elongate in direction of travel
+          if (Math.abs(car.dirC) > 0) {
+            ctx.fillRect(car.x - half * 1.3, car.y - half * 0.7, car.size * 1.3, car.size * 0.7);
+          } else {
+            ctx.fillRect(car.x - half * 0.7, car.y - half * 1.3, car.size * 0.7, car.size * 1.3);
+          }
+
+          // Headlights (brighter at night)
+          const hlAlpha = 0.2 + nightBoost * 0.6;
+          ctx.fillStyle = `rgba(255, 255, 220, ${hlAlpha})`;
+          ctx.fillRect(car.x + car.dirC * 3 - 0.5, car.y + car.dirR * 3 - 0.5, 1, 1);
+
+          // Taillights
+          if (nightBoost > 0.2) {
+            ctx.fillStyle = `rgba(255, 30, 30, ${nightBoost * 0.5})`;
+            ctx.fillRect(car.x - car.dirC * 3 - 0.3, car.y - car.dirR * 3 - 0.3, 0.8, 0.8);
+          }
+
+          // Headlight beam at night
+          if (nightBoost > 0.4) {
+            const grad = ctx.createRadialGradient(
+              car.x + car.dirC * 5, car.y + car.dirR * 5, 0,
+              car.x + car.dirC * 5, car.y + car.dirR * 5, CELL * 0.8
+            );
+            grad.addColorStop(0, `rgba(255, 240, 180, ${nightBoost * 0.06})`);
+            grad.addColorStop(1, 'rgba(255, 240, 180, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(car.x - CELL, car.y - CELL, CELL * 2, CELL * 2);
+          }
+        });
+      }
+
+      function drawParticles(ctx, daylight) {
+        dust.forEach(p => {
+          const alpha = clamp(p.life * 2, 0, 0.6);
+          ctx.fillStyle = rgb(applyDaylight(p.color, daylight), alpha);
+          ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+        });
+
+        smoke.forEach(p => {
+          const alpha = clamp(p.life * 0.3, 0, 0.35);
+          ctx.fillStyle = rgb(applyDaylight(p.color, daylight), alpha);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // ─── HUD ────────────────────────────────────────────
+      function drawMinimap(ctx, w, h) {
+        const mmW = 100, mmH = 100;
+        const mmX = w - mmW - 8, mmY = h - mmH - 28;
+        const scale = mmW / GRID;
+
+        // Background
+        ctx.fillStyle = 'rgba(5, 10, 20, 0.85)';
+        ctx.fillRect(mmX - 2, mmY - 2, mmW + 4, mmH + 4);
+        ctx.strokeStyle = 'rgba(100, 140, 200, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(mmX - 2, mmY - 2, mmW + 4, mmH + 4);
+
+        // Terrain
+        for (let r = 0; r < GRID; r += 2) {
+          for (let c = 0; c < GRID; c += 2) {
+            const tile = terrain[r][c];
+            let color;
+            if (tile === T_WATER) color = '#1a3570';
+            else if (tile === T_ROAD || tile === T_AVENUE || tile === T_BRIDGE) color = '#444';
+            else if (tile === T_RES) color = '#2a6a2a';
+            else if (tile === T_COM) color = '#2a4a8a';
+            else if (tile === T_IND) color = '#8a7a2a';
+            else if (tile === T_PARK) color = '#1a5a1a';
+            else color = '#1a3a18';
+
+            if (buildings[r][c]) {
+              const b = buildings[r][c];
+              if (b.zone === T_RES) color = '#3a8a3a';
+              else if (b.zone === T_COM) color = '#3a5aaa';
+              else color = '#aa8a3a';
+            }
+
+            ctx.fillStyle = color;
+            ctx.fillRect(mmX + c * scale, mmY + r * scale, scale * 2 + 0.5, scale * 2 + 0.5);
+          }
+        }
+
+        // Landmarks on minimap
+        for (const lm of landmarks) {
+          ctx.fillStyle = rgb(lm.color, 0.8);
+          ctx.fillRect(mmX + lm.c * scale, mmY + lm.r * scale, lm.size * scale, lm.size * scale);
+        }
+
+        // Viewport rectangle
+        const vpLeft = (camX - w / 2 / camZoom) / TOTAL_PX;
+        const vpTop = (camY - h / 2 / camZoom) / TOTAL_PX;
+        const vpW = (w / camZoom) / TOTAL_PX;
+        const vpH = (h / camZoom) / TOTAL_PX;
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(
+          mmX + clamp(vpLeft, 0, 1) * mmW,
+          mmY + clamp(vpTop, 0, 1) * mmH,
+          clamp(vpW, 0.05, 1) * mmW,
+          clamp(vpH, 0.05, 1) * mmH
+        );
+      }
+
+      function drawToolbar(ctx, w, h) {
+        const tbW = 32, tbX = 4, tbY = 36;
+        const tools = [
+          { icon: '\u{1F6E3}', label: 'Road',  active: simPhase <= 1 || simPhase === 3 },
+          { icon: '\u{1F3D8}', label: 'Zone',  active: simPhase === 1 || simPhase === 4 },
+          { icon: '\u{1F3E0}', label: 'Build', active: simPhase === 2 || simPhase === 5 },
+          { icon: '\u{2B06}',  label: 'Up',    active: simPhase >= 6 },
+          { icon: '\u{1F333}', label: 'Park',  active: false },
+          { icon: '\u{26A1}',  label: 'Power', active: false },
+          { icon: '\u{1F4A7}', label: 'Water', active: false },
+          { icon: '\u{1F50D}', label: 'Query', active: false },
+        ];
+
+        ctx.fillStyle = 'rgba(10, 15, 30, 0.8)';
+        ctx.fillRect(tbX, tbY, tbW, tools.length * (tbW + 2) + 4);
+
+        for (let i = 0; i < tools.length; i++) {
+          const ty = tbY + 2 + i * (tbW + 2);
+          const t = tools[i];
+
+          ctx.fillStyle = t.active ? 'rgba(60, 100, 180, 0.6)' : 'rgba(30, 35, 50, 0.7)';
+          ctx.fillRect(tbX + 2, ty, tbW - 4, tbW - 4);
+
+          if (t.active) {
+            ctx.strokeStyle = 'rgba(100, 160, 255, 0.7)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(tbX + 2, ty, tbW - 4, tbW - 4);
+          }
+
+          ctx.fillStyle = t.active ? '#fff' : '#888';
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(t.icon, tbX + tbW / 2, ty + (tbW - 4) / 2);
+        }
+        ctx.textAlign = 'left';
+      }
+
+      function drawNotifications(ctx, w, h) {
+        const now = time;
+        notifications = notifications.filter(n => now - n.spawnTime < n.life);
+
+        for (let i = 0; i < notifications.length; i++) {
+          const n = notifications[i];
+          const age = now - n.spawnTime;
+          const fadeIn = smoothstep(0, 0.3, age);
+          const fadeOut = 1 - smoothstep(n.life - 0.5, n.life, age);
+          const alpha = fadeIn * fadeOut;
+          const slideX = (1 - fadeIn) * 120;
+
+          const ny = 44 + i * 28;
+          const nx = w - 220 - slideX;
+
+          ctx.fillStyle = `rgba(10, 15, 30, ${alpha * 0.85})`;
+          ctx.fillRect(nx, ny, 210, 24);
+
+          ctx.strokeStyle = `rgba(${n.color === '#6f6' ? '100,255,100' : n.color === '#ff6' ? '255,255,100' : n.color === '#8cf' ? '130,200,255' : n.color === '#ffa' ? '255,255,160' : n.color === '#ff8' ? '255,255,130' : '180,180,180'}, ${alpha * 0.5})`;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(nx, ny, 210, 24);
+
+          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.font = '11px monospace';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`${n.icon} ${n.text}`, nx + 6, ny + 12);
+        }
+      }
+
+      function drawHUD(ctx, w, h) {
+        const barH = 30;
+        const daylight = getDaylight();
+
+        // Top bar
+        ctx.fillStyle = 'rgba(10, 15, 30, 0.88)';
+        ctx.fillRect(0, 0, w, barH);
+
+        // City name
+        ctx.fillStyle = '#88ccff';
+        ctx.font = 'bold 13px monospace';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`  ${cityName}`, 40, barH / 2);
+
+        // Day/night indicator
+        const timeOfDay = dayPhase % 1;
+        let timeIcon, timeLabel;
+        if (timeOfDay < 0.2 || timeOfDay > 0.8) { timeIcon = '\u{1F319}'; timeLabel = 'Night'; }
+        else if (timeOfDay < 0.3) { timeIcon = '\u{1F305}'; timeLabel = 'Dawn'; }
+        else if (timeOfDay < 0.65) { timeIcon = '\u2600\uFE0F'; timeLabel = 'Day'; }
+        else if (timeOfDay < 0.75) { timeIcon = '\u{1F307}'; timeLabel = 'Dusk'; }
+        else { timeIcon = '\u{1F319}'; timeLabel = 'Night'; }
+
+        ctx.fillStyle = '#aaa';
+        ctx.font = '11px monospace';
+        const timeStr = `${timeIcon} ${timeLabel}`;
+        ctx.fillText(timeStr, 160, barH / 2);
+
+        // Speed indicator
+        ctx.fillStyle = '#666';
+        ctx.fillText('\u25B6\u25B6', 230, barH / 2);
+
+        // Stats on right
+        const stats = [
+          { icon: '\u{1F46A}', val: population.toLocaleString(), color: '#6f6' },
+          { icon: '$', val: money.toLocaleString(), color: '#ff6' },
+          { icon: '\u2764', val: `${satisfaction}%`, color: satisfaction > 70 ? '#6f6' : '#f66' },
+        ];
+
+        let sx = w - 16;
+        ctx.textAlign = 'right';
+        ctx.font = '12px monospace';
+        for (let i = stats.length - 1; i >= 0; i--) {
+          const s = stats[i];
+          ctx.fillStyle = s.color;
+          ctx.fillText(`${s.icon} ${s.val}`, sx, barH / 2);
+          sx -= ctx.measureText(`${s.icon} ${s.val}`).width + 18;
+        }
+        ctx.textAlign = 'left';
+
+        // Bottom bar
+        const botH = 22;
+        ctx.fillStyle = 'rgba(10, 15, 30, 0.8)';
+        ctx.fillRect(0, h - botH, w, botH);
+
+        ctx.font = '10px monospace';
+        const legend = [
+          { label: 'R', color: rgb(ZONE_RES) },
+          { label: 'C', color: rgb(ZONE_COM) },
+          { label: 'I', color: rgb(ZONE_IND) },
+        ];
+        let lx = 42;
+        for (const l of legend) {
+          ctx.fillStyle = l.color;
+          ctx.fillRect(lx, h - botH + 5, 10, 12);
+          ctx.fillStyle = '#aaa';
+          ctx.fillText(l.label, lx + 13, h - botH / 2 + 1);
+          lx += 32;
+        }
+
+        // RCI demand bars
+        lx += 8;
+        ctx.fillStyle = '#555';
+        ctx.fillText('RCI:', lx, h - botH / 2 + 1);
+        lx += 30;
+        const demands = [
+          { color: '#4a4', val: 0.3 + Math.sin(time * 0.4) * 0.25 + Math.sin(time * 0.17) * 0.15 },
+          { color: '#48f', val: 0.5 + Math.sin(time * 0.3 + 1) * 0.3 },
+          { color: '#cc4', val: 0.4 + Math.sin(time * 0.5 + 2) * 0.25 },
+        ];
+        for (const d of demands) {
+          const barW = 28;
+          ctx.fillStyle = '#181818';
+          ctx.fillRect(lx, h - botH + 6, barW, 10);
+          ctx.fillStyle = d.color;
+          const v = clamp(d.val, 0, 1);
+          ctx.fillRect(lx, h - botH + 6, barW * v, 10);
+          // Outline
+          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(lx, h - botH + 6, barW, 10);
+          lx += barW + 4;
+        }
+
+        // Draw toolbar, minimap, notifications
+        drawToolbar(ctx, w, h);
+        drawMinimap(ctx, w, h);
+        drawNotifications(ctx, w, h);
+      }
+
+      // ─── Main Draw ─────────────────────────────────────
+      function draw(ctx, { time: t, dt, width: w, height: h }) {
+        time = t;
+        dayPhase += dt * DAY_SPEED;
+
+        const daylight = getDaylight();
+        const skyColor = getSkyColor();
+
+        // Update systems
+        advanceSimulation(dt);
+        processActions(dt);
+        updateCars(dt);
+        updateCamera(dt);
+        updateSmoke(dt);
+        checkLandmarks();
+        checkMilestones();
+
+        dust.update(dt);
+        cars.update(dt);
+        smoke.update(dt);
+
+        // Stats
+        satisfaction = Math.floor(clamp(
+          68 + Math.sin(time * 0.5) * 8 + cycleCount * 2 + placedLandmarks.size * 2,
+          45, 98
+        ));
+        money += Math.floor(dt * (60 + population * 0.12));
+
+        // ─── Render ──────────────────────────────────────
+        // Sky background
+        ctx.fillStyle = rgb(skyColor);
+        ctx.fillRect(0, 0, w, h);
+
+        // Stars at night
+        if (daylight < 0.3) {
+          const starAlpha = (1 - daylight / 0.3) * 0.6;
+          for (let i = 0; i < 60; i++) {
+            const sx = ((i * 137.5) % w);
+            const sy = ((i * 97.3 + i * i * 3.1) % (h * 0.4));
+            const twinkle = Math.sin(time * (1 + (i % 5)) + i * 2.7) * 0.3 + 0.7;
+            ctx.fillStyle = `rgba(255, 255, 240, ${starAlpha * twinkle * 0.5})`;
+            ctx.fillRect(sx, sy, 1, 1);
+          }
+        }
+
+        ctx.save();
+        ctx.translate(w / 2, h / 2);
+        ctx.scale(camZoom, camZoom);
+        ctx.translate(-camX, -camY);
+
+        drawTerrain(ctx, daylight);
+        drawTrees(ctx, daylight);
+        drawBuildings(ctx, daylight);
+        drawLandmarks(ctx, daylight);
+        drawStreetlights(ctx, daylight);
+        drawTrafficLights(ctx, daylight);
+        drawCars(ctx, daylight);
+        drawParticles(ctx, daylight);
+
+        ctx.restore();
+
+        // HUD
+        drawHUD(ctx, w, h);
+      }
+
+      // ─── Init & Launch ─────────────────────────────────
+      initTerrain();
+
+      camX = CX * CELL;
+      camY = CY * CELL;
+      camTargetX = camX;
+      camTargetY = camY;
+      camZoom = 1.5;
+      camTargetZoom = 1.5;
+      camPanTimer = 4;
+
+      notify('Welcome to Asciville!', '\u{1F3D9}', '#8cf', 5);
+
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 10,
+          charset: 'density',
+          colorScheme: 'neon',
+          background: '#06060a',
+          crtEnabled: true,
+          crtScanlines: 0.12,
+          crtGlow: 0.08,
+        },
+        layers: [
+          {
+            fontSize: 6,
+            charset: 'braille',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.2,
+            zIndex: 1,
+          },
+        ],
+        draw,
+      });
+    </script>
+  </body>
+</html>
