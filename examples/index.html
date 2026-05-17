@@ -6,7 +6,15 @@
     <title>ascii-ify — Examples</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; font-family: monospace; color: #ccc; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0a0a0f;
+        font-family: monospace;
+        color: #ccc;
+        --nav-height: 0px;
+      }
 
       nav {
         position: fixed;
@@ -80,10 +88,10 @@
 
       iframe {
         position: absolute;
-        top: 0;
+        top: var(--nav-height);
         left: 0;
         width: 100%;
-        height: 100%;
+        height: calc(100% - var(--nav-height));
         border: none;
       }
     </style>
@@ -187,7 +195,15 @@
 
       const btnGrid = document.getElementById('btn-grid');
       const frame = document.getElementById('frame');
+      const nav = document.querySelector('nav');
       let current = 0;
+
+      // Keep the example viewport below the browser chrome, even when buttons wrap.
+      const syncNavHeight = () => {
+        document.body.style.setProperty('--nav-height', `${nav.offsetHeight}px`);
+      };
+      syncNavHeight();
+      new ResizeObserver(syncNavHeight).observe(nav);
 
       // Build buttons
       const buttons = examples.map((ex, i) => {
