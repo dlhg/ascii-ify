@@ -67,7 +67,7 @@ new AsciiIfy(sourceCanvas, options?)
 | `fontSize` | number | 16 | Character size in pixels |
 | `density` | number | 1 | Spacing multiplier (1=tight, 4=loose) |
 | `charset` | string | 'density' | Preset name or raw character string |
-| `colorScheme` | string | 'rainbow' | Color scheme name |
+| `colorScheme` | string | 'rainbow' | Color scheme name, or `'source'` to color glyphs from sampled source pixels |
 | `background` | string | '#08080c' | Output canvas background color |
 | `fade` | number | 0 | Spatial opacity variation (0-1) |
 | `speed` | number | 1 | Time multiplier for patterns/cycling |
@@ -184,7 +184,7 @@ overlay.set('pattern', 'kaleidoscope');
 | `opacity` | number | 1 | Layer opacity |
 | `blendMode` | string | 'replace' | 'replace' or 'add' |
 
-When `charset` or `colorScheme` is `null`, the layer inherits from the parent instance.
+When `charset` or `colorScheme` is `null`, the layer inherits from the parent instance. Set `colorScheme` to `'source'` to use each layer's sampled source canvas colors instead of a generated color scheme.
 
 ## Control Panel
 

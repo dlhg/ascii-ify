@@ -9,6 +9,7 @@ import { PARAM_RANGES } from '../data/defaults.js';
 const CHARSET_NAMES = CHARSETS.map(c => c.name);
 const EDGE_CHARSET_NAMES = EDGE_CHARSETS.map(c => c.name);
 const SCHEME_NAMES = COLOR_SCHEMES.map(s => s.name);
+const COLOR_OPTIONS = ['source', ...SCHEME_NAMES];
 const PATTERN_NAMES = ['none', ...PATTERNS.map(p => p.name)];
 const BLEND_MODES = ['replace', 'add'];
 const RENDER_MODES = ['2d', '3d'];
@@ -279,9 +280,9 @@ export class ControlPanel {
     // Color Scheme
     this._registerImplicit(new Selector({
       label: 'Color',
-      options: SCHEME_NAMES,
-      get: () => SCHEME_NAMES.indexOf(ascii.get('colorScheme')),
-      set: (i) => ascii.set('colorScheme', SCHEME_NAMES[i]),
+      options: COLOR_OPTIONS,
+      get: () => COLOR_OPTIONS.indexOf(ascii.get('colorScheme')),
+      set: (i) => ascii.set('colorScheme', COLOR_OPTIONS[i]),
     }), body);
 
     // Pattern
@@ -626,12 +627,12 @@ export class ControlPanel {
     // Color Scheme
     this._register(new Selector({
       label: 'Color',
-      options: ['inherit', ...SCHEME_NAMES],
+      options: ['inherit', ...COLOR_OPTIONS],
       get: () => {
         const s = layer.get('colorScheme');
-        return s ? SCHEME_NAMES.indexOf(s) + 1 : 0;
+        return s ? COLOR_OPTIONS.indexOf(s) + 1 : 0;
       },
-      set: (i) => layer.set('colorScheme', i === 0 ? null : SCHEME_NAMES[i - 1]),
+      set: (i) => layer.set('colorScheme', i === 0 ? null : COLOR_OPTIONS[i - 1]),
     }), container);
 
     // Pattern
@@ -986,7 +987,7 @@ export class ControlPanel {
     drift(ascii, 'colorCycleRate', 0.1, ascii.get('colorCycle') ? 0.35 : 0.08);
 
     maybePickOther(ascii, 'charset', CHARSET_NAMES, 0.12);
-    maybePickOther(ascii, 'colorScheme', SCHEME_NAMES, 0.12);
+    maybePickOther(ascii, 'colorScheme', COLOR_OPTIONS, 0.12);
     maybePattern(ascii, 0.14);
     maybeSet(ascii, 'colorCycle', !ascii.get('colorCycle'), 0.08);
 
@@ -1026,7 +1027,7 @@ export class ControlPanel {
         drift(layer, 'offsetY', 0.04, 0.2);
         drift(layer, 'zIndex', 0.04, 0.12);
         maybePickOther(layer, 'charset', [null, ...CHARSET_NAMES], layer.get('charset') == null ? 0.04 : 0.1);
-        maybePickOther(layer, 'colorScheme', [null, ...SCHEME_NAMES], layer.get('colorScheme') == null ? 0.04 : 0.1);
+        maybePickOther(layer, 'colorScheme', [null, ...COLOR_OPTIONS], layer.get('colorScheme') == null ? 0.04 : 0.1);
         maybePattern(layer, 0.1);
         maybePickOther(layer, 'blendMode', BLEND_MODES, 0.08);
         maybeSet(layer, 'edgeDetect', !layer.get('edgeDetect'), 0.06);
@@ -1151,7 +1152,7 @@ export class ControlPanel {
     if (BOOLEAN_KEYS.has(key)) return typeof value === 'boolean';
     if (STRING_KEYS.has(key)) return typeof value === 'string';
     if (key === 'charset') return layerValue ? value == null || CHARSET_NAMES.includes(value) : CHARSET_NAMES.includes(value);
-    if (key === 'colorScheme') return layerValue ? value == null || SCHEME_NAMES.includes(value) : SCHEME_NAMES.includes(value);
+    if (key === 'colorScheme') return layerValue ? value == null || COLOR_OPTIONS.includes(value) : COLOR_OPTIONS.includes(value);
     if (key === 'edgeCharset') return EDGE_CHARSET_NAMES.includes(value);
     if (key === 'pattern') return value == null || PATTERN_NAMES.slice(1).includes(value);
     if (key === 'blendMode') return BLEND_MODES.includes(value);

@@ -51,6 +51,7 @@ export class AsciiIfy extends EventEmitter {
     // Offscreen sampling context + brightness buffer (reused)
     this._sampleCtx = null;
     this._sampleBuf = null;
+    this._sampleColorBuf = null;
     this._depthBuf = null;
 
     // CRT post-processing (lazy-initialized)
@@ -441,18 +442,21 @@ export class AsciiIfy extends EventEmitter {
     const grid = this._grid;
     if (grid.cols <= 0 || grid.rows <= 0) return;
 
-    const schemeIndex = this._resolveSchemeIndex(this._params.colorScheme);
+    const useSourceColors = this._params.colorScheme === 'source';
+    const schemeIndex = useSourceColors ? 0 : this._resolveSchemeIndex(this._params.colorScheme);
     ctx.font = `${this._params.fontSize}px monospace`;
 
     // Edge detection path
     if (this._params.edgeDetect) {
-      const { magnitude, direction, ctx: sCtx } = detectEdges(
-        this._source, grid.cols, grid.rows, this._sampleCtx, this._params.edgeThreshold
+      const { magnitude, direction, colors, ctx: sCtx } = detectEdges(
+        this._source, grid.cols, grid.rows, this._sampleCtx, this._params.edgeThreshold,
+        useSourceColors ? this._sampleColorBuf : undefined
       );
       this._sampleCtx = sCtx;
+      if (colors) this._sampleColorBuf = colors;
 
       const edgeChars = this._resolveEdgeCharset(this._params.edgeCharset);
-      const colorLUT = buildColorLUT(schemeIndex, 256, t, {
+      const colorLUT = useSourceColors ? null : buildColorLUT(schemeIndex, 256, t, {
         cycling: this._params.colorCycle,
         phase: this._colorPhase,
       });
@@ -460,9 +464,9 @@ export class AsciiIfy extends EventEmitter {
       if (this._params.renderMode === '3d') {
         const opts = this._projectionOptions(w, h, this._params.fontSize);
         opts.depthValues = this._depthValues(magnitude, this);
-        renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t, opts);
+        renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t, opts, colors);
       } else {
-        renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t);
+        renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t, colors);
       }
       return;
     }
@@ -471,9 +475,13 @@ export class AsciiIfy extends EventEmitter {
     const chars = this._resolveChars(this._params.charset);
 
     // Sample source
-    const { brightness, ctx: sCtx } = sampleCanvas(this._source, grid.cols, grid.rows, this._sampleCtx, this._sampleBuf);
+    const { brightness, colors, ctx: sCtx } = sampleCanvas(
+      this._source, grid.cols, grid.rows, this._sampleCtx, this._sampleBuf,
+      useSourceColors ? this._sampleColorBuf : undefined
+    );
     this._sampleCtx = sCtx;
     this._sampleBuf = brightness;
+    if (colors) this._sampleColorBuf = colors;
 
     // Blend with pattern if set
     const patternName = this._params.pattern;
@@ -492,7 +500,7 @@ export class AsciiIfy extends EventEmitter {
     }
 
     // Build color LUT
-    const colorLUT = buildColorLUT(schemeIndex, chars.length, t, {
+    const colorLUT = useSourceColors ? null : buildColorLUT(schemeIndex, chars.length, t, {
       cycling: this._params.colorCycle,
       phase: this._colorPhase,
     });
@@ -501,9 +509,9 @@ export class AsciiIfy extends EventEmitter {
     if (this._params.renderMode === '3d') {
       const opts = this._projectionOptions(w, h, this._params.fontSize);
       opts.depthValues = this._depthValues(brightness, this);
-      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, opts);
+      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, opts, colors);
     } else {
-      renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
+      renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, colors);
     }
   }
 
@@ -519,7 +527,8 @@ export class AsciiIfy extends EventEmitter {
 
       const source = layer.source || this._source;
       const schemeVal = layer.get('colorScheme') || this._params.colorScheme;
-      const schemeIndex = this._resolveSchemeIndex(schemeVal);
+      const useSourceColors = schemeVal === 'source';
+      const schemeIndex = useSourceColors ? 0 : this._resolveSchemeIndex(schemeVal);
       const fade = layer.get('fade') ?? this._params.fade;
 
       // Render layer to its offscreen canvas
@@ -530,13 +539,15 @@ export class AsciiIfy extends EventEmitter {
 
       if (layer.get('edgeDetect')) {
         // Edge detection path
-        const { magnitude, direction, ctx: sCtx } = detectEdges(
-          source, grid.cols, grid.rows, layer._sampleCtx, layer.get('edgeThreshold')
+        const { magnitude, direction, colors, ctx: sCtx } = detectEdges(
+          source, grid.cols, grid.rows, layer._sampleCtx, layer.get('edgeThreshold'),
+          useSourceColors ? layer._sampleColorBuf : undefined
         );
         layer._sampleCtx = sCtx;
+        if (colors) layer._sampleColorBuf = colors;
 
         const edgeChars = this._resolveEdgeCharset(layer.get('edgeCharset') || this._params.edgeCharset);
-        const colorLUT = buildColorLUT(schemeIndex, 256, t, {
+        const colorLUT = useSourceColors ? null : buildColorLUT(schemeIndex, 256, t, {
           cycling: this._params.colorCycle,
           phase: this._colorPhase,
         });
@@ -544,15 +555,19 @@ export class AsciiIfy extends EventEmitter {
         if (this._params.renderMode === '3d') {
           const opts = this._projectionOptions(w, h, layer.get('fontSize'));
           opts.depthValues = this._depthValues(magnitude, layer);
-          renderEdgeLayer3D(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, opts);
+          renderEdgeLayer3D(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, opts, colors);
         } else {
-          renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t);
+          renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, colors);
         }
       } else {
         // Standard brightness path
-        const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx, layer._sampleBuf);
+        const { brightness, colors, ctx: sCtx } = sampleCanvas(
+          source, grid.cols, grid.rows, layer._sampleCtx, layer._sampleBuf,
+          useSourceColors ? layer._sampleColorBuf : undefined
+        );
         layer._sampleCtx = sCtx;
         layer._sampleBuf = brightness;
+        if (colors) layer._sampleColorBuf = colors;
 
         // Blend with pattern
         const patternName = layer.get('pattern');
@@ -572,7 +587,7 @@ export class AsciiIfy extends EventEmitter {
 
         const charsetVal = layer.get('charset') || this._params.charset;
         const chars = this._resolveChars(charsetVal);
-        const colorLUT = buildColorLUT(schemeIndex, chars.length, t, {
+        const colorLUT = useSourceColors ? null : buildColorLUT(schemeIndex, chars.length, t, {
           cycling: this._params.colorCycle,
           phase: this._colorPhase,
         });
@@ -580,9 +595,9 @@ export class AsciiIfy extends EventEmitter {
         if (this._params.renderMode === '3d') {
           const opts = this._projectionOptions(w, h, layer.get('fontSize'));
           opts.depthValues = this._depthValues(brightness, layer);
-          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, opts);
+          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, opts, colors);
         } else {
-          renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+          renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t, colors);
         }
       }
     }

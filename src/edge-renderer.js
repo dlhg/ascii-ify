@@ -1,4 +1,4 @@
-import { buildAtlas, ATLAS_SS, ATLAS_PAD } from './renderer.js';
+import { buildAtlas, buildSourceAtlas, ATLAS_SS, ATLAS_PAD } from './renderer.js';
 
 /**
  * Render edge-detected ASCII characters onto a canvas context.
@@ -13,11 +13,13 @@ import { buildAtlas, ATLAS_SS, ATLAS_PAD } from './renderer.js';
  * @param {object} edgeChars - { h, v, dr, dl, ur, ul, cross, diagR, diagL }
  * @param {number} fade - 0-1 spatial opacity fade amount
  * @param {number} time - current animation time
+ * @param {Uint8ClampedArray} [sourceColors] - optional per-cell source RGBA values
  */
-export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, fade, time) {
+export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, fade, time, sourceColors = null) {
   const { cols, rows, cw, ch, ar } = grid;
-  const lutMax = colorLUT.length - 1;
+  const lutMax = colorLUT ? colorLUT.length - 1 : 255;
 
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
 
   for (let r = 0; r < rows; r++) {
@@ -39,7 +41,7 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
 
       // Color from magnitude
       const ci = (mag * lutMax) | 0;
-      ctx.fillStyle = colorLUT[ci];
+      ctx.fillStyle = sourceColors ? sourceColorAt(sourceColors, i) : colorLUT[ci];
       ctx.fillText(ch_, c * cw, py);
     }
   }
@@ -59,8 +61,9 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
  * @param {number} fade - 0-1 spatial opacity fade amount
  * @param {number} time - current animation time
  * @param {object} opts - projection options
+ * @param {Uint8ClampedArray} [sourceColors] - optional per-cell source RGBA values
  */
-export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, fade, time, opts = {}) {
+export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, fade, time, opts = {}, sourceColors = null) {
   const { cols, rows, cw, ch, ar } = grid;
   const width = opts.width ?? cols * cw;
   const height = opts.height ?? rows * ch;
@@ -117,7 +120,7 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
       const ci = charMap[ch_];
 
       // Color from magnitude
-      const colorIdx = (mag * (colorLUT.length - 1)) | 0;
+      const colorIdx = colorLUT ? (mag * (colorLUT.length - 1)) | 0 : 0;
 
       const x0 = c * cw + cw * 0.5 - centerX;
       const y0 = r * ch + ch * 0.5 - centerY;
@@ -162,6 +165,7 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
       _gs3d[count] = scale;
       _ga3d[count] = alpha;
       _gci3d[count] = ci;
+      _gsi3d[count] = i;
       _gco3d[count] = colorIdx;
       if (z2 < zmin) zmin = z2;
       if (z2 > zmax) zmax = z2;
@@ -181,6 +185,25 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
   }
   for (let b = 1; b <= 256; b++) _counts[b] += _counts[b - 1];
   for (let i = 0; i < count; i++) _order3d[_counts[_gb3d[i]]++] = i;
+
+  if (sourceColors) {
+    const atlas = buildSourceAtlas(charsStr, sourceColors, _gci3d, _gsi3d, count, fontSize, _gai3d);
+    const cell = atlas.cell;
+    const baseSize = cell / ATLAS_SS;
+    for (let k = 0; k < count; k++) {
+      const i = _order3d[k];
+      const size = baseSize * _gs3d[i];
+      const ai = _gai3d[i];
+      ctx.globalAlpha = _ga3d[i];
+      ctx.drawImage(
+        atlas.canvas,
+        (ai % atlas.cols) * cell, ((ai / atlas.cols) | 0) * cell, cell, cell,
+        _gx3d[i] - size * 0.5, _gy3d[i] - size * 0.5, size, size
+      );
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
 
   // Build atlas with edge characters
   const atlas = buildAtlas(charsStr, colorLUT, fontSize);
@@ -204,7 +227,7 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
 // ─── renderEdgeLayer3D scratch buffers ───
 let _cap3d = 0;
 let _gx3d = null, _gy3d = null, _gz3d = null, _gs3d = null, _ga3d = null;
-let _gci3d = null, _gco3d = null, _gb3d = null, _order3d = null;
+let _gci3d = null, _gsi3d = null, _gai3d = null, _gco3d = null, _gb3d = null, _order3d = null;
 const _counts = new Uint32Array(257);
 
 function _ensureCapacity3D(n) {
@@ -216,9 +239,18 @@ function _ensureCapacity3D(n) {
   _gs3d = new Float32Array(n);
   _ga3d = new Float32Array(n);
   _gci3d = new Uint16Array(n);
+  _gsi3d = new Uint32Array(n);
+  _gai3d = new Uint32Array(n);
   _gco3d = new Uint16Array(n);
   _gb3d = new Uint8Array(n);
   _order3d = new Uint32Array(n);
+}
+
+function sourceColorAt(colors, i) {
+  const p = i * 4;
+  const a = colors[p + 3];
+  if (a === 255) return `rgb(${colors[p]}, ${colors[p + 1]}, ${colors[p + 2]})`;
+  return `rgba(${colors[p]}, ${colors[p + 1]}, ${colors[p + 2]}, ${a / 255})`;
 }
 
 /**

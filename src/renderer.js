@@ -9,12 +9,14 @@
  * @param {string} chars - character string (sparse → dense)
  * @param {number} fade - 0-1 spatial opacity fade amount
  * @param {number} time - current animation time (for fade field)
+ * @param {Uint8ClampedArray} [sourceColors] - optional per-cell source RGBA values
  */
-export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time) {
+export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time, sourceColors = null) {
   const { cols, rows, cw, ch, ar } = grid;
   const clen = chars.length - 1;
 
   // Font is expected to be set by the caller before invoking renderLayer.
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
 
   for (let r = 0; r < rows; r++) {
@@ -33,7 +35,7 @@ export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time) 
         ctx.globalAlpha = alpha;
       }
 
-      ctx.fillStyle = colorLUT[ci];
+      ctx.fillStyle = sourceColors ? sourceColorAt(sourceColors, r * cols + c) : colorLUT[ci];
       ctx.fillText(chars[ci], c * cw, py);
     }
   }
@@ -55,8 +57,9 @@ export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time) 
  * @param {number} fade - 0-1 spatial opacity fade amount
  * @param {number} time - current animation time (for fade field)
  * @param {object} opts - projection options
+ * @param {Uint8ClampedArray} [sourceColors] - optional per-cell source RGBA values
  */
-export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time, opts = {}) {
+export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time, opts = {}, sourceColors = null) {
   const { cols, rows, cw, ch, ar } = grid;
   const clen = chars.length - 1;
   const width = opts.width ?? cols * cw;
@@ -145,6 +148,7 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
       _gs[count] = scale;
       _ga[count] = alpha;
       _gci[count] = ci;
+      _gsi[count] = i;
       if (z2 < zmin) zmin = z2;
       if (z2 > zmax) zmax = z2;
       count++;
@@ -163,6 +167,25 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
   }
   for (let b = 1; b <= 256; b++) _counts[b] += _counts[b - 1];
   for (let i = 0; i < count; i++) _order[_counts[_gb[i]]++] = i;
+
+  if (sourceColors) {
+    const atlas = buildSourceAtlas(chars, sourceColors, _gci, _gsi, count, fontSize, _gai);
+    const cell = atlas.cell;
+    const baseSize = cell / ATLAS_SS;
+    for (let k = 0; k < count; k++) {
+      const i = _order[k];
+      const size = baseSize * _gs[i];
+      const ai = _gai[i];
+      ctx.globalAlpha = _ga[i];
+      ctx.drawImage(
+        atlas.canvas,
+        (ai % atlas.cols) * cell, ((ai / atlas.cols) | 0) * cell, cell, cell,
+        _gx[i] - size * 0.5, _gy[i] - size * 0.5, size, size
+      );
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
 
   // Draw pre-rendered glyph sprites — one drawImage per glyph, no text
   // shaping or per-glyph save/transform/restore.
@@ -186,7 +209,7 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
 // ─── renderLayer3D scratch buffers (module-level, reused across frames) ───
 let _cap = 0;
 let _gx = null, _gy = null, _gz = null, _gs = null, _ga = null;
-let _gci = null, _gb = null, _order = null;
+let _gci = null, _gsi = null, _gai = null, _gb = null, _order = null;
 const _counts = new Uint32Array(257);
 
 function _ensureCapacity(n) {
@@ -198,6 +221,8 @@ function _ensureCapacity(n) {
   _gs = new Float32Array(n);
   _ga = new Float32Array(n);
   _gci = new Uint16Array(n);
+  _gsi = new Uint32Array(n);
+  _gai = new Uint32Array(n);
   _gb = new Uint8Array(n);
   _order = new Uint32Array(n);
 }
@@ -235,9 +260,92 @@ export function buildAtlas(chars, colorLUT, fontSize) {
   return atlas;
 }
 
+const _sourceAtlases = new Map(); // fontSize -> reusable source-color atlas
+const SOURCE_ATLAS_MAX_DIM = 8192;
+
+export function buildSourceAtlas(chars, sourceColors, charIndices, sourceIndices, count, fontSize, atlasIndices) {
+  let atlas = _sourceAtlases.get(fontSize);
+  if (!atlas) {
+    if (_sourceAtlases.size >= 8) _sourceAtlases.clear();
+    const canvas = document.createElement('canvas');
+    atlas = { canvas, ctx: canvas.getContext('2d'), cell: 0, cols: 1 };
+    _sourceAtlases.set(fontSize, atlas);
+  }
+
+  const entries = [];
+  const entryMap = new Map();
+  for (let i = 0; i < count; i++) {
+    const ci = charIndices[i];
+    const si = sourceIndices[i];
+    const colorKey = quantizedSourceColorKey(sourceColors, si);
+    const key = ci * 65536 + colorKey;
+    let ai = entryMap.get(key);
+    if (ai === undefined) {
+      ai = entries.length;
+      entryMap.set(key, ai);
+      entries.push({ ci, color: sourceColorFromKey(colorKey) });
+    }
+    atlasIndices[i] = ai;
+  }
+
+  const cell = Math.ceil(fontSize * ATLAS_SS * ATLAS_PAD);
+  const cols = Math.max(1, Math.min(entries.length, Math.floor(SOURCE_ATLAS_MAX_DIM / cell)));
+  const rows = Math.max(1, Math.ceil(entries.length / cols));
+  const w = cols * cell;
+  const h = rows * cell;
+  const actx = atlas.ctx;
+
+  if (atlas.canvas.width !== w || atlas.canvas.height !== h) {
+    atlas.canvas.width = w;
+    atlas.canvas.height = h;
+  } else {
+    actx.clearRect(0, 0, w, h);
+  }
+
+  atlas.cell = cell;
+  atlas.cols = cols;
+  actx.font = `${fontSize * ATLAS_SS}px monospace`;
+  actx.textAlign = 'center';
+  actx.textBaseline = 'middle';
+
+  for (let i = 0; i < entries.length; i++) {
+    const x = (i % cols) * cell + cell * 0.5;
+    const y = ((i / cols) | 0) * cell + cell * 0.5;
+    actx.fillStyle = entries[i].color;
+    actx.fillText(chars[entries[i].ci], x, y);
+  }
+
+  return atlas;
+}
+
 // ─── Internal helper used by renderLayer3D ───
 function _buildAtlas(chars, colorLUT, fontSize) {
   return buildAtlas(chars, colorLUT, fontSize);
+}
+
+function sourceColorAt(colors, i) {
+  const p = i * 4;
+  const a = colors[p + 3];
+  if (a === 255) return `rgb(${colors[p]}, ${colors[p + 1]}, ${colors[p + 2]})`;
+  return `rgba(${colors[p]}, ${colors[p + 1]}, ${colors[p + 2]}, ${a / 255})`;
+}
+
+function quantizedSourceColorKey(colors, i) {
+  const p = i * 4;
+  const r = colors[p] >> 4;
+  const g = colors[p + 1] >> 4;
+  const b = colors[p + 2] >> 4;
+  const a = colors[p + 3] >> 4;
+  return (r << 12) | (g << 8) | (b << 4) | a;
+}
+
+function sourceColorFromKey(key) {
+  const r = ((key >> 12) & 15) * 17;
+  const g = ((key >> 8) & 15) * 17;
+  const b = ((key >> 4) & 15) * 17;
+  const a = (key & 15) / 15;
+  if (a >= 1) return `rgb(${r | 0}, ${g | 0}, ${b | 0})`;
+  return `rgba(${r | 0}, ${g | 0}, ${b | 0}, ${a})`;
 }
 
 /**

@@ -7,9 +7,10 @@
  * @param {number} rows - grid rows
  * @param {CanvasRenderingContext2D} [offCtx] - reusable offscreen context
  * @param {number} threshold - magnitude below this is zeroed (0-1)
- * @returns {{ magnitude: Float32Array, direction: Float32Array, ctx: CanvasRenderingContext2D }}
+ * @param {Uint8ClampedArray} [colorBuf] - optional reusable RGBA buffer
+ * @returns {{ magnitude: Float32Array, direction: Float32Array, colors?: Uint8ClampedArray, ctx: CanvasRenderingContext2D }}
  */
-export function detectEdges(source, cols, rows, offCtx, threshold) {
+export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
   if (cols <= 0 || rows <= 0) {
     return { magnitude: new Float32Array(0), direction: new Float32Array(0), ctx: offCtx };
   }
@@ -29,10 +30,16 @@ export function detectEdges(source, cols, rows, offCtx, threshold) {
   offCtx.drawImage(source, 0, 0, cols, rows);
   const imageData = offCtx.getImageData(0, 0, cols, rows);
   const pixels = imageData.data;
+  let colors = null;
 
   // Build grayscale buffer
   const len = cols * rows;
   const gray = new Float32Array(len);
+  if (colorBuf !== undefined) {
+    colors = colorBuf && colorBuf.length === pixels.length ? colorBuf : new Uint8ClampedArray(pixels.length);
+    colors.set(pixels);
+  }
+
   for (let i = 0; i < len; i++) {
     const idx = i * 4;
     gray[i] = (pixels[idx] * 0.299 + pixels[idx + 1] * 0.587 + pixels[idx + 2] * 0.114) / 255;
@@ -77,5 +84,5 @@ export function detectEdges(source, cols, rows, offCtx, threshold) {
     }
   }
 
-  return { magnitude, direction, ctx: offCtx };
+  return { magnitude, direction, colors, ctx: offCtx };
 }
