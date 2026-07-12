@@ -30,6 +30,8 @@
       const MIN_DIST    = 15;
       const SIGNAL_SPEED = 150; // px/s for reveal timing
       const WAVE_W      = 0.15; // wave width (fraction of max reveal time)
+      const HOLD_DURATION = 3.0;
+      const RESET_PAUSE = 0.45;
 
       // ─── State ────────────────────────────────────────
       let nodes = [];
@@ -120,19 +122,27 @@
           const cx = width / 2, cy = height / 2;
 
           // Phase boundaries
-          const growEnd   = maxRevealTime + 0.5;
-          const syncStart = growEnd + 0.8;
-          const syncEnd   = syncStart + maxRevealTime + 0.3;
-          const pulseStart = syncEnd + 0.5;
+          const growEnd = maxRevealTime;
+          const holdEnd = growEnd + HOLD_DURATION;
+          const retractEnd = holdEnd + maxRevealTime;
+          const cycleDuration = retractEnd + RESET_PAUSE;
+          const cycleTime = elapsed % cycleDuration;
+          const phaseTime = cycleTime < growEnd ? cycleTime :
+            cycleTime < holdEnd ? maxRevealTime :
+            cycleTime < retractEnd ? maxRevealTime - (cycleTime - holdEnd) :
+            0;
+          const isGrowing = cycleTime < growEnd;
+          const isHolding = cycleTime >= growEnd && cycleTime < holdEnd;
+          const isRetracting = cycleTime >= holdEnd && cycleTime < retractEnd;
 
           // ─── Background fade ────────────────────────
           ctx.fillStyle = 'rgba(1, 10, 1, 0.055)';
           ctx.fillRect(0, 0, width, height);
 
           // ─── Initial spark flash ────────────────────
-          if (elapsed < 0.5) {
-            const f = elapsed < 0.12 ? smoothstep(0, 0.12, elapsed) :
-                      1 - smoothstep(0.12, 0.5, elapsed);
+          if (cycleTime < 0.5) {
+            const f = cycleTime < 0.12 ? smoothstep(0, 0.12, cycleTime) :
+                      1 - smoothstep(0.12, 0.5, cycleTime);
             const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 35);
             grad.addColorStop(0, `rgba(255, 255, 255, ${f})`);
             grad.addColorStop(0.3, `rgba(100, 255, 160, ${f * 0.6})`);
@@ -149,18 +159,18 @@
             const tgt = nodes[edge.to];
 
             // Not yet reached source node
-            if (elapsed < src.revealTime) continue;
+            if (phaseTime < src.revealTime) continue;
 
             // Signal still traveling along this edge
-            if (elapsed < tgt.revealTime) {
+            if (phaseTime < tgt.revealTime) {
               const progress = clamp(
-                (elapsed - src.revealTime) / (tgt.revealTime - src.revealTime), 0, 1
+                (phaseTime - src.revealTime) / (tgt.revealTime - src.revealTime), 0, 1
               );
               const ex = lerp(src.x, tgt.x, progress);
               const ey = lerp(src.y, tgt.y, progress);
 
               // Partial edge
-              ctx.strokeStyle = 'rgba(30, 180, 80, 0.4)';
+              ctx.strokeStyle = isRetracting ? 'rgba(30, 180, 80, 0.25)' : 'rgba(30, 180, 80, 0.4)';
               ctx.lineWidth = 1;
               ctx.beginPath();
               ctx.moveTo(src.x, src.y);
@@ -169,13 +179,13 @@
 
               // Signal tip glow
               const tipSize = 4 + Math.sin(elapsed * 18) * 1.5;
-              ctx.fillStyle = 'rgba(200, 255, 230, 0.9)';
+              ctx.fillStyle = isRetracting ? 'rgba(120, 255, 180, 0.55)' : 'rgba(200, 255, 230, 0.9)';
               ctx.beginPath();
               ctx.arc(ex, ey, tipSize, 0, TWO_PI);
               ctx.fill();
 
               // Emit sparks from tip
-              if (Math.random() < 0.12) {
+              if (isGrowing && Math.random() < 0.12) {
                 sparks.emit(1, () => ({
                   x: ex, y: ey,
                   vx: (Math.random() - 0.5) * 50,
@@ -190,23 +200,9 @@
             // Fully revealed edge — compute brightness
             let edgeAlpha = 0.25;
 
-            // Sync pulse (edges → center)
-            if (elapsed >= syncStart && elapsed < pulseStart) {
-              const syncT = (elapsed - syncStart) / maxRevealTime;
-              const tgtPos = 1 - tgt.revealTime / maxRevealTime;
-              const srcPos = 1 - src.revealTime / maxRevealTime;
-              const midPos = (tgtPos + srcPos) / 2;
-              const wd = Math.abs(syncT - midPos);
-              if (wd < WAVE_W) {
-                edgeAlpha = lerp(0.25, 0.9, 1 - wd / WAVE_W);
-              }
-            }
-
-            // Steady pulse (center → edges, repeating)
-            if (elapsed >= pulseStart) {
-              const pt = elapsed - pulseStart;
-              const period = maxRevealTime + 1.5;
-              const wavePos = clamp((pt % period) / maxRevealTime, 0, 1.2);
+            // Hold pulse (center → edges)
+            if (isHolding) {
+              const wavePos = clamp((cycleTime - growEnd) / maxRevealTime, 0, 1.2);
               const tgtPos = tgt.revealTime / maxRevealTime;
               const srcPos = src.revealTime / maxRevealTime;
               const midPos = (tgtPos + srcPos) / 2;
@@ -226,32 +222,18 @@
 
           // ─── Draw nodes ─────────────────────────────
           for (const node of nodes) {
-            if (elapsed < node.revealTime) continue;
+            if (phaseTime < node.revealTime) continue;
 
-            const since = elapsed - node.revealTime;
-            const flash = since < 0.3 ? 1 - since / 0.3 : 0;
+            const since = phaseTime - node.revealTime;
+            const flash = isGrowing && since < 0.3 ? 1 - since / 0.3 : 0;
 
             let alpha = 0.45 + flash * 0.55;
             let size = (node.depth === 0 ? 5 : lerp(3.5, 1.5, node.depth / MAX_DEPTH))
                        + flash * 3;
 
-            // Sync pulse brightness
-            if (elapsed >= syncStart && elapsed < pulseStart) {
-              const syncT = (elapsed - syncStart) / maxRevealTime;
-              const nodePos = 1 - node.revealTime / maxRevealTime;
-              const wd = Math.abs(syncT - nodePos);
-              if (wd < WAVE_W) {
-                const ps = 1 - wd / WAVE_W;
-                alpha = lerp(alpha, 1, ps);
-                size += ps * 2.5;
-              }
-            }
-
-            // Steady pulse brightness
-            if (elapsed >= pulseStart) {
-              const pt = elapsed - pulseStart;
-              const period = maxRevealTime + 1.5;
-              const wavePos = clamp((pt % period) / maxRevealTime, 0, 1.2);
+            // Hold pulse brightness
+            if (isHolding) {
+              const wavePos = clamp((cycleTime - growEnd) / maxRevealTime, 0, 1.2);
               const nodePos = node.revealTime / maxRevealTime;
               const wd = Math.abs(wavePos - nodePos);
               if (wd < WAVE_W) {
@@ -262,6 +244,12 @@
 
               // Gentle shimmer in steady state
               alpha += 0.04 * Math.sin(elapsed * 2.5 + node.revealTime * 4);
+            }
+
+            if (isRetracting) {
+              const fade = clamp((phaseTime - node.revealTime) / 0.3, 0, 1);
+              alpha *= fade;
+              size = lerp(0.5, size, fade);
             }
 
             const g = Math.floor(lerp(140, 255, clamp(alpha, 0, 1)));
@@ -282,8 +270,10 @@
           });
 
           // ─── Center glow during growth ──────────────
-          if (elapsed < growEnd) {
-            const glow = clamp(elapsed / 1, 0, 0.15);
+          if (isGrowing || cycleTime >= retractEnd) {
+            const glow = isGrowing
+              ? clamp(cycleTime / 1, 0, 0.15)
+              : 0.12 * (1 - smoothstep(retractEnd, cycleDuration, cycleTime));
             const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 40);
             grad.addColorStop(0, `rgba(120, 255, 180, ${glow})`);
             grad.addColorStop(1, 'rgba(0, 40, 20, 0)');
