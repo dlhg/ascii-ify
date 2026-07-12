@@ -67,6 +67,7 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
   const scaleMin = opts.scaleMin ?? 0.45;
   const scaleMax = opts.scaleMax ?? 2.5;
   const opacityDepth = opts.opacityDepth ?? 0.35;
+  const fontSize = opts.fontSize ?? (parseFloat(ctx.font) || 12);
   const centerX = width * 0.5;
   const centerY = height * 0.5;
 
@@ -80,10 +81,16 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
   const sz = Math.sin(rz);
   const cz = Math.cos(rz);
 
-  const glyphs = [];
+  // Depth alpha is linear in z: alpha = depthA - depthB * z
+  const depthA = 1 - opacityDepth * 0.5;
+  const depthB = opacityDepth / Math.max(1, depthScale);
+  // Cull margin: half the logical glyph quad at scale 1
+  const halfGlyph = fontSize * ATLAS_PAD * 0.5;
 
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
+  _ensureCapacity(cols * rows);
+  let count = 0;
+  let zmin = Infinity;
+  let zmax = -Infinity;
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -112,47 +119,117 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
       const p = perspective / (perspective + cameraDepth - baseZ);
       if (p <= 0) continue;
 
+      const scale = p < scaleMin ? scaleMin : p > scaleMax ? scaleMax : p;
+      const px = centerX + x3 * p;
+      const py = centerY + y3 * p;
+
+      const m = halfGlyph * scale;
+      if (px + m < 0 || px - m > width || py + m < 0 || py - m > height) continue;
+
       let alpha = 1;
       if (fade > 0) {
         alpha *= 1 - fade * (1 - fadeField(c, r, time, ar));
       }
       if (opacityDepth > 0) {
-        const depthAlpha = 1 - opacityDepth * ((z2 / Math.max(1, depthScale)) + 0.5);
+        const depthAlpha = depthA - depthB * z2;
         alpha *= depthAlpha < 0 ? 0 : depthAlpha > 1 ? 1 : depthAlpha;
       }
       if (alpha < 0.02) continue;
 
-      glyphs.push({
-        char: chars[ci],
-        color: colorLUT[ci],
-        x: centerX + x3 * p,
-        y: centerY + y3 * p,
-        z: z2,
-        scale: p < scaleMin ? scaleMin : p > scaleMax ? scaleMax : p,
-        alpha,
-      });
+      _gx[count] = px;
+      _gy[count] = py;
+      _gz[count] = z2;
+      _gs[count] = scale;
+      _ga[count] = alpha;
+      _gci[count] = ci;
+      if (z2 < zmin) zmin = z2;
+      if (z2 > zmax) zmax = z2;
+      count++;
     }
   }
 
-  glyphs.sort((a, b) => a.z - b.z);
+  if (count === 0) return;
 
-  for (const g of glyphs) {
-    ctx.globalAlpha = g.alpha;
-    ctx.fillStyle = g.color;
-    if (Math.abs(g.scale - 1) > 0.02) {
-      ctx.save();
-      ctx.translate(g.x, g.y);
-      ctx.scale(g.scale, g.scale);
-      ctx.fillText(g.char, 0, 0);
-      ctx.restore();
-    } else {
-      ctx.fillText(g.char, g.x, g.y);
-    }
+  // Depth order (far -> near) via counting sort over 256 z-buckets.
+  const zscale = zmax > zmin ? 255 / (zmax - zmin) : 0;
+  _counts.fill(0);
+  for (let i = 0; i < count; i++) {
+    const b = ((_gz[i] - zmin) * zscale) | 0;
+    _gb[i] = b;
+    _counts[b + 1]++;
+  }
+  for (let b = 1; b <= 256; b++) _counts[b] += _counts[b - 1];
+  for (let i = 0; i < count; i++) _order[_counts[_gb[i]]++] = i;
+
+  // Draw pre-rendered glyph sprites — one drawImage per glyph, no text
+  // shaping or per-glyph save/transform/restore.
+  const atlas = _buildAtlas(chars, colorLUT, fontSize);
+  const cell = atlas.cell;
+  const baseSize = cell / ATLAS_SS;
+  for (let k = 0; k < count; k++) {
+    const i = _order[k];
+    const size = baseSize * _gs[i];
+    ctx.globalAlpha = _ga[i];
+    ctx.drawImage(
+      atlas.canvas,
+      _gci[i] * cell, 0, cell, cell,
+      _gx[i] - size * 0.5, _gy[i] - size * 0.5, size, size
+    );
   }
 
   ctx.globalAlpha = 1;
-  ctx.textAlign = 'start';
-  ctx.textBaseline = 'top';
+}
+
+// ─── renderLayer3D scratch buffers (module-level, reused across frames) ───
+let _cap = 0;
+let _gx = null, _gy = null, _gz = null, _gs = null, _ga = null;
+let _gci = null, _gb = null, _order = null;
+const _counts = new Uint32Array(257);
+
+function _ensureCapacity(n) {
+  if (n <= _cap) return;
+  _cap = n;
+  _gx = new Float32Array(n);
+  _gy = new Float32Array(n);
+  _gz = new Float32Array(n);
+  _gs = new Float32Array(n);
+  _ga = new Float32Array(n);
+  _gci = new Uint16Array(n);
+  _gb = new Uint8Array(n);
+  _order = new Uint32Array(n);
+}
+
+// ─── Glyph atlas: one sprite per (char, LUT color), rebuilt per frame ───
+const ATLAS_SS = 2;    // supersample factor so upscaled glyphs stay crisp
+const ATLAS_PAD = 1.5; // cell size relative to fontSize (glyphs overhang the em box)
+const _atlases = new Map(); // fontSize -> { canvas, ctx, cell } (one per active layer size)
+
+function _buildAtlas(chars, colorLUT, fontSize) {
+  let atlas = _atlases.get(fontSize);
+  if (!atlas) {
+    if (_atlases.size >= 8) _atlases.clear();
+    const canvas = document.createElement('canvas');
+    atlas = { canvas, ctx: canvas.getContext('2d'), cell: 0 };
+    _atlases.set(fontSize, atlas);
+  }
+  const cell = Math.ceil(fontSize * ATLAS_SS * ATLAS_PAD);
+  const w = cell * chars.length;
+  const actx = atlas.ctx;
+  if (atlas.canvas.width !== w || atlas.canvas.height !== cell) {
+    atlas.canvas.width = w;
+    atlas.canvas.height = cell;
+  } else {
+    actx.clearRect(0, 0, w, cell);
+  }
+  atlas.cell = cell;
+  actx.font = `${fontSize * ATLAS_SS}px monospace`;
+  actx.textAlign = 'center';
+  actx.textBaseline = 'middle';
+  for (let i = 1; i < chars.length; i++) {
+    actx.fillStyle = colorLUT[i];
+    actx.fillText(chars[i], i * cell + cell * 0.5, cell * 0.5);
+  }
+  return atlas;
 }
 
 /**

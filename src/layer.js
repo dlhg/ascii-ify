@@ -38,6 +38,7 @@ export class Layer {
 
     // Reusable offscreen canvases
     this._sampleCtx = null;
+    this._sampleBuf = null;
     this._offscreen = null;
     this._offCtx = null;
   }
@@ -88,10 +89,12 @@ export class Layer {
       this._offscreen = document.createElement('canvas');
       this._offCtx = this._offscreen.getContext('2d');
     }
-    if (this._offscreen.width !== w || this._offscreen.height !== h) {
-      const dpr = devicePixelRatio || 1;
-      this._offscreen.width = w * dpr;
-      this._offscreen.height = h * dpr;
+    const dpr = devicePixelRatio || 1;
+    const pw = Math.round(w * dpr);
+    const ph = Math.round(h * dpr);
+    if (this._offscreen.width !== pw || this._offscreen.height !== ph) {
+      this._offscreen.width = pw;
+      this._offscreen.height = ph;
       this._offCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     return this._offscreen;
@@ -102,6 +105,7 @@ export class Layer {
     this._offscreen = null;
     this._offCtx = null;
     this._sampleCtx = null;
+    this._sampleBuf = null;
     this._parent = null;
   }
 }

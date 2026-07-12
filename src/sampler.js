@@ -6,9 +6,10 @@
  * @param {number} cols - grid columns
  * @param {number} rows - grid rows
  * @param {CanvasRenderingContext2D} [offCtx] - optional reusable offscreen context
+ * @param {Float32Array} [buf] - optional reusable brightness buffer
  * @returns {{ brightness: Float32Array, ctx: CanvasRenderingContext2D }}
  */
-export function sampleCanvas(source, cols, rows, offCtx) {
+export function sampleCanvas(source, cols, rows, offCtx, buf) {
   if (cols <= 0 || rows <= 0) {
     return { brightness: new Float32Array(0), ctx: offCtx };
   }
@@ -29,7 +30,7 @@ export function sampleCanvas(source, cols, rows, offCtx) {
   const imageData = offCtx.getImageData(0, 0, cols, rows);
   const pixels = imageData.data;
   const len = cols * rows;
-  const brightness = new Float32Array(len);
+  const brightness = (buf && buf.length === len) ? buf : new Float32Array(len);
 
   for (let i = 0; i < len; i++) {
     const idx = i * 4;

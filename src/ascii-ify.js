@@ -38,8 +38,9 @@ export class AsciiIfy extends EventEmitter {
     this._implicitMode = true;
     this._soloLayer = null;
 
-    // Offscreen sampling context (reused)
+    // Offscreen sampling context + brightness buffer (reused)
     this._sampleCtx = null;
+    this._sampleBuf = null;
 
     // CRT post-processing (lazy-initialized)
     this._crt = null;
@@ -406,8 +407,9 @@ export class AsciiIfy extends EventEmitter {
     const chars = this._resolveChars(this._params.charset);
 
     // Sample source
-    const { brightness, ctx: sCtx } = sampleCanvas(this._source, grid.cols, grid.rows, this._sampleCtx);
+    const { brightness, ctx: sCtx } = sampleCanvas(this._source, grid.cols, grid.rows, this._sampleCtx, this._sampleBuf);
     this._sampleCtx = sCtx;
+    this._sampleBuf = brightness;
 
     // Blend with pattern if set
     const patternName = this._params.pattern;
@@ -433,7 +435,7 @@ export class AsciiIfy extends EventEmitter {
 
     // Render
     if (this._params.renderMode === '3d') {
-      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, this._projectionOptions(w, h));
+      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, this._projectionOptions(w, h, this._params.fontSize));
     } else {
       renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
     }
@@ -476,8 +478,9 @@ export class AsciiIfy extends EventEmitter {
         renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t);
       } else {
         // Standard brightness path
-        const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx);
+        const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx, layer._sampleBuf);
         layer._sampleCtx = sCtx;
+        layer._sampleBuf = brightness;
 
         // Blend with pattern
         const patternName = layer.get('pattern');
@@ -503,7 +506,7 @@ export class AsciiIfy extends EventEmitter {
         });
 
         if (this._params.renderMode === '3d') {
-          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, this._projectionOptions(w, h));
+          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, this._projectionOptions(w, h, layer.get('fontSize')));
         } else {
           renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
         }
@@ -572,10 +575,11 @@ export class AsciiIfy extends EventEmitter {
     return p ? p.fn : null;
   }
 
-  _projectionOptions(w, h) {
+  _projectionOptions(w, h, fontSize) {
     return {
       width: w,
       height: h,
+      fontSize,
       depthScale: this._params.depthScale,
       perspective: this._params.perspective,
       rotationX: this._params.rotationX,
