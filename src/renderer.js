@@ -200,11 +200,11 @@ function _ensureCapacity(n) {
 }
 
 // ─── Glyph atlas: one sprite per (char, LUT color), rebuilt per frame ───
-const ATLAS_SS = 2;    // supersample factor so upscaled glyphs stay crisp
-const ATLAS_PAD = 1.5; // cell size relative to fontSize (glyphs overhang the em box)
+export const ATLAS_SS = 2;    // supersample factor so upscaled glyphs stay crisp
+export const ATLAS_PAD = 1.5; // cell size relative to fontSize (glyphs overhang the em box)
 const _atlases = new Map(); // fontSize -> { canvas, ctx, cell } (one per active layer size)
 
-function _buildAtlas(chars, colorLUT, fontSize) {
+export function buildAtlas(chars, colorLUT, fontSize) {
   let atlas = _atlases.get(fontSize);
   if (!atlas) {
     if (_atlases.size >= 8) _atlases.clear();
@@ -230,6 +230,11 @@ function _buildAtlas(chars, colorLUT, fontSize) {
     actx.fillText(chars[i], i * cell + cell * 0.5, cell * 0.5);
   }
   return atlas;
+}
+
+// ─── Internal helper used by renderLayer3D ───
+function _buildAtlas(chars, colorLUT, fontSize) {
+  return buildAtlas(chars, colorLUT, fontSize);
 }
 
 /**

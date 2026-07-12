@@ -9,7 +9,7 @@ import { sampleCanvas } from './sampler.js';
 import { detectEdges } from './edge-detect.js';
 import { buildColorLUT } from './color/engine.js';
 import { renderLayer, renderLayer3D } from './renderer.js';
-import { renderEdgeLayer } from './edge-renderer.js';
+import { renderEdgeLayer, renderEdgeLayer3D } from './edge-renderer.js';
 import { CRTEffect } from './crt.js';
 import { clamp, lerp } from './utils.js';
 import { AutomationSet } from './automation.js';
@@ -456,7 +456,11 @@ export class AsciiIfy extends EventEmitter {
         phase: this._colorPhase,
       });
 
-      renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t);
+      if (this._params.renderMode === '3d') {
+        renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t, this._projectionOptions(w, h, this._params.fontSize));
+      } else {
+        renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t);
+      }
       return;
     }
 
@@ -532,7 +536,11 @@ export class AsciiIfy extends EventEmitter {
           phase: this._colorPhase,
         });
 
-        renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t);
+        if (this._params.renderMode === '3d') {
+          renderEdgeLayer3D(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, this._projectionOptions(w, h, layer.get('fontSize')));
+        } else {
+          renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t);
+        }
       } else {
         // Standard brightness path
         const { brightness, ctx: sCtx } = sampleCanvas(source, grid.cols, grid.rows, layer._sampleCtx, layer._sampleBuf);

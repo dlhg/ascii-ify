@@ -1,3 +1,5 @@
+import { buildAtlas, ATLAS_SS, ATLAS_PAD } from './renderer.js';
+
 /**
  * Render edge-detected ASCII characters onto a canvas context.
  * Uses edge direction to select box-drawing / directional characters
@@ -43,6 +45,177 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
   }
 
   ctx.globalAlpha = 1;
+}
+
+/**
+ * Render edge-detected ASCII characters with 3D projection.
+ *
+ * @param {CanvasRenderingContext2D} ctx - target canvas context
+ * @param {Float32Array} magnitude - edge magnitude [0-1], length = cols * rows
+ * @param {Float32Array} direction - edge direction in radians, length = cols * rows
+ * @param {{ cols: number, rows: number, cw: number, ch: number, ar: number }} grid
+ * @param {string[]} colorLUT - color strings indexed by character index
+ * @param {object} edgeChars - { h, v, dr, dl, ur, ul, cross, diagR, diagL }
+ * @param {number} fade - 0-1 spatial opacity fade amount
+ * @param {number} time - current animation time
+ * @param {object} opts - projection options
+ */
+export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, fade, time, opts = {}) {
+  const { cols, rows, cw, ch, ar } = grid;
+  const width = opts.width ?? cols * cw;
+  const height = opts.height ?? rows * ch;
+  const depthScale = opts.depthScale ?? 120;
+  const perspective = Math.max(1, opts.perspective ?? 650);
+  const baseZ = opts.cameraZ ?? 700;
+  const scaleMin = opts.scaleMin ?? 0.45;
+  const scaleMax = opts.scaleMax ?? 2.5;
+  const opacityDepth = opts.opacityDepth ?? 0.35;
+  const fontSize = opts.fontSize ?? (parseFloat(ctx.font) || 12);
+  const centerX = width * 0.5;
+  const centerY = height * 0.5;
+
+  const rx = opts.rotationX ?? 0;
+  const ry = opts.rotationY ?? 0;
+  const rz = opts.rotationZ ?? 0;
+  const sx = Math.sin(rx);
+  const cx = Math.cos(rx);
+  const sy = Math.sin(ry);
+  const cy = Math.cos(ry);
+  const sz = Math.sin(rz);
+  const cz = Math.cos(rz);
+
+  const depthA = 1 - opacityDepth * 0.5;
+  const depthB = opacityDepth / Math.max(1, depthScale);
+  const halfGlyph = fontSize * ATLAS_PAD * 0.5;
+
+  // Create char index mapping and char string for atlas
+  const charMap = {};
+  const charArray = ['\0']; // index 0 is null
+  for (const [key, ch] of Object.entries(edgeChars)) {
+    if (!charMap[ch]) {
+      charMap[ch] = charArray.length;
+      charArray.push(ch);
+    }
+  }
+  const charsStr = charArray.join('');
+
+  _ensureCapacity3D(cols * rows);
+  let count = 0;
+  let zmin = Infinity;
+  let zmax = -Infinity;
+
+  // Pass 1: Pick characters and project to 3D
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      const mag = magnitude[i];
+      if (mag < 0.02) continue;
+
+      // Pick edge character
+      const ch_ = pickEdgeChar(magnitude, direction, c, r, cols, rows, edgeChars);
+      const ci = charMap[ch_];
+
+      // Color from magnitude
+      const colorIdx = (mag * (colorLUT.length - 1)) | 0;
+
+      const x0 = c * cw + cw * 0.5 - centerX;
+      const y0 = r * ch + ch * 0.5 - centerY;
+      const z0 = (mag - 0.5) * depthScale;
+
+      // Rotate X, then Y, then Z
+      const y1 = y0 * cx - z0 * sx;
+      const z1 = y0 * sx + z0 * cx;
+      const x2 = x0 * cy + z1 * sy;
+      const z2 = -x0 * sy + z1 * cy;
+      const x3 = x2 * cz - y1 * sz;
+      const y3 = x2 * sz + y1 * cz;
+
+      const cameraDepth = baseZ - z2;
+      if (cameraDepth <= 1) continue;
+
+      const p = perspective / (perspective + cameraDepth - baseZ);
+      if (p <= 0) continue;
+
+      const scale = p < scaleMin ? scaleMin : p > scaleMax ? scaleMax : p;
+      const px = centerX + x3 * p;
+      const py = centerY + y3 * p;
+
+      const m = halfGlyph * scale;
+      if (px + m < 0 || px - m > width || py + m < 0 || py - m > height) continue;
+
+      let alpha = 1;
+      if (fade > 0) {
+        alpha *= 1 - fade * (1 - fadeField(c, r, time, ar));
+      }
+      if (opacityDepth > 0) {
+        const depthAlpha = depthA - depthB * z2;
+        alpha *= depthAlpha < 0 ? 0 : depthAlpha > 1 ? 1 : depthAlpha;
+      }
+      if (alpha < 0.02) continue;
+
+      _gx3d[count] = px;
+      _gy3d[count] = py;
+      _gz3d[count] = z2;
+      _gs3d[count] = scale;
+      _ga3d[count] = alpha;
+      _gci3d[count] = ci;
+      _gco3d[count] = colorIdx;
+      if (z2 < zmin) zmin = z2;
+      if (z2 > zmax) zmax = z2;
+      count++;
+    }
+  }
+
+  if (count === 0) return;
+
+  // Depth sort
+  const zscale = zmax > zmin ? 255 / (zmax - zmin) : 0;
+  _counts.fill(0);
+  for (let i = 0; i < count; i++) {
+    const b = ((_gz3d[i] - zmin) * zscale) | 0;
+    _gb3d[i] = b;
+    _counts[b + 1]++;
+  }
+  for (let b = 1; b <= 256; b++) _counts[b] += _counts[b - 1];
+  for (let i = 0; i < count; i++) _order3d[_counts[_gb3d[i]]++] = i;
+
+  // Build atlas with edge characters
+  const atlas = buildAtlas(charsStr, colorLUT, fontSize);
+  const cell = atlas.cell;
+  const baseSize = cell / ATLAS_SS;
+
+  for (let k = 0; k < count; k++) {
+    const i = _order3d[k];
+    const size = baseSize * _gs3d[i];
+    ctx.globalAlpha = _ga3d[i];
+    ctx.drawImage(
+      atlas.canvas,
+      _gci3d[i] * cell, 0, cell, cell,
+      _gx3d[i] - size * 0.5, _gy3d[i] - size * 0.5, size, size
+    );
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// ─── renderEdgeLayer3D scratch buffers ───
+let _cap3d = 0;
+let _gx3d = null, _gy3d = null, _gz3d = null, _gs3d = null, _ga3d = null;
+let _gci3d = null, _gco3d = null, _gb3d = null, _order3d = null;
+const _counts = new Uint32Array(257);
+
+function _ensureCapacity3D(n) {
+  if (n <= _cap3d) return;
+  _cap3d = n;
+  _gx3d = new Float32Array(n);
+  _gy3d = new Float32Array(n);
+  _gz3d = new Float32Array(n);
+  _gs3d = new Float32Array(n);
+  _ga3d = new Float32Array(n);
+  _gci3d = new Uint16Array(n);
+  _gco3d = new Uint16Array(n);
+  _gb3d = new Uint8Array(n);
+  _order3d = new Uint32Array(n);
 }
 
 /**
