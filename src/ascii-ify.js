@@ -12,6 +12,7 @@ import { renderLayer, renderLayer3D } from './renderer.js';
 import { renderEdgeLayer } from './edge-renderer.js';
 import { CRTEffect } from './crt.js';
 import { clamp, lerp } from './utils.js';
+import { AutomationSet } from './automation.js';
 
 export class AsciiIfy extends EventEmitter {
   /**
@@ -25,13 +26,22 @@ export class AsciiIfy extends EventEmitter {
     this._rafId = null;
     this._prevTime = 0;
     this._time = 0;
+    this._automationTime = 0;
     this._colorPhase = 0;
     this._panel = null;
     this._transitioning = false;
     this._enableTimer = null;
 
+    const { automations = null, ...params } = options;
+
     // Merge options with defaults
-    this._params = { ...DEFAULTS, ...options };
+    this._params = { ...DEFAULTS, ...params };
+    this._automations = new AutomationSet((key, value, automated) => this._setOne(key, value, automated));
+    if (automations) {
+      for (const [key, automation] of Object.entries(automations)) {
+        this._automations.set(key, this.get(key), automation);
+      }
+    }
 
     // Layers (empty = implicit single-layer mode)
     this._layers = [];
@@ -94,16 +104,20 @@ export class AsciiIfy extends EventEmitter {
    */
   set(key, value) {
     if (typeof key === 'object') {
-      for (const [k, v] of Object.entries(key)) this._setOne(k, v);
+      for (const [k, v] of Object.entries(key)) this._setOne(k, v, false);
     } else {
-      this._setOne(key, value);
+      this._setOne(key, value, false);
     }
   }
 
-  _setOne(key, value) {
+  _setOne(key, value, automated = false) {
     const range = PARAM_RANGES[key];
     if (range) {
       value = clamp(value, range.min, range.max);
+    }
+
+    if (!automated) {
+      this._automations.updateBase(key, value);
     }
 
     const old = this._params[key];
@@ -129,9 +143,43 @@ export class AsciiIfy extends EventEmitter {
       }
     }
 
-    if (old !== value) {
+    if (old !== value && !automated) {
       this.emit('paramchange', { key, value });
     }
+  }
+
+  /**
+   * Animate a numeric parameter over time.
+   * @param {string} key
+   * @param {object} options - { type, amount, min, max, rate, phase, seed }
+   * @returns {object} normalized automation definition
+   */
+  automate(key, options = {}) {
+    const automation = this._automations.set(key, this.get(key), options);
+    this.emit('paramchange', { key: 'automation', value: this.getAutomations() });
+    return automation;
+  }
+
+  /** Stop animating one parameter and restore its base value. */
+  stopAutomation(key, restore = true) {
+    const changed = this._automations.delete(key, restore);
+    if (changed) this.emit('paramchange', { key: 'automation', value: this.getAutomations() });
+    return changed;
+  }
+
+  /** Stop all parameter automation. */
+  clearAutomations(restore = true) {
+    if (this._automations.size === 0) return;
+    this._automations.clear(restore);
+    this.emit('paramchange', { key: 'automation', value: this.getAutomations() });
+  }
+
+  getAutomation(key) {
+    return this._automations.get(key);
+  }
+
+  getAutomations() {
+    return this._automations.all();
   }
 
   /**
@@ -205,6 +253,8 @@ export class AsciiIfy extends EventEmitter {
     const now = performance.now();
     const dt = this._prevTime ? Math.min((now - this._prevTime) / 1000, 0.05) : 0;
     this._prevTime = now;
+    this._automationTime += dt;
+    this._applyAutomations();
     this._time += dt * this._params.speed;
 
     // Update color cycling
@@ -376,6 +426,13 @@ export class AsciiIfy extends EventEmitter {
         distortion: this._params.crtDistortion,
         flicker: this._params.crtFlicker,
       });
+    }
+  }
+
+  _applyAutomations() {
+    this._automations.apply(this._automationTime);
+    for (const layer of this._layers) {
+      layer._applyAutomations(this._automationTime);
     }
   }
 

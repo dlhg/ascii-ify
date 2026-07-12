@@ -898,12 +898,20 @@ export class ControlPanel {
     for (const k of GLOBAL_KEYS) {
       snapshot[k] = ascii.get(k);
     }
+    const automations = ascii.getAutomations?.();
+    if (automations && Object.keys(automations).length > 0) {
+      snapshot.automations = automations;
+    }
 
     if (ascii._layers.length > 0 && !ascii._implicitMode) {
       snapshot.layers = ascii._layers.map(layer => {
         const obj = {};
         for (const k of LAYER_KEYS) {
           obj[k] = layer.get(k);
+        }
+        const layerAutomations = layer.getAutomations?.();
+        if (layerAutomations && Object.keys(layerAutomations).length > 0) {
+          obj.automations = layerAutomations;
         }
         return obj;
       });

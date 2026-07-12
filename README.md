@@ -88,8 +88,41 @@ ascii.stop()            // Stop rAF loop
 ascii.get(key)          // Read parameter
 ascii.set(key, value)   // Write parameter
 ascii.set({ ... })      // Batch write
+ascii.automate(key, options)
+ascii.stopAutomation(key)
+ascii.clearAutomations()
 ascii.destroy()         // Cleanup everything
 ```
+
+### Parameter Automation
+
+Numeric parameters can be automated without changing your render loop. Automation runs from the library's internal clock and is applied before each frame is rendered.
+
+```js
+ascii.automate('rotationY', {
+  type: 'sine',      // 'sine', 'triangle', or 'noise'
+  amount: 0.35,      // range around the current value
+  rate: 0.25,        // cycles per second
+});
+
+ascii.automate('depthScale', {
+  type: 'triangle',
+  min: 80,
+  max: 260,
+  rate: 0.1,
+});
+
+ascii.stopAutomation('rotationY'); // restores the manual/base value
+```
+
+Manual `set()` calls remain meaningful while automation is active: they update the base value that the automation moves around. Layers support the same API:
+
+```js
+overlay.automate('opacity', { type: 'noise', min: 0.2, max: 0.9, rate: 0.6 });
+overlay.clearAutomations();
+```
+
+Snapshots copied from the control panel include `automations`, and those definitions can be passed back into the constructor or `addLayer()` options.
 
 ### Events
 
