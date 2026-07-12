@@ -43,6 +43,7 @@ export class ControlPanel {
   constructor(ascii, options = {}) {
     this._ascii = ascii;
     this._controls = [];
+    this._implicitOnlyEls = [];    // image controls that only drive implicit (layerless) mode
     this._layerTabs = new Map();   // layer → { tab, content }
     this._activeLayer = null;
     this._visible = false;
@@ -67,8 +68,8 @@ export class ControlPanel {
     this._buildDrawer();
 
     // Listen for layer changes
-    this._onLayerAdd = (layer) => { this._addLayerTab(layer); this._updateMaskSelectors(); };
-    this._onLayerRemove = (layer) => { this._removeLayerTab(layer); this._updateMaskSelectors(); };
+    this._onLayerAdd = (layer) => { this._addLayerTab(layer); this._updateMaskSelectors(); this._updateImageControlsVisibility(); };
+    this._onLayerRemove = (layer) => { this._removeLayerTab(layer); this._updateMaskSelectors(); this._updateImageControlsVisibility(); };
     ascii.on('layeradd', this._onLayerAdd);
     ascii.on('layerremove', this._onLayerRemove);
 
@@ -193,6 +194,9 @@ export class ControlPanel {
     for (const layer of this._ascii._layers) {
       this._addLayerTab(layer);
     }
+
+    // Reflect current mode: hide implicit-only image controls if layers exist
+    this._updateImageControlsVisibility();
   }
 
   _buildAsciiSection() {
@@ -215,8 +219,11 @@ export class ControlPanel {
       set: (v) => ascii.set('enabled', v),
     }), body);
 
+    // Image controls below only affect implicit (layerless) mode — when
+    // explicit layers exist, the per-layer tabs own these, so they're hidden.
+
     // Font Size
-    this._register(new BarControl({
+    this._registerImplicit(new BarControl({
       label: 'Font Size', key: 'fontSize', target: ascii, ...r.fontSize,
       get: () => ascii.get('fontSize'),
       set: (v) => ascii.set('fontSize', v),
@@ -224,7 +231,7 @@ export class ControlPanel {
     }), body);
 
     // Density
-    this._register(new BarControl({
+    this._registerImplicit(new BarControl({
       label: 'Density', key: 'density', target: ascii, ...r.density,
       get: () => ascii.get('density'),
       set: (v) => ascii.set('density', v),
@@ -232,7 +239,7 @@ export class ControlPanel {
     }), body);
 
     // Charset
-    this._register(new Selector({
+    this._registerImplicit(new Selector({
       label: 'Charset',
       options: CHARSET_NAMES,
       get: () => CHARSET_NAMES.indexOf(ascii.get('charset')),
@@ -240,14 +247,14 @@ export class ControlPanel {
     }), body);
 
     // Edge Detect
-    this._register(new Toggle({
+    this._registerImplicit(new Toggle({
       label: 'Edge Detect',
       get: () => ascii.get('edgeDetect'),
       set: (v) => ascii.set('edgeDetect', v),
     }), body);
 
     // Edge Threshold
-    this._register(new BarControl({
+    this._registerImplicit(new BarControl({
       label: 'Edge Threshold', key: 'edgeThreshold', target: ascii, ...r.edgeThreshold,
       get: () => ascii.get('edgeThreshold'),
       set: (v) => ascii.set('edgeThreshold', v),
@@ -255,7 +262,7 @@ export class ControlPanel {
     }), body);
 
     // Edge Charset
-    this._register(new Selector({
+    this._registerImplicit(new Selector({
       label: 'Edge Charset',
       options: EDGE_CHARSET_NAMES,
       get: () => EDGE_CHARSET_NAMES.indexOf(ascii.get('edgeCharset')),
@@ -263,7 +270,7 @@ export class ControlPanel {
     }), body);
 
     // Color Scheme
-    this._register(new Selector({
+    this._registerImplicit(new Selector({
       label: 'Color',
       options: SCHEME_NAMES,
       get: () => SCHEME_NAMES.indexOf(ascii.get('colorScheme')),
@@ -271,7 +278,7 @@ export class ControlPanel {
     }), body);
 
     // Pattern
-    this._register(new Selector({
+    this._registerImplicit(new Selector({
       label: 'Pattern',
       options: PATTERN_NAMES,
       get: () => {
@@ -282,7 +289,7 @@ export class ControlPanel {
     }), body);
 
     // Pattern Mix
-    this._register(new BarControl({
+    this._registerImplicit(new BarControl({
       label: 'Pattern Mix', key: 'patternMix', target: ascii, ...r.patternMix,
       get: () => ascii.get('patternMix'),
       set: (v) => ascii.set('patternMix', v),
@@ -290,7 +297,7 @@ export class ControlPanel {
     }), body);
 
     // Fade
-    this._register(new BarControl({
+    this._registerImplicit(new BarControl({
       label: 'Fade', key: 'fade', target: ascii, ...r.fade,
       get: () => ascii.get('fade'),
       set: (v) => ascii.set('fade', v),
@@ -734,6 +741,24 @@ export class ControlPanel {
     this._controls.push(ctrl);
     parent.appendChild(ctrl.el);
     return ctrl;
+  }
+
+  /** Register a control that only drives implicit (layerless) mode. */
+  _registerImplicit(ctrl, parent) {
+    this._register(ctrl, parent);
+    this._implicitOnlyEls.push(ctrl.el);
+    return ctrl;
+  }
+
+  /**
+   * Hide the global image controls once explicit layers exist — in that mode
+   * the per-layer tabs own them and the globals are inert (see _renderLayers).
+   */
+  _updateImageControlsVisibility() {
+    const explicit = this._ascii._layers.length > 0;
+    for (const el of this._implicitOnlyEls) {
+      el.style.display = explicit ? 'none' : '';
+    }
   }
 
   // ─── Resize ───────────────────────────────────────

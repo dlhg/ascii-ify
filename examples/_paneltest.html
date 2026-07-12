@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>PENDING</title></head>
+<body>
+<div class="container" style="position:relative"><canvas id="source" width="320" height="240"></canvas></div>
+<pre id="out"></pre>
+<script type="module">
+  import { AsciiIfy } from '../src/index.js';
+  import { ControlPanel } from '../src/panel/panel.js';
+
+  const results = [];
+  const disp = (panel) => panel._implicitOnlyEls.map(el => el.style.display);
+
+  // Case A: layerless (implicit) — image controls should be visible ('')
+  const a = new AsciiIfy(document.getElementById('source'), { fontSize: 12 });
+  const pa = new ControlPanel(a);
+  const aVisible = disp(pa).every(d => d === '');
+  results.push(`implicit(layerless): ${pa._implicitOnlyEls.length} controls, allVisible=${aVisible}`);
+
+  // Case B: add a layer -> explicit mode, controls should hide ('none')
+  a.addLayer({ fontSize: 10 });
+  const bHidden = disp(pa).every(d => d === 'none');
+  results.push(`after addLayer: allHidden=${bHidden}`);
+
+  // Case C: remove the extra layer -> back to implicit? (still 2 layers after conversion)
+  results.push(`layers now=${a._layers.length} implicitMode=${a._implicitMode}`);
+
+  // Case D: fresh instance built WITH a layer already present (mirrors examples)
+  const c2 = document.createElement('canvas'); c2.width = 320; c2.height = 240;
+  document.querySelector('.container').appendChild(c2);
+  const c = new AsciiIfy(c2, { fontSize: 12 });
+  c.addLayer({ fontSize: 8 });
+  const pc = new ControlPanel(c);
+  const cHidden = disp(pc).every(d => d === 'none');
+  results.push(`panel-built-with-layers: allHidden=${cHidden}`);
+
+  const pass = aVisible && bHidden && cHidden;
+  document.getElementById('out').textContent = results.join('\n');
+  document.title = pass ? 'ALL-PASS' : 'FAIL';
+</script>
+</body></html>
