@@ -44,6 +44,8 @@ export class ControlPanel {
     this._ascii = ascii;
     this._controls = [];
     this._implicitOnlyEls = [];    // image controls that only drive implicit (layerless) mode
+    this._threeDOnlyEls = [];      // projection controls that only apply in 3D mode
+    this._edgeOnlyEntries = [];    // edge controls keyed to their global/layer target
     this._layerTabs = new Map();   // layer → { tab, content }
     this._activeLayer = null;
     this._visible = false;
@@ -68,8 +70,8 @@ export class ControlPanel {
     this._buildDrawer();
 
     // Listen for layer changes
-    this._onLayerAdd = (layer) => { this._addLayerTab(layer); this._updateMaskSelectors(); this._updateImageControlsVisibility(); };
-    this._onLayerRemove = (layer) => { this._removeLayerTab(layer); this._updateMaskSelectors(); this._updateImageControlsVisibility(); };
+    this._onLayerAdd = (layer) => { this._addLayerTab(layer); this._updateMaskSelectors(); this._updateImageControlsVisibility(); this._updateEdgeControlsVisibility(); };
+    this._onLayerRemove = (layer) => { this._removeLayerTab(layer); this._updateMaskSelectors(); this._updateImageControlsVisibility(); this._updateEdgeControlsVisibility(); };
     ascii.on('layeradd', this._onLayerAdd);
     ascii.on('layerremove', this._onLayerRemove);
 
@@ -195,8 +197,10 @@ export class ControlPanel {
       this._addLayerTab(layer);
     }
 
-    // Reflect current mode: hide implicit-only image controls if layers exist
+    // Reflect current mode: hide controls that are inactive in this context
     this._updateImageControlsVisibility();
+    this._update3DControlsVisibility();
+    this._updateEdgeControlsVisibility();
   }
 
   _buildAsciiSection() {
@@ -250,24 +254,27 @@ export class ControlPanel {
     this._registerImplicit(new Toggle({
       label: 'Edge Detect',
       get: () => ascii.get('edgeDetect'),
-      set: (v) => ascii.set('edgeDetect', v),
+      set: (v) => {
+        ascii.set('edgeDetect', v);
+        this._updateEdgeControlsVisibility();
+      },
     }), body);
 
     // Edge Threshold
-    this._registerImplicit(new BarControl({
+    this._registerImplicitEdge(new BarControl({
       label: 'Edge Threshold', key: 'edgeThreshold', target: ascii, ...r.edgeThreshold,
       get: () => ascii.get('edgeThreshold'),
       set: (v) => ascii.set('edgeThreshold', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), body);
+    }), body, ascii);
 
     // Edge Charset
-    this._registerImplicit(new Selector({
+    this._registerImplicitEdge(new Selector({
       label: 'Edge Charset',
       options: EDGE_CHARSET_NAMES,
       get: () => EDGE_CHARSET_NAMES.indexOf(ascii.get('edgeCharset')),
       set: (i) => ascii.set('edgeCharset', EDGE_CHARSET_NAMES[i]),
-    }), body);
+    }), body, ascii);
 
     // Color Scheme
     this._registerImplicit(new Selector({
@@ -309,53 +316,56 @@ export class ControlPanel {
       label: 'Render Mode',
       options: RENDER_MODES,
       get: () => Math.max(0, RENDER_MODES.indexOf(ascii.get('renderMode'))),
-      set: (i) => ascii.set('renderMode', RENDER_MODES[i]),
+      set: (i) => {
+        ascii.set('renderMode', RENDER_MODES[i]);
+        this._update3DControlsVisibility();
+      },
     }), body);
 
     // 3D projection controls
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Depth Scale', key: 'depthScale', target: ascii, ...r.depthScale,
       get: () => ascii.get('depthScale'),
       set: (v) => ascii.set('depthScale', v),
       format: (v) => Math.round(v) + 'px',
     }), body);
 
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Perspective', key: 'perspective', target: ascii, ...r.perspective,
       get: () => ascii.get('perspective'),
       set: (v) => ascii.set('perspective', v),
       format: (v) => Math.round(v) + 'px',
     }), body);
 
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Rotate X', key: 'rotationX', target: ascii, ...r.rotationX,
       get: () => ascii.get('rotationX'),
       set: (v) => ascii.set('rotationX', v),
       format: (v) => v.toFixed(2),
     }), body);
 
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Rotate Y', key: 'rotationY', target: ascii, ...r.rotationY,
       get: () => ascii.get('rotationY'),
       set: (v) => ascii.set('rotationY', v),
       format: (v) => v.toFixed(2),
     }), body);
 
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Rotate Z', key: 'rotationZ', target: ascii, ...r.rotationZ,
       get: () => ascii.get('rotationZ'),
       set: (v) => ascii.set('rotationZ', v),
       format: (v) => v.toFixed(2),
     }), body);
 
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Camera Z', key: 'cameraZ', target: ascii, ...r.cameraZ,
       get: () => ascii.get('cameraZ'),
       set: (v) => ascii.set('cameraZ', v),
       format: (v) => Math.round(v) + 'px',
     }), body);
 
-    this._register(new BarControl({
+    this._register3D(new BarControl({
       label: 'Depth Opacity', key: 'depthOpacity', target: ascii, ...r.depthOpacity,
       get: () => ascii.get('depthOpacity'),
       set: (v) => ascii.set('depthOpacity', v),
@@ -584,24 +594,27 @@ export class ControlPanel {
     this._register(new Toggle({
       label: 'Edge Detect',
       get: () => layer.get('edgeDetect'),
-      set: (v) => layer.set('edgeDetect', v),
+      set: (v) => {
+        layer.set('edgeDetect', v);
+        this._updateEdgeControlsVisibility();
+      },
     }), container);
 
     // Edge Threshold
-    this._register(new BarControl({
+    this._registerEdge(new BarControl({
       label: 'Edge Threshold', key: 'edgeThreshold', target: layer, ...PARAM_RANGES.edgeThreshold,
       get: () => layer.get('edgeThreshold'),
       set: (v) => layer.set('edgeThreshold', v),
       format: (v) => Math.round(v * 100) + '%',
-    }), container);
+    }), container, layer);
 
     // Edge Charset
-    this._register(new Selector({
+    this._registerEdge(new Selector({
       label: 'Edge Charset',
       options: EDGE_CHARSET_NAMES,
       get: () => EDGE_CHARSET_NAMES.indexOf(layer.get('edgeCharset')),
       set: (i) => layer.set('edgeCharset', EDGE_CHARSET_NAMES[i]),
-    }), container);
+    }), container, layer);
 
     // Color Scheme
     this._register(new Selector({
@@ -750,6 +763,27 @@ export class ControlPanel {
     return ctrl;
   }
 
+  /** Register an implicit-only control that only affects edge-detect mode. */
+  _registerImplicitEdge(ctrl, parent, target) {
+    this._registerImplicit(ctrl, parent);
+    this._edgeOnlyEntries.push({ el: ctrl.el, target, implicit: true });
+    return ctrl;
+  }
+
+  /** Register a control that only affects edge-detect mode. */
+  _registerEdge(ctrl, parent, target) {
+    this._register(ctrl, parent);
+    this._edgeOnlyEntries.push({ el: ctrl.el, target, implicit: false });
+    return ctrl;
+  }
+
+  /** Register a control that only affects 3D render mode. */
+  _register3D(ctrl, parent) {
+    this._register(ctrl, parent);
+    this._threeDOnlyEls.push(ctrl.el);
+    return ctrl;
+  }
+
   /**
    * Hide the global image controls once explicit layers exist — in that mode
    * the per-layer tabs own them and the globals are inert (see _renderLayers).
@@ -758,6 +792,21 @@ export class ControlPanel {
     const explicit = this._ascii._layers.length > 0;
     for (const el of this._implicitOnlyEls) {
       el.style.display = explicit ? 'none' : '';
+    }
+  }
+
+  _update3DControlsVisibility() {
+    const show = this._ascii.get('renderMode') === '3d';
+    for (const el of this._threeDOnlyEls) {
+      el.style.display = show ? '' : 'none';
+    }
+  }
+
+  _updateEdgeControlsVisibility() {
+    const explicit = this._ascii._layers.length > 0;
+    for (const { el, target, implicit } of this._edgeOnlyEntries) {
+      const show = target.get('edgeDetect') && (!implicit || !explicit);
+      el.style.display = show ? '' : 'none';
     }
   }
 
@@ -1155,6 +1204,8 @@ export class ControlPanel {
     this._updateMaskSelectors();
     this._syncEyeIcons();
     this._updateSoloBtns();
+    this._update3DControlsVisibility();
+    this._updateEdgeControlsVisibility();
   }
 
   _applySnapshotLayers(layerConfigs) {
@@ -1230,6 +1281,8 @@ export class ControlPanel {
     if (this._rafId) return;
     const sync = () => {
       for (const c of this._controls) c.sync();
+      this._update3DControlsVisibility();
+      this._updateEdgeControlsVisibility();
       this._syncEyeIcons();
       this._rafId = requestAnimationFrame(sync);
     };
