@@ -8,7 +8,7 @@ import { calculateGrid } from './grid.js';
 import { sampleCanvas } from './sampler.js';
 import { detectEdges } from './edge-detect.js';
 import { buildColorLUT } from './color/engine.js';
-import { renderLayer } from './renderer.js';
+import { renderLayer, renderLayer3D } from './renderer.js';
 import { renderEdgeLayer } from './edge-renderer.js';
 import { CRTEffect } from './crt.js';
 import { clamp, lerp } from './utils.js';
@@ -432,7 +432,11 @@ export class AsciiIfy extends EventEmitter {
     });
 
     // Render
-    renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
+    if (this._params.renderMode === '3d') {
+      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, this._projectionOptions(w, h));
+    } else {
+      renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
+    }
   }
 
   _renderLayers(ctx, w, h, t) {
@@ -498,7 +502,11 @@ export class AsciiIfy extends EventEmitter {
           phase: this._colorPhase,
         });
 
-        renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+        if (this._params.renderMode === '3d') {
+          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, this._projectionOptions(w, h));
+        } else {
+          renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
+        }
       }
     }
 
@@ -562,6 +570,20 @@ export class AsciiIfy extends EventEmitter {
   _resolvePattern(name) {
     const p = PATTERNS.find(p => p.name === name);
     return p ? p.fn : null;
+  }
+
+  _projectionOptions(w, h) {
+    return {
+      width: w,
+      height: h,
+      depthScale: this._params.depthScale,
+      perspective: this._params.perspective,
+      rotationX: this._params.rotationX,
+      rotationY: this._params.rotationY,
+      rotationZ: this._params.rotationZ,
+      cameraZ: this._params.cameraZ,
+      opacityDepth: this._params.depthOpacity,
+    };
   }
 }
 

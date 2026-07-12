@@ -18,6 +18,16 @@ export const DEFAULTS = {
   offsetY: 0,
   zIndex: 0,
 
+  // Lightweight 3D projection (global)
+  renderMode: '2d',
+  depthScale: 120,
+  perspective: 650,
+  rotationX: -0.45,
+  rotationY: 0.35,
+  rotationZ: 0,
+  cameraZ: 700,
+  depthOpacity: 0.35,
+
   // Edge detection (per-layer)
   edgeDetect: false,
   edgeThreshold: 0.15,
@@ -47,6 +57,15 @@ export const PARAM_RANGES = {
   offsetX: { min: -2000, max: 2000, step: 1 },
   offsetY: { min: -2000, max: 2000, step: 1 },
   zIndex: { min: -100, max: 100, step: 1 },
+
+  // 3D projection
+  depthScale: { min: -400, max: 400, step: 5 },
+  perspective: { min: 150, max: 1600, step: 10 },
+  rotationX: { min: -1.57, max: 1.57, step: 0.01 },
+  rotationY: { min: -1.57, max: 1.57, step: 0.01 },
+  rotationZ: { min: -3.14, max: 3.14, step: 0.01 },
+  cameraZ: { min: 100, max: 1600, step: 10 },
+  depthOpacity: { min: 0, max: 1, step: 0.01 },
 
   // Edge detection
   edgeThreshold: { min: 0, max: 1, step: 0.01 },

@@ -11,6 +11,7 @@ const EDGE_CHARSET_NAMES = EDGE_CHARSETS.map(c => c.name);
 const SCHEME_NAMES = COLOR_SCHEMES.map(s => s.name);
 const PATTERN_NAMES = ['none', ...PATTERNS.map(p => p.name)];
 const BLEND_MODES = ['replace', 'add'];
+const RENDER_MODES = ['2d', '3d'];
 
 export class ControlPanel {
   constructor(ascii, options = {}) {
@@ -267,6 +268,64 @@ export class ControlPanel {
       label: 'Fade', ...r.fade,
       get: () => ascii.get('fade'),
       set: (v) => ascii.set('fade', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), body);
+
+    // Render Mode
+    this._register(new Selector({
+      label: 'Render Mode',
+      options: RENDER_MODES,
+      get: () => Math.max(0, RENDER_MODES.indexOf(ascii.get('renderMode'))),
+      set: (i) => ascii.set('renderMode', RENDER_MODES[i]),
+    }), body);
+
+    // 3D projection controls
+    this._register(new BarControl({
+      label: 'Depth Scale', ...r.depthScale,
+      get: () => ascii.get('depthScale'),
+      set: (v) => ascii.set('depthScale', v),
+      format: (v) => Math.round(v) + 'px',
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Perspective', ...r.perspective,
+      get: () => ascii.get('perspective'),
+      set: (v) => ascii.set('perspective', v),
+      format: (v) => Math.round(v) + 'px',
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Rotate X', ...r.rotationX,
+      get: () => ascii.get('rotationX'),
+      set: (v) => ascii.set('rotationX', v),
+      format: (v) => v.toFixed(2),
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Rotate Y', ...r.rotationY,
+      get: () => ascii.get('rotationY'),
+      set: (v) => ascii.set('rotationY', v),
+      format: (v) => v.toFixed(2),
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Rotate Z', ...r.rotationZ,
+      get: () => ascii.get('rotationZ'),
+      set: (v) => ascii.set('rotationZ', v),
+      format: (v) => v.toFixed(2),
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Camera Z', ...r.cameraZ,
+      get: () => ascii.get('cameraZ'),
+      set: (v) => ascii.set('cameraZ', v),
+      format: (v) => Math.round(v) + 'px',
+    }), body);
+
+    this._register(new BarControl({
+      label: 'Depth Opacity', ...r.depthOpacity,
+      get: () => ascii.get('depthOpacity'),
+      set: (v) => ascii.set('depthOpacity', v),
       format: (v) => Math.round(v * 100) + '%',
     }), body);
 
@@ -772,6 +831,14 @@ export class ControlPanel {
     ascii.set('sourceOpacity', rand(r.sourceOpacity.min, r.sourceOpacity.max, r.sourceOpacity.step));
     ascii.set('colorCycle', Math.random() < 0.3);
     ascii.set('colorCycleRate', rand(r.colorCycleRate.min, r.colorCycleRate.max, r.colorCycleRate.step));
+    ascii.set('renderMode', Math.random() < 0.25 ? '3d' : '2d');
+    ascii.set('depthScale', rand(r.depthScale.min, r.depthScale.max, r.depthScale.step));
+    ascii.set('perspective', rand(r.perspective.min, r.perspective.max, r.perspective.step));
+    ascii.set('rotationX', rand(r.rotationX.min, r.rotationX.max, r.rotationX.step));
+    ascii.set('rotationY', rand(r.rotationY.min, r.rotationY.max, r.rotationY.step));
+    ascii.set('rotationZ', rand(r.rotationZ.min, r.rotationZ.max, r.rotationZ.step));
+    ascii.set('cameraZ', rand(r.cameraZ.min, r.cameraZ.max, r.cameraZ.step));
+    ascii.set('depthOpacity', rand(r.depthOpacity.min, r.depthOpacity.max, r.depthOpacity.step));
 
     // Edge detection
     ascii.set('edgeDetect', Math.random() < 0.2);
@@ -814,6 +881,8 @@ export class ControlPanel {
       'background', 'fade', 'speed', 'pattern', 'patternMix',
       'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
       'blendMode', 'offsetX', 'offsetY', 'zIndex',
+      'renderMode', 'depthScale', 'perspective', 'rotationX', 'rotationY',
+      'rotationZ', 'cameraZ', 'depthOpacity',
       'edgeDetect', 'edgeThreshold', 'edgeCharset',
       'crtEnabled', 'crtScanlines', 'crtGlow', 'crtDistortion', 'crtFlicker',
     ];

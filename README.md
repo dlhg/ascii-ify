@@ -34,6 +34,20 @@ ascii.start();
 
 The library creates an overlay canvas on top of your source canvas, samples the source at ASCII grid resolution, and renders colored characters.
 
+### 3D Projection
+
+Set `renderMode: '3d'` to project the ASCII grid into a lightweight 3D space. Brightness controls each character's z-position, then the grid is rotated, perspective-projected, depth-sorted, and drawn back onto the overlay canvas.
+
+```js
+const ascii = new AsciiIfy(myCanvas, {
+  renderMode: '3d',
+  depthScale: 220,
+  perspective: 520,
+  rotationX: -0.6,
+  rotationY: 0.4,
+});
+```
+
 ## API
 
 ### Constructor
@@ -56,6 +70,14 @@ new AsciiIfy(sourceCanvas, options?)
 | `colorCycle` | boolean | false | Auto-cycle through color schemes |
 | `colorCycleRate` | number | 0.5 | Color cycling speed |
 | `sourceOpacity` | number | 0 | CSS opacity of the original canvas |
+| `renderMode` | `'2d'\|'3d'` | `'2d'` | Render flat ASCII or projected 3D ASCII |
+| `depthScale` | number | 120 | Z displacement used by 3D mode |
+| `perspective` | number | 650 | Perspective strength used by 3D mode |
+| `rotationX` | number | -0.45 | 3D mode X rotation in radians |
+| `rotationY` | number | 0.35 | 3D mode Y rotation in radians |
+| `rotationZ` | number | 0 | 3D mode Z rotation in radians |
+| `cameraZ` | number | 700 | Virtual camera distance used by 3D mode |
+| `depthOpacity` | number | 0.35 | Depth-based opacity variation in 3D mode |
 
 ### Methods
 
