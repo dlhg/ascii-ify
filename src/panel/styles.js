@@ -489,7 +489,8 @@ export const PANEL_CSS = `
 }
 
 .auto-select {
-  width: 64px;
+  flex: 1;
+  width: auto;
 }
 
 .auto-select.muted {
@@ -497,8 +498,9 @@ export const PANEL_CSS = `
 }
 
 .auto-mouse-btn {
+  flex: none;
   height: 22px;
-  padding: 0 7px;
+  padding: 0 6px;
   background: var(--bg-raised);
   border: 1px solid var(--border-1);
   border-radius: var(--radius-sm);

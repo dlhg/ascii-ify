@@ -101,18 +101,22 @@ export class BarControl {
     this.autoMouseX.title = 'Drive this parameter with the mouse X position';
     this.autoMouseY = h('button', 'auto-mouse-btn', 'Y');
     this.autoMouseY.title = 'Drive this parameter with the mouse Y position';
+    this.autoScroll = h('button', 'auto-mouse-btn', 'Scrl');
+    this.autoScroll.title = 'Drive this parameter with the scroll wheel';
 
     this.autoType.addEventListener('change', () => this._updateAutomationFromUI(this.autoType.value));
     this.autoAmount.addEventListener('input', () => this._updateAutomationFromUI());
     this.autoRate.addEventListener('input', () => this._updateAutomationFromUI());
-    this.autoMouseX.addEventListener('click', () => this._toggleMouseType('mouseX'));
-    this.autoMouseY.addEventListener('click', () => this._toggleMouseType('mouseY'));
+    this.autoMouseX.addEventListener('click', () => this._toggleInputType('mouseX'));
+    this.autoMouseY.addEventListener('click', () => this._toggleInputType('mouseY'));
+    this.autoScroll.addEventListener('click', () => this._toggleInputType('scroll'));
 
     const typeRow = h('div', 'auto-row');
     typeRow.appendChild(h('span', 'auto-label', 'Wave'));
     typeRow.appendChild(this.autoType);
     typeRow.appendChild(this.autoMouseX);
     typeRow.appendChild(this.autoMouseY);
+    typeRow.appendChild(this.autoScroll);
 
     const amountRow = h('div', 'auto-row auto-slider-row');
     amountRow.appendChild(h('span', 'auto-label', 'Amt'));
@@ -159,13 +163,13 @@ export class BarControl {
     });
   }
 
-  _isMouseType(type) {
-    return type === 'mouseX' || type === 'mouseY';
+  _isInputType(type) {
+    return type === 'mouseX' || type === 'mouseY' || type === 'scroll';
   }
 
-  _toggleMouseType(type) {
+  _toggleInputType(type) {
     const current = this._getAutomation();
-    // Clicking the active mouse mode reverts to the selected wave.
+    // Clicking the active input mode reverts to the selected wave.
     const next = current?.type === type ? this.autoType.value : type;
     this._updateAutomationFromUI(next);
   }
@@ -173,7 +177,7 @@ export class BarControl {
   _updateAutomationFromUI(typeOverride) {
     const current = this._getAutomation();
     const type = typeOverride
-      ?? (this._isMouseType(current?.type) ? current.type : this.autoType.value);
+      ?? (this._isInputType(current?.type) ? current.type : this.autoType.value);
     const amount = Math.max(0, Number(this.autoAmount.value || this._defaultAmount()));
     const rate = Math.max(0, Number(this.autoRate.value || 0));
     this.target.automate(this.key, {
@@ -200,13 +204,14 @@ export class BarControl {
 
     if (!automation) return;
     const type = automation.type || 'sine';
-    const isMouse = this._isMouseType(type);
-    if (!isMouse) this.autoType.value = type;
+    const isInput = this._isInputType(type);
+    if (!isInput) this.autoType.value = type;
     this.autoMouseX.classList.toggle('active', type === 'mouseX');
     this.autoMouseY.classList.toggle('active', type === 'mouseY');
-    this.autoType.classList.toggle('muted', isMouse);
-    // Rate has no effect when the parameter tracks the mouse.
-    this.rateRow.classList.toggle('hidden', isMouse);
+    this.autoScroll.classList.toggle('active', type === 'scroll');
+    this.autoType.classList.toggle('muted', isInput);
+    // Rate has no effect when the parameter tracks a live input.
+    this.rateRow.classList.toggle('hidden', isInput);
     const amount = automation.amount ?? ((automation.max - automation.min) / 2);
     const rate = automation.rate ?? 0;
     this.autoAmount.value = String(Math.round(amount * 1000) / 1000);

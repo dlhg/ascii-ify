@@ -26,15 +26,23 @@
       const COL_MIN = -6, COL_MAX = 6;
       const ROW_MIN = 0, ROW_MAX = 34;
       const DOWNTOWN_ROW = 29; // far cluster of tall towers sits here
-      const TRACK_X = -99;     // elevated viaduct runs down this avenue
       const DECK_Y = 27;       // top of the viaduct deck
       const DECK_HW = 9;       // deck half-width
       const NEAR = 1;
+      const CAR_LEN = 32, CAR_GAP = 6, NCARS = 6;
+      const TRAIN_SPAN = NCARS * (CAR_LEN + CAR_GAP);
+      const TRACK_Z0 = 70;
+      const TRACK_Z1 = Z0 + ROW_MAX * SPZ;
+      const PILLAR_STEP = 150;
+      const TRACKS = [
+        { x: -99, deckY: DECK_Y, deckHW: DECK_HW, speed: 150, dir: -1, headZ: TRACK_Z1, body: '24,24,32', side: '16,16,22', top: '30,30,40', windows: '255,225,150' },
+        { x: 116, deckY: DECK_Y - 5, deckHW: DECK_HW, speed: 118, dir: 1, headZ: TRACK_Z0 - TRAIN_SPAN, body: '18,28,34', side: '11,18,24', top: '24,38,44', windows: '145,225,255' },
+      ];
 
       const rng = mulberry32(4242);
 
       // ─── Camera ─────────────────────────────────────────
-      const cam = { x: 0, y: 47, z: 0, yaw: 0, pitch: -0.06 };
+      const cam = { x: 130, y: 118, z: -35, yaw: -0.16, pitch: -0.29 };
       let W = 0, H = 0, focal = 800, horizonY = 0;
 
       function computeView() {
@@ -107,8 +115,8 @@
             if (rng() < 0.22) continue; // plazas / streets
             const x = col * SPX + (rng() - 0.5) * 12;
             const z = Z0 + row * SPZ + (rng() - 0.5) * 12;
-            // keep the viaduct avenue clear
-            if (x > TRACK_X - 30 && x < TRACK_X + 30) continue;
+            // keep the viaduct avenues clear
+            if (TRACKS.some((track) => x > track.x - 30 && x < track.x + 30)) continue;
 
             const w = 32 + rng() * 22;
             const d = 32 + rng() * 22;
@@ -191,47 +199,48 @@
         }
       }
 
-      // ─── Elevated Track + Train ─────────────────────────
-      const TRACK_Z0 = 70;
-      const TRACK_Z1 = Z0 + ROW_MAX * SPZ;
-      const PILLAR_STEP = 150;
-      const CAR_LEN = 32, CAR_GAP = 6, NCARS = 6;
-      const TRAIN_SPAN = NCARS * (CAR_LEN + CAR_GAP);
-      let trainHeadZ = TRACK_Z1;
-
-      function drawTrackSegment(ctx, z0, z1) {
+      // ─── Elevated Tracks + Trains ───────────────────────
+      function drawTrackSegment(ctx, track, z0, z1) {
         // deck slab
-        drawBox(ctx, TRACK_X, (z0 + z1) / 2, DECK_HW, (z1 - z0) / 2, DECK_Y - 5, DECK_Y,
+        drawBox(ctx, track.x, (z0 + z1) / 2, track.deckHW, (z1 - z0) / 2, track.deckY - 5, track.deckY,
           'rgb(16,16,22)', 'rgb(10,10,15)', 'rgb(22,22,30)');
       }
 
-      function drawPillar(ctx, z) {
-        drawBox(ctx, TRACK_X, z, 4, 4, 0, DECK_Y - 5,
+      function drawPillar(ctx, track, z) {
+        drawBox(ctx, track.x, z, 4, 4, 0, track.deckY - 5,
           'rgb(11,11,16)', 'rgb(7,7,11)', null);
       }
 
-      function drawTrainCar(ctx, cz, t, isHead, isTail) {
-        const y0 = DECK_Y, y1 = DECK_Y + 17;
-        drawBox(ctx, TRACK_X, cz, DECK_HW - 1, CAR_LEN / 2, y0, y1,
-          'rgb(24,24,32)', 'rgb(16,16,22)', 'rgb(30,30,40)');
+      function updateTrains(dt) {
+        for (const track of TRACKS) {
+          track.headZ += track.speed * track.dir * dt;
+          if (track.dir < 0 && track.headZ < TRACK_Z0 - TRAIN_SPAN) track.headZ = TRACK_Z1 + TRAIN_SPAN;
+          if (track.dir > 0 && track.headZ > TRACK_Z1 + TRAIN_SPAN) track.headZ = TRACK_Z0 - TRAIN_SPAN;
+        }
+      }
+
+      function drawTrainCar(ctx, track, cz, t, isHead, isTail) {
+        const y0 = track.deckY, y1 = track.deckY + 17;
+        drawBox(ctx, track.x, cz, track.deckHW - 1, CAR_LEN / 2, y0, y1,
+          `rgb(${track.body})`, `rgb(${track.side})`, `rgb(${track.top})`);
         // lit window strip on the +X face (toward camera)
         const winY = y0 + 9;
-        const faceX = TRACK_X + DECK_HW - 1;
+        const faceX = track.x + track.deckHW - 1;
         for (let dz = -CAR_LEN / 2 + 4; dz < CAR_LEN / 2 - 3; dz += 5) {
           const flick = Math.sin(t * 6 + dz + cz * 0.1) > -0.85 ? 1 : 0.3;
           const p = project(faceX, winY, cz + dz);
           if (!p) continue;
           const sz = Math.max(1, 4 * p.s);
-          ctx.fillStyle = `rgba(255,225,150,${0.9 * flick})`;
+          ctx.fillStyle = `rgba(${track.windows},${0.9 * flick})`;
           ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz * 0.7);
           const g = sz * 2.2;
-          ctx.fillStyle = `rgba(255,215,140,${0.15 * flick})`;
+          ctx.fillStyle = `rgba(${track.windows},${0.15 * flick})`;
           ctx.fillRect(p.x - g / 2, p.y - g / 2, g, g);
         }
         // headlight / taillight
         if (isHead || isTail) {
-          const endZ = cz - CAR_LEN / 2;
-          const p = project(TRACK_X, DECK_Y + 5, endZ);
+          const endZ = cz + (isHead ? track.dir : -track.dir) * CAR_LEN / 2;
+          const p = project(track.x, track.deckY + 5, endZ);
           if (p) {
             const sz = Math.max(2, 5 * p.s);
             const c = isHead ? '255,245,220' : '255,60,40';
@@ -316,15 +325,14 @@
 
       // ─── Frame Assembly ─────────────────────────────────
       function render(ctx, t, dt) {
-        cam.x = 6 * Math.sin(t * 0.05);
-        cam.yaw = 0.02 * Math.sin(t * 0.045);
-        cam.pitch = -0.06 + 0.012 * Math.sin(t * 0.037);
-        cam.y = 47 + 1.5 * Math.sin(t * 0.07);
+        cam.x = 130 + 8 * Math.sin(t * 0.05);
+        cam.yaw = -0.16 + 0.018 * Math.sin(t * 0.045);
+        cam.pitch = -0.29 + 0.015 * Math.sin(t * 0.037);
+        cam.y = 118 + 2.5 * Math.sin(t * 0.07);
         computeView();
 
         updateCars(dt);
-        trainHeadZ -= 150 * dt;
-        if (trainHeadZ < TRACK_Z0 - CAR_LEN) trainHeadZ = TRACK_Z1 + TRAIN_SPAN;
+        updateTrains(dt);
 
         ctx.fillStyle = '#02020a';
         ctx.fillRect(0, 0, W, H);
@@ -345,18 +353,22 @@
         }
 
         // track pillars + deck segments
-        for (let z = TRACK_Z0; z < TRACK_Z1; z += PILLAR_STEP)
-          push(TRACK_X, DECK_Y / 2, z, () => drawPillar(ctx, z));
-        for (let z = TRACK_Z0; z < TRACK_Z1; z += SPZ) {
-          const z0 = z, z1 = Math.min(z + SPZ, TRACK_Z1);
-          push(TRACK_X, DECK_Y, (z0 + z1) / 2, () => drawTrackSegment(ctx, z0, z1));
+        for (const track of TRACKS) {
+          for (let z = TRACK_Z0; z < TRACK_Z1; z += PILLAR_STEP)
+            push(track.x, track.deckY / 2, z, () => drawPillar(ctx, track, z));
+          for (let z = TRACK_Z0; z < TRACK_Z1; z += SPZ) {
+            const z0 = z, z1 = Math.min(z + SPZ, TRACK_Z1);
+            push(track.x, track.deckY, (z0 + z1) / 2, () => drawTrackSegment(ctx, track, z0, z1));
+          }
         }
 
         // train cars
-        for (let i = 0; i < NCARS; i++) {
-          const cz = trainHeadZ + i * (CAR_LEN + CAR_GAP);
-          if (cz < TRACK_Z0 - CAR_LEN || cz > TRACK_Z1 + CAR_LEN) continue;
-          push(TRACK_X, DECK_Y + 8, cz, () => drawTrainCar(ctx, cz, t, i === 0, i === NCARS - 1));
+        for (const track of TRACKS) {
+          for (let i = 0; i < NCARS; i++) {
+            const cz = track.headZ - i * track.dir * (CAR_LEN + CAR_GAP);
+            if (cz < TRACK_Z0 - CAR_LEN || cz > TRACK_Z1 + CAR_LEN) continue;
+            push(track.x, track.deckY + 8, cz, () => drawTrainCar(ctx, track, cz, t, i === 0, i === NCARS - 1));
+          }
         }
 
         for (const c of cars) push(c.x, 2.5, c.z, () => drawCar(ctx, c));
@@ -390,7 +402,8 @@
           if (e.key.toLowerCase() === 'r') {
             initCity();
             initCars();
-            trainHeadZ = TRACK_Z1;
+            TRACKS[0].headZ = TRACK_Z1;
+            TRACKS[1].headZ = TRACK_Z0 - TRAIN_SPAN;
           }
         },
         draw(ctx, { time, dt }) {
