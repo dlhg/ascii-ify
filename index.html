@@ -3,77 +3,254 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ascii-ify — Basic Example</title>
+    <title>ascii-ify — Examples</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-      .container { position: relative; width: 100%; height: 100%; }
-      #source { display: block; width: 100%; height: 100%; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0a0a0f;
+        font-family: monospace;
+        color: #ccc;
+        --nav-height: 0px;
+      }
+
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 12px;
+        background: rgba(10, 10, 15, 0.88);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      nav .top-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      nav .title {
+        font-size: 14px;
+        color: #666;
+      }
+
+      nav .btn-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      nav button {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #999;
+        padding: 4px 10px;
+        font-family: monospace;
+        font-size: 11px;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: all 0.15s;
+      }
+
+      nav button:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #ddd;
+      }
+
+      nav button.active {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.25);
+        color: #fff;
+      }
+
+      nav .keys {
+        font-size: 11px;
+        color: #444;
+      }
+
+      kbd {
+        display: inline-block;
+        padding: 1px 5px;
+        border: 1px solid #333;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 11px;
+        color: #555;
+      }
+
+      iframe {
+        position: absolute;
+        top: var(--nav-height);
+        left: 0;
+        width: 100%;
+        height: calc(100% - var(--nav-height));
+        border: none;
+      }
     </style>
   </head>
   <body>
-    <div class="container">
-      <canvas id="source"></canvas>
-    </div>
-    <script type="module">
-      import { AsciiIfy } from './src/index.js';
+    <nav>
+      <div class="top-row">
+        <span class="title">ascii-ify</span>
+        <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> cycle &nbsp; <kbd>P</kbd> panel &nbsp; <kbd>E</kbd> <span id="filter-label">disable filter</span></span>
+      </div>
+      <div class="btn-grid" id="btn-grid"></div>
+    </nav>
+    <iframe id="frame"></iframe>
 
-      // ─── Source Canvas: Animated Gradient ─────────────────
-      const source = document.getElementById('source');
-      const sCtx = source.getContext('2d');
+    <script>
+      const EXAMPLES_BASE = 'examples/';
+      const examples = [
+        { name: 'Basic', src: 'basic.html' },
 
-      function resizeSource() {
-        source.width = window.innerWidth;
-        source.height = window.innerHeight;
+        { name: 'Lightning', src: 'lightning.html' },
+        { name: 'Bioluminescent', src: 'bioluminescent.html' },
+
+        { name: 'Cherry Blossoms', src: 'cherry-blossoms.html' },
+        { name: 'Cube Trace', src: 'cube-trace.html' },
+        { name: 'Impossible Cube', src: 'impossible-cube.html' },
+        { name: 'Cube Rain', src: 'cube-rain.html' },
+        { name: 'Hypercube', src: 'hypercube.html' },
+        { name: '3D Depth Map', src: 'depth-map.html' },
+        { name: '3D Ridgeline', src: 'ridgeline.html' },
+        { name: '3D Ripple Tank', src: 'ripple-tank.html' },
+        { name: '3D Plasma Bloom', src: 'plasma-bloom.html' },
+        { name: '3D Cityscape', src: 'cityscape.html' },
+        { name: 'Galaxy', src: 'galaxy.html' },
+        { name: 'Galaxy 2', src: 'galaxy-2.html' },
+        { name: 'Galaxy 3', src: 'galaxy-3.html' },
+        { name: 'Galaxy 4', src: 'galaxy-4.html' },
+
+        { name: 'Playground', src: 'playground.html' },
+        { name: 'Snake', src: 'snake.html' },
+        { name: 'Life', src: 'life.html' },
+        { name: 'Starfield', src: 'starfield.html' },
+        { name: 'Pendulum', src: 'pendulum.html' },
+
+        { name: 'Particles', src: 'particle-painter.html' },
+        { name: 'Breakout', src: 'breakout.html' },
+        { name: 'Flappy', src: 'flappy.html' },
+        { name: 'Asteroids', src: 'asteroids.html' },
+        { name: 'Rhythm', src: 'rhythm-dodge.html' },
+        { name: 'Tower Defense', src: 'tower-defense.html' },
+        { name: 'Idle', src: 'idle.html' },
+        { name: 'Idle 2', src: 'idle2.html' },
+        { name: 'Fireworks', src: 'fireworks.html' },
+
+        { name: 'Terminal', src: 'terminal.html' },
+        { name: 'Typing', src: 'typing-game.html' },
+        { name: 'Webcam', src: 'webcam.html' },
+        { name: 'Landscape', src: 'landscape.html' },
+        { name: 'Ionization', src: 'ionization.html' },
+        { name: 'Aquarium', src: 'aquarium.html' },
+
+        { name: 'Reaction Diffusion', src: 'reaction-diffusion.html' },
+        { name: 'Lissajous', src: 'lissajous.html' },
+        { name: 'Dashboard', src: 'dashboard.html' },
+        { name: 'Terrain', src: 'terrain.html' },
+        { name: 'Clock', src: 'clock.html' },
+        { name: 'Maze', src: 'maze.html' },
+        { name: 'Spotlight', src: 'spotlight.html' },
+        { name: 'Text Reveal', src: 'text-reveal.html' },
+        { name: 'X-Ray', src: 'xray.html' },
+        { name: 'X-Ray Forest', src: 'xray-forest.html' },
+        { name: 'Eclipse', src: 'eclipse.html' },
+
+        { name: 'Day/Night', src: 'day-night.html' },
+
+        { name: 'Stained Glass', src: 'stained-glass.html' },
+        { name: 'Tidal', src: 'tidal.html' },
+        { name: 'Text Portal', src: 'text-portal.html' },
+        { name: 'Porthole', src: 'porthole.html' },
+        { name: 'Subway', src: 'subway.html' },
+        { name: 'Driving', src: 'driving.html' },
+
+        { name: 'Rainstorm', src: 'rainstorm.html' },
+        { name: 'Deep Sea', src: 'deep-sea.html' },
+        { name: 'Fractal', src: 'fractal.html' },
+        { name: 'Murmuration', src: 'murmuration.html' },
+        { name: 'Piano', src: 'piano.html' },
+        { name: 'Campfire', src: 'campfire.html' },
+        { name: 'Weather', src: 'weather.html' },
+        { name: 'Fluid', src: 'fluid.html' },
+        { name: 'Orrery', src: 'orrery.html' },
+        { name: 'Jellyfish', src: 'jellyfish.html' },
+        { name: 'Art Studio', src: 'art-studio.html' },
+        { name: 'Chess', src: 'chess.html' },
+
+        { name: 'Plasma Vortex', src: 'plasma-vortex.html' },
+        { name: 'Data Tunnel', src: 'data-tunnel.html' },
+        { name: 'Neural Ignition', src: 'neural-ignition.html' },
+      ];
+
+      const btnGrid = document.getElementById('btn-grid');
+      const frame = document.getElementById('frame');
+      const nav = document.querySelector('nav');
+      let current = 0;
+
+      // Keep the example viewport below the browser chrome, even when buttons wrap.
+      const syncNavHeight = () => {
+        document.body.style.setProperty('--nav-height', `${nav.offsetHeight}px`);
+      };
+      syncNavHeight();
+      new ResizeObserver(syncNavHeight).observe(nav);
+
+      // Build buttons
+      const buttons = examples.map((ex, i) => {
+        const btn = document.createElement('button');
+        btn.textContent = ex.name;
+        btn.addEventListener('click', () => load(i));
+        btnGrid.appendChild(btn);
+        return btn;
+      });
+
+      // Filter state label
+      let filterEnabled = true;
+      const filterLabel = document.getElementById('filter-label');
+
+      function updateFilterLabel() {
+        filterLabel.textContent = filterEnabled ? 'disable filter' : 'enable filter';
       }
-      resizeSource();
-      window.addEventListener('resize', resizeSource);
 
-      function drawSource(time) {
-        const w = source.width, h = source.height;
-        const t = time * 0.001;
-
-        // Animated radial gradient
-        const cx = w / 2 + Math.sin(t * 0.7) * w * 0.2;
-        const cy = h / 2 + Math.cos(t * 0.5) * h * 0.2;
-        const grad = sCtx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.6);
-        grad.addColorStop(0, `hsl(${(t * 30) % 360} 80% 60%)`);
-        grad.addColorStop(0.5, `hsl(${(t * 30 + 120) % 360} 70% 40%)`);
-        grad.addColorStop(1, `hsl(${(t * 30 + 240) % 360} 60% 10%)`);
-        sCtx.fillStyle = grad;
-        sCtx.fillRect(0, 0, w, h);
-
-        // Animated circles
-        for (let i = 0; i < 5; i++) {
-          const x = w * (0.2 + 0.15 * i) + Math.sin(t * (0.3 + i * 0.2)) * 100;
-          const y = h * 0.5 + Math.cos(t * (0.4 + i * 0.15)) * 150;
-          const r = 40 + Math.sin(t + i) * 20;
-          sCtx.beginPath();
-          sCtx.arc(x, y, r, 0, Math.PI * 2);
-          sCtx.fillStyle = `hsla(${(t * 50 + i * 60) % 360} 90% 60% / 0.6)`;
-          sCtx.fill();
+      function handleKey(e) {
+        if (e.key === 'e' || e.key === 'E') {
+          filterEnabled = !filterEnabled;
+          updateFilterLabel();
         }
       }
 
-      // ─── ASCII-ify ────────────────────────────────────────
-      const ascii = new AsciiIfy(source, {
-        fontSize: 12,
-        charset: 'density',
-        colorScheme: 'rainbow',
-        sourceOpacity: 0,
-      });
-
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
-        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
-      });
-
-      function loop(time) {
-        drawSource(time);
-        ascii.render();
-        requestAnimationFrame(loop);
+      function load(index) {
+        current = index;
+        frame.src = EXAMPLES_BASE + examples[index].src;
+        buttons.forEach((b, i) => b.classList.toggle('active', i === index));
+        // Reset filter state when switching examples (they always start enabled)
+        filterEnabled = true;
+        updateFilterLabel();
+        // Listen for keypresses inside the iframe once it loads
+        frame.addEventListener('load', () => {
+          try {
+            frame.contentWindow.addEventListener('keydown', handleKey);
+          } catch (_) { /* cross-origin guard */ }
+        }, { once: true });
       }
-      requestAnimationFrame(loop);
+
+      // Keyboard navigation (for when parent document has focus)
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight') load((current + 1) % examples.length);
+        if (e.key === 'ArrowLeft') load((current - 1 + examples.length) % examples.length);
+        handleKey(e);
+      });
+
+      // Load first example
+      load(0);
     </script>
   </body>
 </html>

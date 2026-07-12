@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Basic Example</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { AsciiIfy } from '../src/index.js';
+
+      // ─── Source Canvas: Animated Gradient ─────────────────
+      const source = document.getElementById('source');
+      const sCtx = source.getContext('2d');
+
+      function resizeSource() {
+        source.width = window.innerWidth;
+        source.height = window.innerHeight;
+      }
+      resizeSource();
+      window.addEventListener('resize', resizeSource);
+
+      function drawSource(time) {
+        const w = source.width, h = source.height;
+        const t = time * 0.001;
+
+        // Animated radial gradient
+        const cx = w / 2 + Math.sin(t * 0.7) * w * 0.2;
+        const cy = h / 2 + Math.cos(t * 0.5) * h * 0.2;
+        const grad = sCtx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.6);
+        grad.addColorStop(0, `hsl(${(t * 30) % 360} 80% 60%)`);
+        grad.addColorStop(0.5, `hsl(${(t * 30 + 120) % 360} 70% 40%)`);
+        grad.addColorStop(1, `hsl(${(t * 30 + 240) % 360} 60% 10%)`);
+        sCtx.fillStyle = grad;
+        sCtx.fillRect(0, 0, w, h);
+
+        // Animated circles
+        for (let i = 0; i < 5; i++) {
+          const x = w * (0.2 + 0.15 * i) + Math.sin(t * (0.3 + i * 0.2)) * 100;
+          const y = h * 0.5 + Math.cos(t * (0.4 + i * 0.15)) * 150;
+          const r = 40 + Math.sin(t + i) * 20;
+          sCtx.beginPath();
+          sCtx.arc(x, y, r, 0, Math.PI * 2);
+          sCtx.fillStyle = `hsla(${(t * 50 + i * 60) % 360} 90% 60% / 0.6)`;
+          sCtx.fill();
+        }
+      }
+
+      // ─── ASCII-ify ────────────────────────────────────────
+      const ascii = new AsciiIfy(source, {
+        fontSize: 12,
+        charset: 'density',
+        colorScheme: 'rainbow',
+        sourceOpacity: 0,
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
+        if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+      });
+
+      function loop(time) {
+        drawSource(time);
+        ascii.render();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
