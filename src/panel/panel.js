@@ -12,6 +12,32 @@ const SCHEME_NAMES = COLOR_SCHEMES.map(s => s.name);
 const PATTERN_NAMES = ['none', ...PATTERNS.map(p => p.name)];
 const BLEND_MODES = ['replace', 'add'];
 const RENDER_MODES = ['2d', '3d'];
+const AUTOMATION_TYPES = ['sine', 'triangle', 'noise'];
+
+const GLOBAL_KEYS = [
+  'enabled', 'fontSize', 'density', 'charset', 'colorScheme',
+  'background', 'fade', 'speed', 'pattern', 'patternMix',
+  'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
+  'blendMode', 'offsetX', 'offsetY', 'zIndex',
+  'renderMode', 'depthScale', 'perspective', 'rotationX', 'rotationY',
+  'rotationZ', 'cameraZ', 'depthOpacity',
+  'edgeDetect', 'edgeThreshold', 'edgeCharset',
+  'crtEnabled', 'crtScanlines', 'crtGlow', 'crtDistortion', 'crtFlicker',
+];
+
+const LAYER_KEYS = [
+  'visible', 'fontSize', 'density', 'charset', 'colorScheme',
+  'pattern', 'patternMix', 'fade', 'opacity', 'blendMode',
+  'offsetX', 'offsetY', 'zIndex',
+  'edgeDetect', 'edgeThreshold', 'edgeCharset',
+  'maskLayer', 'invertMask',
+];
+
+const BOOLEAN_KEYS = new Set([
+  'enabled', 'colorCycle', 'edgeDetect', 'crtEnabled', 'visible', 'invertMask',
+]);
+
+const STRING_KEYS = new Set(['background']);
 
 export class ControlPanel {
   constructor(ascii, options = {}) {
@@ -370,6 +396,10 @@ export class ControlPanel {
     copyBtn.title = 'Copy all values as JSON';
     copyBtn.addEventListener('click', () => this._copySnapshot());
     actionRow.appendChild(copyBtn);
+    const pasteBtn = h('button', 'ctrl-btn paste-btn', 'Paste');
+    pasteBtn.title = 'Paste JSON values from clipboard';
+    pasteBtn.addEventListener('click', () => this._pasteSnapshot());
+    actionRow.appendChild(pasteBtn);
     body.appendChild(actionRow);
 
     section.appendChild(body);
@@ -876,24 +906,6 @@ export class ControlPanel {
 
   _copySnapshot() {
     const ascii = this._ascii;
-    const GLOBAL_KEYS = [
-      'enabled', 'fontSize', 'density', 'charset', 'colorScheme',
-      'background', 'fade', 'speed', 'pattern', 'patternMix',
-      'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
-      'blendMode', 'offsetX', 'offsetY', 'zIndex',
-      'renderMode', 'depthScale', 'perspective', 'rotationX', 'rotationY',
-      'rotationZ', 'cameraZ', 'depthOpacity',
-      'edgeDetect', 'edgeThreshold', 'edgeCharset',
-      'crtEnabled', 'crtScanlines', 'crtGlow', 'crtDistortion', 'crtFlicker',
-    ];
-    const LAYER_KEYS = [
-      'visible', 'fontSize', 'density', 'charset', 'colorScheme',
-      'pattern', 'patternMix', 'fade', 'opacity', 'blendMode',
-      'offsetX', 'offsetY', 'zIndex',
-      'edgeDetect', 'edgeThreshold', 'edgeCharset',
-      'maskLayer', 'invertMask',
-    ];
-
     const snapshot = {};
     for (const k of GLOBAL_KEYS) {
       snapshot[k] = ascii.get(k);
@@ -925,8 +937,189 @@ export class ControlPanel {
     });
   }
 
+  _pasteSnapshot() {
+    navigator.clipboard.readText().then((text) => {
+      let snapshot;
+      try {
+        snapshot = JSON.parse(text);
+      } catch {
+        throw new Error('Invalid JSON');
+      }
+
+      const error = this._validateSnapshot(snapshot);
+      if (error) throw new Error(error);
+
+      this._applySnapshot(snapshot);
+      this._flashPasteBtn('Pasted!');
+    }, () => {
+      throw new Error('Clipboard');
+    }).catch((err) => {
+      this._flashPasteBtn(err.message || 'Invalid', true);
+    });
+  }
+
+  _validateSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      return 'Invalid';
+    }
+
+    const allowed = new Set([...GLOBAL_KEYS, 'automations', 'layers']);
+    for (const key of Object.keys(snapshot)) {
+      if (!allowed.has(key)) return `Bad key: ${key}`;
+    }
+
+    if (!GLOBAL_KEYS.some(key => key in snapshot) && !('layers' in snapshot)) {
+      return 'Empty';
+    }
+
+    for (const key of GLOBAL_KEYS) {
+      if (key in snapshot && !this._isValidValue(key, snapshot[key], false)) {
+        return `Bad ${key}`;
+      }
+    }
+
+    if ('automations' in snapshot) {
+      const error = this._validateAutomations(snapshot.automations, GLOBAL_KEYS);
+      if (error) return error;
+    }
+
+    if ('layers' in snapshot) {
+      if (!Array.isArray(snapshot.layers)) return 'Bad layers';
+      for (let i = 0; i < snapshot.layers.length; i++) {
+        const layer = snapshot.layers[i];
+        if (!layer || typeof layer !== 'object' || Array.isArray(layer)) {
+          return `Bad layer ${i + 1}`;
+        }
+        const layerAllowed = new Set([...LAYER_KEYS, 'automations']);
+        for (const key of Object.keys(layer)) {
+          if (!layerAllowed.has(key)) return `Bad layer key: ${key}`;
+        }
+        for (const key of LAYER_KEYS) {
+          if (key in layer && !this._isValidValue(key, layer[key], true)) {
+            return `Bad layer ${key}`;
+          }
+        }
+        if ('automations' in layer) {
+          const error = this._validateAutomations(layer.automations, LAYER_KEYS);
+          if (error) return `Layer ${i + 1}: ${error}`;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  _isValidValue(key, value, layerValue) {
+    if (BOOLEAN_KEYS.has(key)) return typeof value === 'boolean';
+    if (STRING_KEYS.has(key)) return typeof value === 'string';
+    if (key === 'charset') return layerValue ? value == null || CHARSET_NAMES.includes(value) : CHARSET_NAMES.includes(value);
+    if (key === 'colorScheme') return layerValue ? value == null || SCHEME_NAMES.includes(value) : SCHEME_NAMES.includes(value);
+    if (key === 'edgeCharset') return EDGE_CHARSET_NAMES.includes(value);
+    if (key === 'pattern') return value == null || PATTERN_NAMES.slice(1).includes(value);
+    if (key === 'blendMode') return BLEND_MODES.includes(value);
+    if (key === 'renderMode') return RENDER_MODES.includes(value);
+    if (key === 'maskLayer') return value == null || (Number.isInteger(value) && value > 0);
+    if (key === 'fade' && layerValue && value == null) return true;
+    return typeof value === 'number' && Number.isFinite(value);
+  }
+
+  _validateAutomations(automations, allowedKeys) {
+    if (!automations || typeof automations !== 'object' || Array.isArray(automations)) {
+      return 'Bad automation';
+    }
+    const allowed = new Set(allowedKeys.filter(key => PARAM_RANGES[key]));
+    for (const [key, automation] of Object.entries(automations)) {
+      if (!allowed.has(key)) return `Bad automation: ${key}`;
+      if (!automation || typeof automation !== 'object' || Array.isArray(automation)) {
+        return `Bad automation: ${key}`;
+      }
+      if (automation.type != null && !AUTOMATION_TYPES.includes(automation.type)) {
+        return `Bad automation: ${key}`;
+      }
+      for (const numericKey of ['base', 'min', 'max', 'amount', 'rate', 'phase', 'seed']) {
+        if (numericKey in automation && (typeof automation[numericKey] !== 'number' || !Number.isFinite(automation[numericKey]))) {
+          return `Bad automation: ${key}`;
+        }
+      }
+      if ('relative' in automation && typeof automation.relative !== 'boolean') {
+        return `Bad automation: ${key}`;
+      }
+    }
+    return null;
+  }
+
+  _applySnapshot(snapshot) {
+    const ascii = this._ascii;
+    const isFullSnapshot = GLOBAL_KEYS.every(key => key in snapshot);
+
+    if (isFullSnapshot || 'automations' in snapshot) {
+      ascii.clearAutomations?.(false);
+    }
+    for (const key of GLOBAL_KEYS) {
+      if (key in snapshot) ascii.set(key, snapshot[key]);
+    }
+    if (snapshot.automations) {
+      for (const [key, automation] of Object.entries(snapshot.automations)) {
+        ascii.automate(key, automation);
+      }
+    }
+
+    if ('layers' in snapshot) {
+      this._applySnapshotLayers(snapshot.layers);
+    } else if (isFullSnapshot) {
+      this._applySnapshotLayers([]);
+    }
+
+    for (const c of this._controls) c.sync();
+    this._updateMaskSelectors();
+    this._syncEyeIcons();
+    this._updateSoloBtns();
+  }
+
+  _applySnapshotLayers(layerConfigs) {
+    const ascii = this._ascii;
+    while (ascii._layers.length > layerConfigs.length) {
+      ascii.removeLayer(ascii._layers[ascii._layers.length - 1]);
+    }
+    while (ascii._layers.length < layerConfigs.length) {
+      ascii.addLayer({ source: ascii._source, blendMode: 'add', opacity: 0.5 });
+    }
+    while (ascii._layers.length > layerConfigs.length) {
+      ascii.removeLayer(ascii._layers[ascii._layers.length - 1]);
+    }
+    if (layerConfigs.length === 0) {
+      ascii._implicitMode = true;
+      ascii._soloLayer = null;
+      return;
+    }
+
+    ascii._implicitMode = false;
+    const validLayerIds = new Set(ascii._layers.map(layer => layer.id));
+    for (let i = 0; i < layerConfigs.length; i++) {
+      const layer = ascii._layers[i];
+      const config = layerConfigs[i];
+      const isFullLayer = LAYER_KEYS.every(key => key in config);
+      if (isFullLayer || 'automations' in config) {
+        layer.clearAutomations?.(false);
+      }
+      for (const key of LAYER_KEYS) {
+        if (!(key in config)) continue;
+        if (key === 'maskLayer' && config[key] != null && !validLayerIds.has(config[key])) {
+          layer.set(key, null);
+        } else {
+          layer.set(key, config[key]);
+        }
+      }
+      if (config.automations) {
+        for (const [key, automation] of Object.entries(config.automations)) {
+          layer.automate(key, automation);
+        }
+      }
+    }
+  }
+
   _flashCopyBtn(text) {
-    const btn = this._shadow.querySelector('.copy-btn');
+    const btn = this._surface.querySelector('.copy-btn');
     if (!btn) return;
     const orig = btn.textContent;
     btn.textContent = text;
@@ -934,6 +1127,19 @@ export class ControlPanel {
     setTimeout(() => {
       btn.textContent = orig;
       btn.classList.remove('flash');
+    }, 1200);
+  }
+
+  _flashPasteBtn(text, error = false) {
+    const btn = this._surface.querySelector('.paste-btn');
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = text;
+    btn.classList.toggle('error', error);
+    btn.classList.add('flash');
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.classList.remove('flash', 'error');
     }, 1200);
   }
 

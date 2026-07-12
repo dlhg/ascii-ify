@@ -176,9 +176,15 @@ export const PANEL_CSS = `
   background: var(--bg-track);
 }
 
-.copy-btn.flash {
+.copy-btn.flash,
+.paste-btn.flash {
   color: var(--accent);
   border-color: var(--accent-dim);
+}
+
+.paste-btn.error {
+  color: #e63946;
+  border-color: rgba(230, 57, 70, 0.4);
 }
 
 .close-btn,
