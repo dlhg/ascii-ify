@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - 3D Plasma Bloom</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #050308; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp } from './utils.js';
+
+      const SHADES = 48;
+      const GRAYS = Array.from({ length: SHADES }, (_, i) => {
+        const v = Math.round((i / (SHADES - 1)) * 255);
+        return `rgb(${v},${v},${v})`;
+      });
+
+      const CELL = 11;
+
+      // two plasma foci orbiting each other; the mouse can steal one
+      let mouse = null;
+
+      function draw(ctx, { time, width: w, height: h }) {
+        const t = time * 0.001;
+
+        const ax = w * (0.5 + Math.sin(t * 0.31) * 0.28);
+        const ay = h * (0.5 + Math.cos(t * 0.23) * 0.28);
+        const bx = mouse ? mouse.x : w * (0.5 + Math.cos(t * 0.17) * 0.34);
+        const by = mouse ? mouse.y : h * (0.5 + Math.sin(t * 0.27) * 0.34);
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        for (let y = 0; y < h; y += CELL) {
+          const cy = y + CELL / 2;
+          for (let x = 0; x < w; x += CELL) {
+            const cx = x + CELL / 2;
+            const dxa = cx - ax, dya = cy - ay;
+            const dxb = cx - bx, dyb = cy - by;
+            const da = Math.sqrt(dxa * dxa + dya * dya);
+            const db = Math.sqrt(dxb * dxb + dyb * dyb);
+
+            let v =
+              Math.sin(cx * 0.010 + t * 0.9) +
+              Math.sin(cy * 0.013 - t * 0.7) +
+              Math.sin((cx + cy) * 0.007 + t * 0.5) +
+              Math.sin(da * 0.016 - t * 1.6) +
+              Math.sin(db * 0.019 + t * 1.1);
+
+            // normalize to 0..1 and push contrast so peaks bloom
+            let e = v / 10 + 0.5;
+            e = clamp(0.5 + (e - 0.5) * 1.7, 0, 1);
+            e = e * e * (3 - 2 * e);
+
+            const idx = Math.min(SHADES - 1, (e * SHADES) | 0);
+            if (idx === 0) continue;
+            ctx.fillStyle = GRAYS[idx];
+            ctx.fillRect(x, y, CELL, CELL);
+          }
+        }
+      }
+
+      createApp({
+        asciiConfig: {
+          fontSize: 12,
+          density: 1.2,
+          charset: 'blocks',
+          colorScheme: 'vapor',
+          background: '#050308',
+          sourceOpacity: 0,
+          renderMode: '3d',
+          depthScale: 240,
+          perspective: 540,
+          rotationX: -0.6,
+          rotationY: 0,
+          rotationZ: 0,
+          cameraZ: 720,
+          depthOpacity: 0.28,
+          fade: 0.16,
+          colorCycle: true,
+          colorCycleRate: 0.18,
+          crtEnabled: true,
+          crtScanlines: 0.12,
+          crtGlow: 0.28,
+          // hands-off camera choreography via parameter automation
+          automations: {
+            rotationZ: { type: 'sine', amount: 0.55, rate: 0.02 },
+            rotationY: { type: 'sine', amount: 0.3, rate: 0.033 },
+            rotationX: { type: 'sine', min: -0.85, max: -0.35, rate: 0.026 },
+            depthScale: { type: 'triangle', min: 150, max: 330, rate: 0.05 },
+            perspective: { type: 'noise', min: 420, max: 700, rate: 0.07 },
+          },
+        },
+        draw,
+      });
+
+      document.addEventListener('pointermove', (e) => {
+        mouse = { x: e.clientX, y: e.clientY };
+      });
+      document.addEventListener('pointerleave', () => (mouse = null));
+    </script>
+  </body>
+</html>

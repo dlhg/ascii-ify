@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - 3D Ripple Tank</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #020409; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { clamp, smoothstep, dist, getCanvasPos } from './utils.js';
+
+      const WAVE_SPEED = 150;  // px/s ring expansion
+      const MAX_RIPPLES = 26;
+
+      const ripples = [];
+      function addRipple(x, y, amp) {
+        ripples.push({ x, y, age: 0, amp });
+        if (ripples.length > MAX_RIPPLES) ripples.shift();
+      }
+
+      // falling raindrops — on death they strike the surface
+      const rain = new ParticlePool({ maxParticles: 60 });
+      let rainTimer = 0;
+
+      const SHADES = 48;
+      const GRAYS = Array.from({ length: SHADES }, (_, i) => {
+        const v = Math.round((i / (SHADES - 1)) * 255);
+        return `rgb(${v},${v},${v})`;
+      });
+
+      const CELL = 9;
+
+      function surfaceHeight(x, y) {
+        let sum = 0;
+        for (let i = 0; i < ripples.length; i++) {
+          const r = ripples[i];
+          const d = dist(x, y, r.x, r.y);
+          const front = r.age * WAVE_SPEED;
+          // ring only exists behind the expanding wavefront
+          const arrived = 1 - smoothstep(front - 26, front + 26, d);
+          if (arrived <= 0) continue;
+          sum +=
+            Math.cos(d * 0.055 - r.age * 8.2) *
+            Math.exp(-d * 0.0035) *
+            Math.exp(-r.age * 0.5) *
+            arrived * r.amp;
+        }
+        return sum;
+      }
+
+      function draw(ctx, { dt, width: w, height: h }) {
+        // spawn rain
+        rainTimer -= dt;
+        if (rainTimer <= 0) {
+          rainTimer = 0.35 + Math.random() * 0.9;
+          rain.emit(1, () => {
+            const life = 0.55 + Math.random() * 0.5;
+            return {
+              x: 60 + Math.random() * (w - 120),
+              y: 60 + Math.random() * (h - 120),
+              vx: 0, vy: 0,
+              life,
+              maxLife: life,
+            };
+          });
+        }
+        rain.update(dt, (p) => addRipple(p.x, p.y, 0.85 + Math.random() * 0.35));
+
+        for (let i = ripples.length - 1; i >= 0; i--) {
+          ripples[i].age += dt;
+          if (ripples[i].age > 7) ripples.splice(i, 1);
+        }
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        // water surface: brightness 0.5 = flat, crests bright, troughs dark
+        for (let y = 0; y < h; y += CELL) {
+          for (let x = 0; x < w; x += CELL) {
+            const v = clamp(0.5 + surfaceHeight(x + CELL / 2, y + CELL / 2) * 0.5, 0, 1);
+            const idx = Math.min(SHADES - 1, (v * SHADES) | 0);
+            ctx.fillStyle = GRAYS[idx];
+            ctx.fillRect(x, y, CELL, CELL);
+          }
+        }
+
+        // incoming drops flare into bright spikes just before impact
+        rain.forEach((p) => {
+          const closeness = 1 - p.life / (p.maxLife ?? 1);
+          const glow = 40 + closeness * 200;
+          ctx.fillStyle = `rgb(${glow | 0},${glow | 0},${glow | 0})`;
+          const s = CELL * (1 + closeness * 2);
+          ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+        });
+      }
+
+      const app = createApp({
+        asciiConfig: {
+          fontSize: 8,
+          density: 1.1,
+          charset: 'braille',
+          colorScheme: 'ocean',
+          background: '#020409',
+          sourceOpacity: 0,
+          renderMode: '3d',
+          depthScale: 210,
+          perspective: 560,
+          rotationX: -0.78,
+          rotationY: 0.18,
+          rotationZ: 0,
+          cameraZ: 700,
+          depthOpacity: 0.22,
+          fade: 0.2,
+          automations: {
+            // the whole tank slowly wanders as if moored
+            rotationY: { type: 'noise', amount: 0.2, rate: 0.05 },
+            rotationZ: { type: 'sine', amount: 0.08, rate: 0.025 },
+          },
+        },
+        draw,
+      });
+
+      // click or drag to throw stones into the tank
+      let dragging = false;
+      app.canvas.parentElement.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        const { x, y } = getCanvasPos(app.canvas, e);
+        addRipple(x, y, 1.8);
+      });
+      document.addEventListener('pointerup', () => (dragging = false));
+      let dragCooldown = 0;
+      document.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        if (--dragCooldown > 0) return;
+        dragCooldown = 6;
+        const { x, y } = getCanvasPos(app.canvas, e);
+        addRipple(x, y, 0.9);
+      });
+    </script>
+  </body>
+</html>
