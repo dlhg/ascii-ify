@@ -46,6 +46,7 @@ export class Layer {
     // Reusable offscreen canvases
     this._sampleCtx = null;
     this._sampleBuf = null;
+    this._depthBuf = null;
     this._offscreen = null;
     this._offCtx = null;
   }
@@ -156,6 +157,7 @@ export class Layer {
     this._offCtx = null;
     this._sampleCtx = null;
     this._sampleBuf = null;
+    this._depthBuf = null;
     this._automations.clear(false);
     this._parent = null;
   }

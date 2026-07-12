@@ -70,6 +70,7 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
   const scaleMin = opts.scaleMin ?? 0.45;
   const scaleMax = opts.scaleMax ?? 2.5;
   const opacityDepth = opts.opacityDepth ?? 0.35;
+  const depthValues = opts.depthValues || null;
   const fontSize = opts.fontSize ?? (parseFloat(ctx.font) || 12);
   const centerX = width * 0.5;
   const centerY = height * 0.5;
@@ -85,7 +86,7 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
   const cz = Math.cos(rz);
 
   const depthA = 1 - opacityDepth * 0.5;
-  const depthB = opacityDepth / Math.max(1, depthScale);
+  const depthB = opacityDepth / Math.max(1, Math.abs(depthScale));
   const halfGlyph = fontSize * ATLAS_PAD * 0.5;
 
   // Create char index mapping and char string for atlas
@@ -120,7 +121,9 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
 
       const x0 = c * cw + cw * 0.5 - centerX;
       const y0 = r * ch + ch * 0.5 - centerY;
-      const z0 = (mag - 0.5) * depthScale;
+      let depthMag = depthValues ? depthValues[i] : mag;
+      depthMag = depthMag < 0 ? 0 : depthMag > 1 ? 1 : depthMag;
+      const z0 = (depthMag - 0.5) * depthScale;
 
       // Rotate X, then Y, then Z
       const y1 = y0 * cx - z0 * sx;

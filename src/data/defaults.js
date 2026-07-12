@@ -27,6 +27,7 @@ export const DEFAULTS = {
   rotationZ: 0,
   cameraZ: 700,
   depthOpacity: 0.35,
+  depthSmoothing: 0,
 
   // Edge detection (per-layer)
   edgeDetect: false,
@@ -66,6 +67,7 @@ export const PARAM_RANGES = {
   rotationZ: { min: -3.14, max: 3.14, step: 0.01 },
   cameraZ: { min: 100, max: 1600, step: 10 },
   depthOpacity: { min: 0, max: 1, step: 0.01 },
+  depthSmoothing: { min: 0, max: 0.95, step: 0.01 },
 
   // Edge detection
   edgeThreshold: { min: 0, max: 1, step: 0.01 },

@@ -67,6 +67,7 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
   const scaleMin = opts.scaleMin ?? 0.45;
   const scaleMax = opts.scaleMax ?? 2.5;
   const opacityDepth = opts.opacityDepth ?? 0.35;
+  const depthValues = opts.depthValues || null;
   const fontSize = opts.fontSize ?? (parseFloat(ctx.font) || 12);
   const centerX = width * 0.5;
   const centerY = height * 0.5;
@@ -83,7 +84,7 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
 
   // Depth alpha is linear in z: alpha = depthA - depthB * z
   const depthA = 1 - opacityDepth * 0.5;
-  const depthB = opacityDepth / Math.max(1, depthScale);
+  const depthB = opacityDepth / Math.max(1, Math.abs(depthScale));
   // Cull margin: half the logical glyph quad at scale 1
   const halfGlyph = fontSize * ATLAS_PAD * 0.5;
 
@@ -103,7 +104,9 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
 
       const x0 = c * cw + cw * 0.5 - centerX;
       const y0 = r * ch + ch * 0.5 - centerY;
-      const z0 = (v - 0.5) * depthScale;
+      let depthV = depthValues ? depthValues[i] : v;
+      depthV = depthV < 0 ? 0 : depthV > 1 ? 1 : depthV;
+      const z0 = (depthV - 0.5) * depthScale;
 
       // Rotate X, then Y, then Z.
       const y1 = y0 * cx - z0 * sx;

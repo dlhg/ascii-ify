@@ -20,7 +20,7 @@ const GLOBAL_KEYS = [
   'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
   'blendMode', 'offsetX', 'offsetY', 'zIndex',
   'renderMode', 'depthScale', 'perspective', 'rotationX', 'rotationY',
-  'rotationZ', 'cameraZ', 'depthOpacity',
+  'rotationZ', 'cameraZ', 'depthOpacity', 'depthSmoothing',
   'edgeDetect', 'edgeThreshold', 'edgeCharset',
   'crtEnabled', 'crtScanlines', 'crtGlow', 'crtDistortion', 'crtFlicker',
 ];
@@ -369,6 +369,13 @@ export class ControlPanel {
       label: 'Depth Opacity', key: 'depthOpacity', target: ascii, ...r.depthOpacity,
       get: () => ascii.get('depthOpacity'),
       set: (v) => ascii.set('depthOpacity', v),
+      format: (v) => Math.round(v * 100) + '%',
+    }), body);
+
+    this._register3D(new BarControl({
+      label: 'Depth Smoothing', key: 'depthSmoothing', target: ascii, ...r.depthSmoothing,
+      get: () => ascii.get('depthSmoothing'),
+      set: (v) => ascii.set('depthSmoothing', v),
       format: (v) => Math.round(v * 100) + '%',
     }), body);
 
@@ -993,6 +1000,7 @@ export class ControlPanel {
     drift(ascii, 'rotationZ', 0.08, threeDChance);
     drift(ascii, 'cameraZ', 0.08, threeDChance);
     drift(ascii, 'depthOpacity', 0.12, threeDChance);
+    drift(ascii, 'depthSmoothing', 0.12, threeDChance * 0.25);
 
     maybeSet(ascii, 'edgeDetect', !ascii.get('edgeDetect'), 0.06);
     drift(ascii, 'edgeThreshold', 0.12, ascii.get('edgeDetect') ? 0.35 : 0.08);

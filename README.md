@@ -48,6 +48,12 @@ const ascii = new AsciiIfy(myCanvas, {
 });
 ```
 
+For fast, high-contrast sources such as lightning flashes, raise `depthSmoothing` to damp z-position jitter without slowing the visible glyph brightness or colors:
+
+```js
+ascii.set('depthSmoothing', 0.65);
+```
+
 ## API
 
 ### Constructor
@@ -78,6 +84,7 @@ new AsciiIfy(sourceCanvas, options?)
 | `rotationZ` | number | 0 | 3D mode Z rotation in radians |
 | `cameraZ` | number | 700 | Virtual camera distance used by 3D mode |
 | `depthOpacity` | number | 0.35 | Depth-based opacity variation in 3D mode |
+| `depthSmoothing` | number | 0 | Temporal smoothing for the 3D depth signal (0-0.95) |
 
 ### Methods
 

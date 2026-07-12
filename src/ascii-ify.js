@@ -51,6 +51,7 @@ export class AsciiIfy extends EventEmitter {
     // Offscreen sampling context + brightness buffer (reused)
     this._sampleCtx = null;
     this._sampleBuf = null;
+    this._depthBuf = null;
 
     // CRT post-processing (lazy-initialized)
     this._crt = null;
@@ -457,7 +458,9 @@ export class AsciiIfy extends EventEmitter {
       });
 
       if (this._params.renderMode === '3d') {
-        renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t, this._projectionOptions(w, h, this._params.fontSize));
+        const opts = this._projectionOptions(w, h, this._params.fontSize);
+        opts.depthValues = this._depthValues(magnitude, this);
+        renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t, opts);
       } else {
         renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, this._params.fade, t);
       }
@@ -496,7 +499,9 @@ export class AsciiIfy extends EventEmitter {
 
     // Render
     if (this._params.renderMode === '3d') {
-      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, this._projectionOptions(w, h, this._params.fontSize));
+      const opts = this._projectionOptions(w, h, this._params.fontSize);
+      opts.depthValues = this._depthValues(brightness, this);
+      renderLayer3D(ctx, brightness, grid, colorLUT, chars, this._params.fade, t, opts);
     } else {
       renderLayer(ctx, brightness, grid, colorLUT, chars, this._params.fade, t);
     }
@@ -537,7 +542,9 @@ export class AsciiIfy extends EventEmitter {
         });
 
         if (this._params.renderMode === '3d') {
-          renderEdgeLayer3D(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, this._projectionOptions(w, h, layer.get('fontSize')));
+          const opts = this._projectionOptions(w, h, layer.get('fontSize'));
+          opts.depthValues = this._depthValues(magnitude, layer);
+          renderEdgeLayer3D(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, opts);
         } else {
           renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t);
         }
@@ -571,7 +578,9 @@ export class AsciiIfy extends EventEmitter {
         });
 
         if (this._params.renderMode === '3d') {
-          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, this._projectionOptions(w, h, layer.get('fontSize')));
+          const opts = this._projectionOptions(w, h, layer.get('fontSize'));
+          opts.depthValues = this._depthValues(brightness, layer);
+          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, opts);
         } else {
           renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t);
         }
@@ -653,6 +662,29 @@ export class AsciiIfy extends EventEmitter {
       cameraZ: this._params.cameraZ,
       opacityDepth: this._params.depthOpacity,
     };
+  }
+
+  _depthValues(signal, owner) {
+    const smoothing = this._params.depthSmoothing ?? 0;
+    if (smoothing <= 0) {
+      owner._depthBuf = null;
+      return signal;
+    }
+
+    const len = signal.length;
+    let buf = owner._depthBuf;
+    if (!buf || buf.length !== len) {
+      buf = new Float32Array(signal);
+      owner._depthBuf = buf;
+      return buf;
+    }
+
+    const keep = smoothing < 0 ? 0 : smoothing > 0.95 ? 0.95 : smoothing;
+    const take = 1 - keep;
+    for (let i = 0; i < len; i++) {
+      buf[i] = buf[i] * keep + signal[i] * take;
+    }
+    return buf;
   }
 }
 
