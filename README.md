@@ -191,6 +191,8 @@ ascii.togglePanel();  // Toggle
 
 The panel auto-generates sliders and selectors for all parameters on the instance and each layer. Use it to explore settings, then hardcode the values you like.
 
+Numeric sliders include a compact `~` button. Click it to toggle automation for that parameter, then choose the wave type, amount, and rate inline.
+
 ## Presets
 
 ### Charsets

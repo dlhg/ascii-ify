@@ -191,7 +191,7 @@ export class ControlPanel {
 
     // Font Size
     this._register(new BarControl({
-      label: 'Font Size', ...r.fontSize,
+      label: 'Font Size', key: 'fontSize', target: ascii, ...r.fontSize,
       get: () => ascii.get('fontSize'),
       set: (v) => ascii.set('fontSize', v),
       format: (v) => v.toFixed(1) + 'px',
@@ -199,7 +199,7 @@ export class ControlPanel {
 
     // Density
     this._register(new BarControl({
-      label: 'Density', ...r.density,
+      label: 'Density', key: 'density', target: ascii, ...r.density,
       get: () => ascii.get('density'),
       set: (v) => ascii.set('density', v),
       format: (v) => v.toFixed(2),
@@ -222,7 +222,7 @@ export class ControlPanel {
 
     // Edge Threshold
     this._register(new BarControl({
-      label: 'Edge Threshold', ...r.edgeThreshold,
+      label: 'Edge Threshold', key: 'edgeThreshold', target: ascii, ...r.edgeThreshold,
       get: () => ascii.get('edgeThreshold'),
       set: (v) => ascii.set('edgeThreshold', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -257,7 +257,7 @@ export class ControlPanel {
 
     // Pattern Mix
     this._register(new BarControl({
-      label: 'Pattern Mix', ...r.patternMix,
+      label: 'Pattern Mix', key: 'patternMix', target: ascii, ...r.patternMix,
       get: () => ascii.get('patternMix'),
       set: (v) => ascii.set('patternMix', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -265,7 +265,7 @@ export class ControlPanel {
 
     // Fade
     this._register(new BarControl({
-      label: 'Fade', ...r.fade,
+      label: 'Fade', key: 'fade', target: ascii, ...r.fade,
       get: () => ascii.get('fade'),
       set: (v) => ascii.set('fade', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -281,49 +281,49 @@ export class ControlPanel {
 
     // 3D projection controls
     this._register(new BarControl({
-      label: 'Depth Scale', ...r.depthScale,
+      label: 'Depth Scale', key: 'depthScale', target: ascii, ...r.depthScale,
       get: () => ascii.get('depthScale'),
       set: (v) => ascii.set('depthScale', v),
       format: (v) => Math.round(v) + 'px',
     }), body);
 
     this._register(new BarControl({
-      label: 'Perspective', ...r.perspective,
+      label: 'Perspective', key: 'perspective', target: ascii, ...r.perspective,
       get: () => ascii.get('perspective'),
       set: (v) => ascii.set('perspective', v),
       format: (v) => Math.round(v) + 'px',
     }), body);
 
     this._register(new BarControl({
-      label: 'Rotate X', ...r.rotationX,
+      label: 'Rotate X', key: 'rotationX', target: ascii, ...r.rotationX,
       get: () => ascii.get('rotationX'),
       set: (v) => ascii.set('rotationX', v),
       format: (v) => v.toFixed(2),
     }), body);
 
     this._register(new BarControl({
-      label: 'Rotate Y', ...r.rotationY,
+      label: 'Rotate Y', key: 'rotationY', target: ascii, ...r.rotationY,
       get: () => ascii.get('rotationY'),
       set: (v) => ascii.set('rotationY', v),
       format: (v) => v.toFixed(2),
     }), body);
 
     this._register(new BarControl({
-      label: 'Rotate Z', ...r.rotationZ,
+      label: 'Rotate Z', key: 'rotationZ', target: ascii, ...r.rotationZ,
       get: () => ascii.get('rotationZ'),
       set: (v) => ascii.set('rotationZ', v),
       format: (v) => v.toFixed(2),
     }), body);
 
     this._register(new BarControl({
-      label: 'Camera Z', ...r.cameraZ,
+      label: 'Camera Z', key: 'cameraZ', target: ascii, ...r.cameraZ,
       get: () => ascii.get('cameraZ'),
       set: (v) => ascii.set('cameraZ', v),
       format: (v) => Math.round(v) + 'px',
     }), body);
 
     this._register(new BarControl({
-      label: 'Depth Opacity', ...r.depthOpacity,
+      label: 'Depth Opacity', key: 'depthOpacity', target: ascii, ...r.depthOpacity,
       get: () => ascii.get('depthOpacity'),
       set: (v) => ascii.set('depthOpacity', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -331,7 +331,7 @@ export class ControlPanel {
 
     // Speed
     this._register(new BarControl({
-      label: 'Speed', ...r.speed,
+      label: 'Speed', key: 'speed', target: ascii, ...r.speed,
       get: () => ascii.get('speed'),
       set: (v) => ascii.set('speed', v),
       format: (v) => v.toFixed(1) + 'x',
@@ -339,7 +339,7 @@ export class ControlPanel {
 
     // Source Opacity
     this._register(new BarControl({
-      label: 'Source Opacity', ...r.sourceOpacity,
+      label: 'Source Opacity', key: 'sourceOpacity', target: ascii, ...r.sourceOpacity,
       get: () => ascii.get('sourceOpacity'),
       set: (v) => ascii.set('sourceOpacity', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -354,7 +354,7 @@ export class ControlPanel {
 
     // Color Cycle Rate
     this._register(new BarControl({
-      label: 'Cycle Rate', ...r.colorCycleRate,
+      label: 'Cycle Rate', key: 'colorCycleRate', target: ascii, ...r.colorCycleRate,
       get: () => ascii.get('colorCycleRate'),
       set: (v) => ascii.set('colorCycleRate', v),
       format: (v) => v.toFixed(1) + '/s',
@@ -396,28 +396,28 @@ export class ControlPanel {
     }), body);
 
     this._register(new BarControl({
-      label: 'Scanlines', ...r.crtScanlines,
+      label: 'Scanlines', key: 'crtScanlines', target: ascii, ...r.crtScanlines,
       get: () => ascii.get('crtScanlines'),
       set: (v) => ascii.set('crtScanlines', v),
       format: (v) => Math.round(v * 100) + '%',
     }), body);
 
     this._register(new BarControl({
-      label: 'Glow', ...r.crtGlow,
+      label: 'Glow', key: 'crtGlow', target: ascii, ...r.crtGlow,
       get: () => ascii.get('crtGlow'),
       set: (v) => ascii.set('crtGlow', v),
       format: (v) => Math.round(v * 100) + '%',
     }), body);
 
     this._register(new BarControl({
-      label: 'Distortion', ...r.crtDistortion,
+      label: 'Distortion', key: 'crtDistortion', target: ascii, ...r.crtDistortion,
       get: () => ascii.get('crtDistortion'),
       set: (v) => ascii.set('crtDistortion', v),
       format: (v) => v.toFixed(2),
     }), body);
 
     this._register(new BarControl({
-      label: 'Flicker', ...r.crtFlicker,
+      label: 'Flicker', key: 'crtFlicker', target: ascii, ...r.crtFlicker,
       get: () => ascii.get('crtFlicker'),
       set: (v) => ascii.set('crtFlicker', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -518,7 +518,7 @@ export class ControlPanel {
 
     // Font Size
     this._register(new BarControl({
-      label: 'Font Size', ...r.fontSize,
+      label: 'Font Size', key: 'fontSize', target: layer, ...r.fontSize,
       get: () => layer.get('fontSize'),
       set: (v) => layer.set('fontSize', v),
       format: (v) => v.toFixed(1) + 'px',
@@ -526,7 +526,7 @@ export class ControlPanel {
 
     // Density
     this._register(new BarControl({
-      label: 'Density', ...r.density,
+      label: 'Density', key: 'density', target: layer, ...r.density,
       get: () => layer.get('density'),
       set: (v) => layer.set('density', v),
       format: (v) => v.toFixed(2),
@@ -552,7 +552,7 @@ export class ControlPanel {
 
     // Edge Threshold
     this._register(new BarControl({
-      label: 'Edge Threshold', ...PARAM_RANGES.edgeThreshold,
+      label: 'Edge Threshold', key: 'edgeThreshold', target: layer, ...PARAM_RANGES.edgeThreshold,
       get: () => layer.get('edgeThreshold'),
       set: (v) => layer.set('edgeThreshold', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -590,7 +590,7 @@ export class ControlPanel {
 
     // Pattern Mix
     this._register(new BarControl({
-      label: 'Pattern Mix', ...r.patternMix,
+      label: 'Pattern Mix', key: 'patternMix', target: layer, ...r.patternMix,
       get: () => layer.get('patternMix'),
       set: (v) => layer.set('patternMix', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -598,7 +598,7 @@ export class ControlPanel {
 
     // Opacity
     this._register(new BarControl({
-      label: 'Opacity', ...r.opacity,
+      label: 'Opacity', key: 'opacity', target: layer, ...r.opacity,
       get: () => layer.get('opacity'),
       set: (v) => layer.set('opacity', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -606,7 +606,7 @@ export class ControlPanel {
 
     // Fade
     this._register(new BarControl({
-      label: 'Fade', ...r.fade,
+      label: 'Fade', key: 'fade', target: layer, ...r.fade,
       get: () => layer.get('fade'),
       set: (v) => layer.set('fade', v),
       format: (v) => Math.round(v * 100) + '%',
@@ -647,7 +647,7 @@ export class ControlPanel {
 
     // Offset X
     this._register(new BarControl({
-      label: 'Offset X', ...r.offsetX,
+      label: 'Offset X', key: 'offsetX', target: layer, ...r.offsetX,
       get: () => layer.get('offsetX'),
       set: (v) => layer.set('offsetX', v),
       format: (v) => Math.round(v) + 'px',
@@ -655,7 +655,7 @@ export class ControlPanel {
 
     // Offset Y
     this._register(new BarControl({
-      label: 'Offset Y', ...r.offsetY,
+      label: 'Offset Y', key: 'offsetY', target: layer, ...r.offsetY,
       get: () => layer.get('offsetY'),
       set: (v) => layer.set('offsetY', v),
       format: (v) => Math.round(v) + 'px',
@@ -663,7 +663,7 @@ export class ControlPanel {
 
     // Z-Index
     this._register(new BarControl({
-      label: 'Z-Index', ...r.zIndex,
+      label: 'Z-Index', key: 'zIndex', target: layer, ...r.zIndex,
       get: () => layer.get('zIndex'),
       set: (v) => layer.set('zIndex', v),
       format: (v) => String(Math.round(v)),
