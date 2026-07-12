@@ -372,7 +372,7 @@ export class ScenePopup {
     const rate = document.createElement('input');
     rate.className = 'auto-slider';
     rate.type = 'range';
-    rate.min = '0'; rate.max = '5'; rate.step = '0.05';
+    rate.min = '0'; rate.max = '5'; rate.step = '0.01';
     const amountVal = h('span', 'auto-val', '');
     const rateVal = h('span', 'auto-val', '');
 

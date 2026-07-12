@@ -92,7 +92,7 @@ export class BarControl {
     this.autoRate.type = 'range';
     this.autoRate.min = '0';
     this.autoRate.max = '5';
-    this.autoRate.step = '0.05';
+    this.autoRate.step = '0.01';
 
     this.autoAmountValue = h('span', 'auto-value', '');
     this.autoRateValue = h('span', 'auto-value', '');
