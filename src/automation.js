@@ -3,6 +3,29 @@ import { clamp, lerp } from './utils.js';
 
 const TWO_PI = Math.PI * 2;
 
+// ─── Shared pointer source (for mouseX / mouseY automation) ──────────────
+// Normalized 0..1 across the viewport; y is flipped so up = 1 (max).
+const pointer = { x: 0.5, y: 0.5 };
+let pointerBound = false;
+
+function ensurePointerTracking() {
+  if (pointerBound || typeof window === 'undefined') return;
+  pointerBound = true;
+  const update = (e) => {
+    const cx = e.clientX ?? e.touches?.[0]?.clientX;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY;
+    if (cx == null || cy == null) return;
+    pointer.x = clamp(cx / window.innerWidth, 0, 1);
+    pointer.y = clamp(1 - cy / window.innerHeight, 0, 1);
+  };
+  window.addEventListener('pointermove', update, { passive: true });
+  window.addEventListener('touchmove', update, { passive: true });
+}
+
+export function isMouseAutomation(type) {
+  return type === 'mouseX' || type === 'mouseY';
+}
+
 function hashString(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -49,8 +72,11 @@ function normalizeAutomation(key, currentValue, options = {}) {
     max = clamp(max, range.min, range.max);
   }
 
+  const type = options.type || options.mode || 'sine';
+  if (isMouseAutomation(type)) ensurePointerTracking();
+
   return {
-    type: options.type || options.mode || 'sine',
+    type,
     base,
     min,
     max,
@@ -143,6 +169,12 @@ export class AutomationSet {
       }
       case 'noise':
         n = noise(item.seed, cycle);
+        break;
+      case 'mouseX':
+        n = pointer.x;
+        break;
+      case 'mouseY':
+        n = pointer.y;
         break;
       case 'sine':
       default:

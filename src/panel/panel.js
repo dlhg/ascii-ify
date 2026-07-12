@@ -389,7 +389,7 @@ export class ControlPanel {
     // Action buttons
     const actionRow = h('div', 'action-row');
     const randomBtn = h('button', 'ctrl-btn randomize-btn', 'Randomize');
-    randomBtn.title = 'Randomize all parameters';
+    randomBtn.title = 'Nudge a few parameters';
     randomBtn.addEventListener('click', () => this._randomize());
     actionRow.appendChild(randomBtn);
     const copyBtn = h('button', 'ctrl-btn copy-btn', 'Copy');
@@ -844,62 +844,118 @@ export class ControlPanel {
   _randomize() {
     const ascii = this._ascii;
     const r = PARAM_RANGES;
-    const rand = (min, max, step) => {
-      const steps = Math.round((max - min) / step);
-      return min + Math.round(Math.random() * steps) * step;
-    };
+    let changed = 0;
+
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const should = (chance) => Math.random() < chance;
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const pickOther = (arr, current) => {
+      const choices = arr.filter(value => value !== current);
+      return choices.length > 0 ? pick(choices) : current;
+    };
 
-    ascii.set('fontSize', rand(r.fontSize.min, r.fontSize.max, r.fontSize.step));
-    ascii.set('density', rand(r.density.min, r.density.max, r.density.step));
-    ascii.set('charset', pick(CHARSET_NAMES));
-    ascii.set('colorScheme', pick(SCHEME_NAMES));
-    ascii.set('pattern', Math.random() < 0.3 ? null : pick(PATTERN_NAMES.slice(1)));
-    ascii.set('patternMix', rand(r.patternMix.min, r.patternMix.max, r.patternMix.step));
-    ascii.set('fade', rand(r.fade.min, r.fade.max, r.fade.step));
-    ascii.set('speed', rand(r.speed.min, r.speed.max, r.speed.step));
-    ascii.set('sourceOpacity', rand(r.sourceOpacity.min, r.sourceOpacity.max, r.sourceOpacity.step));
-    ascii.set('colorCycle', Math.random() < 0.3);
-    ascii.set('colorCycleRate', rand(r.colorCycleRate.min, r.colorCycleRate.max, r.colorCycleRate.step));
-    ascii.set('renderMode', Math.random() < 0.25 ? '3d' : '2d');
-    ascii.set('depthScale', rand(r.depthScale.min, r.depthScale.max, r.depthScale.step));
-    ascii.set('perspective', rand(r.perspective.min, r.perspective.max, r.perspective.step));
-    ascii.set('rotationX', rand(r.rotationX.min, r.rotationX.max, r.rotationX.step));
-    ascii.set('rotationY', rand(r.rotationY.min, r.rotationY.max, r.rotationY.step));
-    ascii.set('rotationZ', rand(r.rotationZ.min, r.rotationZ.max, r.rotationZ.step));
-    ascii.set('cameraZ', rand(r.cameraZ.min, r.cameraZ.max, r.cameraZ.step));
-    ascii.set('depthOpacity', rand(r.depthOpacity.min, r.depthOpacity.max, r.depthOpacity.step));
+    const quantize = (value, range) => {
+      const steps = Math.round((value - range.min) / range.step);
+      return clamp(range.min + steps * range.step, range.min, range.max);
+    };
 
-    // Edge detection
-    ascii.set('edgeDetect', Math.random() < 0.2);
-    ascii.set('edgeThreshold', rand(r.edgeThreshold.min, r.edgeThreshold.max, r.edgeThreshold.step));
-    ascii.set('edgeCharset', pick(EDGE_CHARSET_NAMES));
+    const drift = (target, key, amount = 0.1, chance = 0.45, fallbackTarget = ascii) => {
+      if (!should(chance)) return;
+      const range = r[key];
+      const current = target.get(key);
+      const fallback = fallbackTarget.get?.(key);
+      const base = typeof current === 'number' && Number.isFinite(current)
+        ? current
+        : typeof fallback === 'number' && Number.isFinite(fallback)
+          ? fallback
+          : (range.min + range.max) / 2;
+      const span = range.max - range.min;
+      const scale = 0.35 + Math.random() * 0.65;
+      target.set(key, quantize(base + (Math.random() * 2 - 1) * span * amount * scale, range));
+      changed++;
+    };
 
-    // CRT
-    ascii.set('crtEnabled', Math.random() < 0.25);
-    ascii.set('crtScanlines', rand(r.crtScanlines.min, r.crtScanlines.max, r.crtScanlines.step));
-    ascii.set('crtGlow', rand(r.crtGlow.min, r.crtGlow.max, r.crtGlow.step));
-    ascii.set('crtDistortion', rand(r.crtDistortion.min, r.crtDistortion.max, r.crtDistortion.step));
-    ascii.set('crtFlicker', rand(r.crtFlicker.min, r.crtFlicker.max, r.crtFlicker.step));
+    const maybeSet = (target, key, value, chance) => {
+      if (!should(chance)) return;
+      target.set(key, value);
+      changed++;
+    };
 
-    // Randomize layers too
-    for (const layer of ascii._layers) {
-      layer.set('fontSize', rand(r.fontSize.min, r.fontSize.max, r.fontSize.step));
-      layer.set('density', rand(r.density.min, r.density.max, r.density.step));
-      layer.set('charset', pick(CHARSET_NAMES));
-      layer.set('colorScheme', pick(SCHEME_NAMES));
-      layer.set('pattern', Math.random() < 0.3 ? null : pick(PATTERN_NAMES.slice(1)));
-      layer.set('patternMix', rand(r.patternMix.min, r.patternMix.max, r.patternMix.step));
-      layer.set('fade', rand(r.fade.min, r.fade.max, r.fade.step));
-      layer.set('opacity', rand(r.opacity.min, r.opacity.max, r.opacity.step));
-      layer.set('blendMode', pick(BLEND_MODES));
-      layer.set('edgeDetect', Math.random() < 0.2);
-      layer.set('edgeThreshold', rand(r.edgeThreshold.min, r.edgeThreshold.max, r.edgeThreshold.step));
-      layer.set('edgeCharset', pick(EDGE_CHARSET_NAMES));
-      layer.set('maskLayer', null);
-      layer.set('invertMask', false);
+    const maybePickOther = (target, key, values, chance) => {
+      if (!should(chance)) return;
+      target.set(key, pickOther(values, target.get(key)));
+      changed++;
+    };
+
+    const maybePattern = (target, chance) => {
+      if (!should(chance)) return;
+      const current = target.get('pattern') ?? 'none';
+      const next = pickOther(PATTERN_NAMES, current);
+      target.set('pattern', next === 'none' ? null : next);
+      changed++;
+    };
+
+    // Core controls get small numeric nudges more often than identity changes.
+    drift(ascii, 'fontSize', 0.08, 0.5);
+    drift(ascii, 'density', 0.12, 0.5);
+    drift(ascii, 'patternMix', 0.14, 0.4);
+    drift(ascii, 'fade', 0.12, 0.35);
+    drift(ascii, 'speed', 0.1, 0.35);
+    drift(ascii, 'sourceOpacity', 0.12, 0.3);
+    drift(ascii, 'colorCycleRate', 0.1, ascii.get('colorCycle') ? 0.35 : 0.08);
+
+    maybePickOther(ascii, 'charset', CHARSET_NAMES, 0.12);
+    maybePickOther(ascii, 'colorScheme', SCHEME_NAMES, 0.12);
+    maybePattern(ascii, 0.14);
+    maybeSet(ascii, 'colorCycle', !ascii.get('colorCycle'), 0.08);
+
+    // Mode switches are high-impact, so keep them rare.
+    maybeSet(ascii, 'renderMode', ascii.get('renderMode') === '3d' ? '2d' : '3d', 0.04);
+    const threeDChance = ascii.get('renderMode') === '3d' ? 0.35 : 0.08;
+    drift(ascii, 'depthScale', 0.12, threeDChance);
+    drift(ascii, 'perspective', 0.08, threeDChance);
+    drift(ascii, 'rotationX', 0.08, threeDChance);
+    drift(ascii, 'rotationY', 0.08, threeDChance);
+    drift(ascii, 'rotationZ', 0.08, threeDChance);
+    drift(ascii, 'cameraZ', 0.08, threeDChance);
+    drift(ascii, 'depthOpacity', 0.12, threeDChance);
+
+    maybeSet(ascii, 'edgeDetect', !ascii.get('edgeDetect'), 0.06);
+    drift(ascii, 'edgeThreshold', 0.12, ascii.get('edgeDetect') ? 0.35 : 0.08);
+    maybePickOther(ascii, 'edgeCharset', EDGE_CHARSET_NAMES, ascii.get('edgeDetect') ? 0.1 : 0.03);
+
+    maybeSet(ascii, 'crtEnabled', !ascii.get('crtEnabled'), 0.04);
+    const crtChance = ascii.get('crtEnabled') ? 0.35 : 0.06;
+    drift(ascii, 'crtScanlines', 0.12, crtChance);
+    drift(ascii, 'crtGlow', 0.12, crtChance);
+    drift(ascii, 'crtDistortion', 0.1, crtChance);
+    drift(ascii, 'crtFlicker', 0.1, crtChance);
+
+    // Explicit layers can drift too, but preserve masks and inherited values most of the time.
+    if (!ascii._implicitMode) {
+      for (const layer of ascii._layers) {
+        if (!should(0.55)) continue;
+        drift(layer, 'fontSize', 0.08, 0.35);
+        drift(layer, 'density', 0.12, 0.35);
+        drift(layer, 'patternMix', 0.14, 0.3);
+        drift(layer, 'fade', 0.12, layer.get('fade') == null ? 0.08 : 0.28);
+        drift(layer, 'opacity', 0.12, 0.35);
+        drift(layer, 'offsetX', 0.04, 0.2);
+        drift(layer, 'offsetY', 0.04, 0.2);
+        drift(layer, 'zIndex', 0.04, 0.12);
+        maybePickOther(layer, 'charset', [null, ...CHARSET_NAMES], layer.get('charset') == null ? 0.04 : 0.1);
+        maybePickOther(layer, 'colorScheme', [null, ...SCHEME_NAMES], layer.get('colorScheme') == null ? 0.04 : 0.1);
+        maybePattern(layer, 0.1);
+        maybePickOther(layer, 'blendMode', BLEND_MODES, 0.08);
+        maybeSet(layer, 'edgeDetect', !layer.get('edgeDetect'), 0.06);
+        drift(layer, 'edgeThreshold', 0.12, layer.get('edgeDetect') ? 0.3 : 0.06);
+        maybePickOther(layer, 'edgeCharset', EDGE_CHARSET_NAMES, layer.get('edgeDetect') ? 0.08 : 0.02);
+      }
     }
 
+    if (changed === 0) {
+      drift(ascii, pick(['fontSize', 'density', 'patternMix', 'fade', 'speed']), 0.1, 1);
+    }
   }
 
   // ─── Snapshot ──────────────────────────────────────

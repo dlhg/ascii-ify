@@ -492,6 +492,39 @@ export const PANEL_CSS = `
   width: 64px;
 }
 
+.auto-select.muted {
+  opacity: 0.4;
+}
+
+.auto-mouse-btn {
+  height: 22px;
+  padding: 0 7px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  color: var(--text-4);
+  font: 700 9px/1 var(--ui-font);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.auto-mouse-btn:hover {
+  color: var(--accent);
+  border-color: var(--border-3);
+  background: var(--bg-track);
+}
+
+.auto-mouse-btn.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.auto-row.hidden {
+  display: none;
+}
+
 .auto-slider {
   width: 100%;
   height: 14px;
