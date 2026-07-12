@@ -45,12 +45,10 @@ export function createApp({
   });
 
   let lastTime = 0;
-  let sceneTime = 0; // speed-scaled clock, so time- and dt-based scenes both obey Speed
+  let sceneTime = 0;       // speed-scaled clock, so time- and dt-based scenes both obey Speed
+  let filtered = false;    // did we leave a filtered image on the source canvas last frame?
 
-  function applySceneFilter() {
-    const filter = scene && scene.filter;
-    if (!filter) return;
-    const w = canvas.width, h = canvas.height;
+  function ensureScratch(w, h) {
     if (!scratch) {
       scratch = document.createElement('canvas');
       scratch._ctx = scratch.getContext('2d');
@@ -59,6 +57,31 @@ export function createApp({
       scratch.width = w;
       scratch.height = h;
     }
+    return scratch;
+  }
+
+  // The scene filter must NOT feed back into the source canvas: trail-based
+  // scenes (e.g. fireworks) accumulate onto it across frames, so a persisted
+  // brightened image would compound each frame. We instead keep the source
+  // pristine and apply the filter transiently — reverting before the next draw.
+  function restorePristine() {
+    const w = canvas.width, h = canvas.height;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.filter = 'none';
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(scratch, 0, 0);
+    ctx.restore();
+    filtered = false;
+  }
+
+  function applySceneFilter() {
+    const filter = scene && scene.filter;
+    if (!filter) return;
+    const w = canvas.width, h = canvas.height;
+    ensureScratch(w, h);
+    // Back up the pristine frame, then repaint the source through the filter.
+    scratch._ctx.setTransform(1, 0, 0, 1, 0, 0);
     scratch._ctx.clearRect(0, 0, w, h);
     scratch._ctx.drawImage(canvas, 0, 0);
     ctx.save();
@@ -67,6 +90,7 @@ export function createApp({
     ctx.filter = filter;
     ctx.drawImage(scratch, 0, 0);
     ctx.restore();
+    filtered = true;
   }
 
   function loop(time) {
@@ -75,6 +99,9 @@ export function createApp({
     const speed = scene ? scene.speed : 1;
     const dt = rawDt * speed;
     sceneTime += dt * 1000;
+
+    // Undo last frame's filter so the scene draws onto its own unaltered pixels.
+    if (filtered) restorePristine();
 
     draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height });
     applySceneFilter();
