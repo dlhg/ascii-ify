@@ -96,6 +96,9 @@ export function createApp({
   function loop(time) {
     const rawDt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 1 / 60;
     lastTime = time;
+    // Advance scene automations on unscaled time (so automating Speed can't
+    // feed back into its own clock) before reading the resulting values.
+    if (scene) scene.tick(rawDt);
     const speed = scene ? scene.speed : 1;
     const dt = rawDt * speed;
     sceneTime += dt * 1000;
