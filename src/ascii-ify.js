@@ -5,8 +5,8 @@ import { EDGE_CHARSETS } from './data/edge-charsets.js';
 import { COLOR_SCHEMES } from './color/schemes.js';
 import { PATTERNS } from './patterns.js';
 import { calculateGrid } from './grid.js';
-import { sampleCanvas } from './sampler.js';
-import { detectEdges } from './edge-detect.js';
+import { sampleCanvas, downsampleBrightness, downsampleColors } from './sampler.js';
+import { detectEdges, sobelFromGray } from './edge-detect.js';
 import { buildColorLUT } from './color/engine.js';
 import { renderLayer, renderLayer3D } from './renderer.js';
 import { renderEdgeLayer, renderEdgeLayer3D } from './edge-renderer.js';
@@ -53,6 +53,7 @@ export class AsciiIfy extends EventEmitter {
     this._sampleBuf = null;
     this._sampleColorBuf = null;
     this._depthBuf = null;
+    this._masters = null;
 
     // CRT post-processing (lazy-initialized)
     this._crt = null;
@@ -335,6 +336,7 @@ export class AsciiIfy extends EventEmitter {
     this._source.style.opacity = '';
     for (const layer of this._layers) layer.destroy();
     this._layers = [];
+    if (this._masters) this._masters.clear();
   }
 
   // ─── Internal ──────────────────────────────────────────
@@ -518,18 +520,27 @@ export class AsciiIfy extends EventEmitter {
   _renderLayers(ctx, w, h, t) {
     const sorted = [...this._layers].sort((a, b) => (a.get('zIndex') || 0) - (b.get('zIndex') || 0));
 
-    // Pass 1: Render all visible layers to their offscreen canvases
+    // Collect visible layers and their grids
+    const active = [];
     for (const layer of sorted) {
       if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
-
       const grid = calculateGrid(w, h, layer.get('fontSize'), layer.get('density'));
       if (grid.cols <= 0 || grid.rows <= 0) continue;
+      active.push({ layer, grid });
+    }
 
+    // Pass 0: one readback per distinct source, at the finest active grid.
+    // Coarser layers derive their buffers by box-downsampling in JS.
+    const masters = this._sampleMasters(active);
+
+    // Pass 1: Render all visible layers to their offscreen canvases
+    for (const { layer, grid } of active) {
       const source = layer.source || this._source;
       const schemeVal = layer.get('colorScheme') || this._params.colorScheme;
       const useSourceColors = schemeVal === 'source';
       const schemeIndex = useSourceColors ? 0 : this._resolveSchemeIndex(schemeVal);
       const fade = layer.get('fade') ?? this._params.fade;
+      const master = masters.get(source);
 
       // Render layer to its offscreen canvas
       const offCanvas = layer._ensureOffscreen(w, h);
@@ -538,13 +549,9 @@ export class AsciiIfy extends EventEmitter {
       offCtx.font = `${layer.get('fontSize')}px monospace`;
 
       if (layer.get('edgeDetect')) {
-        // Edge detection path
-        const { magnitude, direction, colors, ctx: sCtx } = detectEdges(
-          source, grid.cols, grid.rows, layer._sampleCtx, layer.get('edgeThreshold'),
-          useSourceColors ? layer._sampleColorBuf : undefined
-        );
-        layer._sampleCtx = sCtx;
-        if (colors) layer._sampleColorBuf = colors;
+        // Edge detection path — Sobel over the shared (downsampled) sample
+        const { brightness, colors } = this._layerSample(master, grid, layer, useSourceColors);
+        const { magnitude, direction } = sobelFromGray(brightness, grid.cols, grid.rows, layer.get('edgeThreshold'));
 
         const edgeChars = this._resolveEdgeCharset(layer.get('edgeCharset') || this._params.edgeCharset);
         const colorLUT = useSourceColors ? null : buildColorLUT(schemeIndex, 256, t, {
@@ -560,14 +567,8 @@ export class AsciiIfy extends EventEmitter {
           renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, colors);
         }
       } else {
-        // Standard brightness path
-        const { brightness, colors, ctx: sCtx } = sampleCanvas(
-          source, grid.cols, grid.rows, layer._sampleCtx, layer._sampleBuf,
-          useSourceColors ? layer._sampleColorBuf : undefined
-        );
-        layer._sampleCtx = sCtx;
-        layer._sampleBuf = brightness;
-        if (colors) layer._sampleColorBuf = colors;
+        // Standard brightness path — shared sample, resampled to this grid
+        const { brightness, colors } = this._layerSample(master, grid, layer, useSourceColors);
 
         // Blend with pattern
         const patternName = layer.get('pattern');
@@ -636,6 +637,86 @@ export class AsciiIfy extends EventEmitter {
     // Reset composite state
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /**
+   * Sample each distinct source canvas once, at the finest grid any of its
+   * layers needs. Returns Map<source, { cols, rows, brightness, colors }>.
+   */
+  _sampleMasters(active) {
+    const wanted = new Map();
+    for (const { layer, grid } of active) {
+      const source = layer.source || this._source;
+      const schemeVal = layer.get('colorScheme') || this._params.colorScheme;
+      let s = wanted.get(source);
+      if (!s) {
+        s = { cols: 0, rows: 0, needColors: false };
+        wanted.set(source, s);
+      }
+      if (grid.cols * grid.rows > s.cols * s.rows) {
+        s.cols = grid.cols;
+        s.rows = grid.rows;
+      }
+      if (schemeVal === 'source') s.needColors = true;
+    }
+
+    if (!this._masters) this._masters = new Map();
+    for (const source of [...this._masters.keys()]) {
+      if (!wanted.has(source)) this._masters.delete(source);
+    }
+
+    const out = new Map();
+    for (const [source, s] of wanted) {
+      let m = this._masters.get(source);
+      if (!m) {
+        m = { ctx: null, buf: null, colorBuf: null };
+        this._masters.set(source, m);
+      }
+      const { brightness, colors, ctx: sCtx } = sampleCanvas(
+        source, s.cols, s.rows, m.ctx, m.buf,
+        s.needColors ? m.colorBuf : undefined
+      );
+      m.ctx = sCtx;
+      m.buf = brightness;
+      if (colors) m.colorBuf = colors;
+      out.set(source, { cols: s.cols, rows: s.rows, brightness, colors: s.needColors ? colors : null });
+    }
+    return out;
+  }
+
+  /**
+   * Copy or box-downsample the master sample into layer-owned buffers.
+   * Layers get their own copy because pattern blending mutates in place.
+   */
+  _layerSample(master, grid, layer, needColors) {
+    const len = grid.cols * grid.rows;
+    let buf = layer._sampleBuf;
+    if (!buf || buf.length !== len) {
+      buf = new Float32Array(len);
+      layer._sampleBuf = buf;
+    }
+    const same = grid.cols === master.cols && grid.rows === master.rows;
+    if (same) {
+      buf.set(master.brightness);
+    } else {
+      downsampleBrightness(master.brightness, master.cols, master.rows, buf, grid.cols, grid.rows);
+    }
+
+    let colors = null;
+    if (needColors && master.colors) {
+      let cbuf = layer._sampleColorBuf;
+      if (!cbuf || cbuf.length !== len * 4) {
+        cbuf = new Uint8ClampedArray(len * 4);
+        layer._sampleColorBuf = cbuf;
+      }
+      if (same) {
+        cbuf.set(master.colors);
+      } else {
+        downsampleColors(master.colors, master.cols, master.rows, cbuf, grid.cols, grid.rows);
+      }
+      colors = cbuf;
+    }
+    return { brightness: buf, colors };
   }
 
   _resolveEdgeCharset(name) {

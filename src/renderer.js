@@ -1,3 +1,5 @@
+import { drawGlyphBatch } from './renderer-gl.js';
+
 /**
  * Render ASCII characters onto a canvas context from a brightness buffer.
  * Pure function — no side effects beyond drawing.
@@ -19,6 +21,11 @@ export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time, 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
 
+  // Quantize alpha and dedupe fillStyle so canvas state only changes when
+  // the value actually differs — state churn is expensive at small fonts.
+  let lastAlpha = 1;
+  let lastStyle = null;
+
   for (let r = 0; r < rows; r++) {
     const py = r * ch;
     for (let c = 0; c < cols; c++) {
@@ -32,10 +39,18 @@ export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time, 
       if (fade > 0) {
         const alpha = 1 - fade * (1 - fadeField(c, r, time, ar));
         if (alpha < 0.02) continue;
-        ctx.globalAlpha = alpha;
+        const qa = ((alpha * 64) | 0) / 64;
+        if (qa !== lastAlpha) {
+          ctx.globalAlpha = qa;
+          lastAlpha = qa;
+        }
       }
 
-      ctx.fillStyle = sourceColors ? sourceColorAt(sourceColors, r * cols + c) : colorLUT[ci];
+      const style = sourceColors ? sourceColorAt(sourceColors, r * cols + c) : colorLUT[ci];
+      if (style !== lastStyle) {
+        ctx.fillStyle = style;
+        lastStyle = style;
+      }
       ctx.fillText(chars[ci], c * cw, py);
     }
   }
@@ -168,6 +183,16 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
   for (let b = 1; b <= 256; b++) _counts[b] += _counts[b - 1];
   for (let i = 0; i < count; i++) _order[_counts[_gb[i]]++] = i;
 
+  // Fast path: one instanced WebGL draw call for the whole batch
+  if (drawGlyphBatch(ctx, width, height, {
+    chars, fontSize, count, order: _order,
+    x: _gx, y: _gy, scale: _gs, alpha: _ga,
+    charIndex: _gci, colorIndex: null, colorLUT,
+    sourceColors, sourceIndex: _gsi,
+  })) return;
+
+  let lastAlpha = -1;
+
   if (sourceColors) {
     const atlas = buildSourceAtlas(chars, sourceColors, _gci, _gsi, count, fontSize, _gai);
     const cell = atlas.cell;
@@ -176,7 +201,11 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
       const i = _order[k];
       const size = baseSize * _gs[i];
       const ai = _gai[i];
-      ctx.globalAlpha = _ga[i];
+      const qa = ((_ga[i] * 64) | 0) / 64;
+      if (qa !== lastAlpha) {
+        ctx.globalAlpha = qa;
+        lastAlpha = qa;
+      }
       ctx.drawImage(
         atlas.canvas,
         (ai % atlas.cols) * cell, ((ai / atlas.cols) | 0) * cell, cell, cell,
@@ -195,7 +224,11 @@ export function renderLayer3D(ctx, brightness, grid, colorLUT, chars, fade, time
   for (let k = 0; k < count; k++) {
     const i = _order[k];
     const size = baseSize * _gs[i];
-    ctx.globalAlpha = _ga[i];
+    const qa = ((_ga[i] * 64) | 0) / 64;
+    if (qa !== lastAlpha) {
+      ctx.globalAlpha = qa;
+      lastAlpha = qa;
+    }
     ctx.drawImage(
       atlas.canvas,
       _gci[i] * cell, 0, cell, cell,
@@ -260,62 +293,130 @@ export function buildAtlas(chars, colorLUT, fontSize) {
   return atlas;
 }
 
-const _sourceAtlases = new Map(); // fontSize -> reusable source-color atlas
-const SOURCE_ATLAS_MAX_DIM = 8192;
+// Persistent source-color atlases. Slots survive across frames: only
+// (char, quantized color) combos not seen before get drawn, so steady-state
+// frames do pure Map lookups instead of rebuilding the whole atlas.
+//
+// Sources with heavily animated colors defeat persistence (most combos are
+// new every frame), so each atlas adaptively drops into "rebuild mode" —
+// cleared at the start of every call, like a per-frame atlas — and probes
+// periodically to return to persistent mode once colors stabilize.
+const _sourceAtlases = new Map(); // `${fontSize}:${chars}` -> atlas
+const SOURCE_ATLAS_MAX_DIM = 4096;
 
 export function buildSourceAtlas(chars, sourceColors, charIndices, sourceIndices, count, fontSize, atlasIndices) {
-  let atlas = _sourceAtlases.get(fontSize);
+  const key = `${fontSize}:${chars}`;
+  let atlas = _sourceAtlases.get(key);
   if (!atlas) {
     if (_sourceAtlases.size >= 8) _sourceAtlases.clear();
     const canvas = document.createElement('canvas');
-    atlas = { canvas, ctx: canvas.getContext('2d'), cell: 0, cols: 1 };
-    _sourceAtlases.set(fontSize, atlas);
-  }
-
-  const entries = [];
-  const entryMap = new Map();
-  for (let i = 0; i < count; i++) {
-    const ci = charIndices[i];
-    const si = sourceIndices[i];
-    const colorKey = quantizedSourceColorKey(sourceColors, si);
-    const key = ci * 65536 + colorKey;
-    let ai = entryMap.get(key);
-    if (ai === undefined) {
-      ai = entries.length;
-      entryMap.set(key, ai);
-      entries.push({ ci, color: sourceColorFromKey(colorKey) });
-    }
-    atlasIndices[i] = ai;
+    atlas = {
+      canvas,
+      ctx: canvas.getContext('2d'),
+      cell: 0,
+      cols: 1,
+      rowsAlloc: 0,
+      rebuildMode: false,
+      calls: 0,
+      slots: new Map(), // (ci * 65536 + colorKey) -> slot index
+    };
+    _sourceAtlases.set(key, atlas);
   }
 
   const cell = Math.ceil(fontSize * ATLAS_SS * ATLAS_PAD);
-  const cols = Math.max(1, Math.min(entries.length, Math.floor(SOURCE_ATLAS_MAX_DIM / cell)));
-  const rows = Math.max(1, Math.ceil(entries.length / cols));
-  const w = cols * cell;
-  const h = rows * cell;
-  const actx = atlas.ctx;
+  const cols = Math.max(1, Math.floor(SOURCE_ATLAS_MAX_DIM / cell));
+  const maxRows = Math.max(1, Math.floor(SOURCE_ATLAS_MAX_DIM / cell));
+  const capacity = cols * maxRows;
 
-  if (atlas.canvas.width !== w || atlas.canvas.height !== h) {
-    atlas.canvas.width = w;
-    atlas.canvas.height = h;
-  } else {
-    actx.clearRect(0, 0, w, h);
+  if (atlas.cell !== cell || atlas.cols !== cols) {
+    _resetSourceAtlas(atlas, chars, cell, cols, fontSize);
   }
 
-  atlas.cell = cell;
-  atlas.cols = cols;
-  actx.font = `${fontSize * ATLAS_SS}px monospace`;
-  actx.textAlign = 'center';
-  actx.textBaseline = 'middle';
+  atlas.calls++;
+  const probing = atlas.rebuildMode && (atlas.calls & 31) === 0;
+  if (atlas.rebuildMode && !probing) {
+    _resetSourceAtlas(atlas, chars, cell, cols, fontSize);
+  }
 
-  for (let i = 0; i < entries.length; i++) {
-    const x = (i % cols) * cell + cell * 0.5;
-    const y = ((i / cols) | 0) * cell + cell * 0.5;
-    actx.fillStyle = entries[i].color;
-    actx.fillText(chars[entries[i].ci], x, y);
+  const slots = atlas.slots;
+  const prevSize = slots.size;
+  let inserts = 0;
+  let didReset = false;
+  for (let i = 0; i < count; i++) {
+    const ci = charIndices[i];
+    const colorKey = quantizedSourceColorKey(sourceColors, sourceIndices[i]);
+    const slotKey = ci * 65536 + colorKey;
+    let slot = slots.get(slotKey);
+    if (slot === undefined) {
+      if (slots.size >= capacity) {
+        _resetSourceAtlas(atlas, chars, cell, cols, fontSize);
+        if (!didReset) {
+          // Earlier glyphs this frame pointed into the cleared atlas —
+          // restart the mapping once so they get valid slots again.
+          didReset = true;
+          i = -1;
+          continue;
+        }
+      }
+      slot = slots.size;
+      slots.set(slotKey, slot);
+      inserts++;
+      const grew = _growSourceAtlas(atlas, chars, cell, cols, maxRows, fontSize);
+      if (!grew) _drawSourceGlyph(atlas, chars, ci, colorKey, slot, cell, cols, fontSize);
+    }
+    atlasIndices[i] = slot;
+  }
+
+  if (atlas.rebuildMode) {
+    // Probe frames skip the pre-clear; few inserts means colors stabilized
+    if (probing && inserts < 1024) atlas.rebuildMode = false;
+  } else if (prevSize > 0 && inserts > 2048 && inserts * 4 > prevSize) {
+    atlas.rebuildMode = true;
   }
 
   return atlas;
+}
+
+function _resetSourceAtlas(atlas, chars, cell, cols, fontSize) {
+  const maxRows = Math.max(1, Math.floor(SOURCE_ATLAS_MAX_DIM / cell));
+  // Keep the high-water allocation: churn-heavy sources reset often, and
+  // re-growing through doublings would redraw all entries at each step.
+  const keepRows = (atlas.cell === cell && atlas.cols === cols) ? atlas.rowsAlloc : 0;
+  atlas.slots.clear();
+  atlas.cell = cell;
+  atlas.cols = cols;
+  atlas.rowsAlloc = Math.max(1, Math.min(Math.max(Math.ceil(256 / cols), keepRows), maxRows));
+  atlas.canvas.width = cols * cell;
+  atlas.canvas.height = atlas.rowsAlloc * cell; // resize always clears
+  _setSourceAtlasFont(atlas, fontSize);
+}
+
+function _growSourceAtlas(atlas, chars, cell, cols, maxRows, fontSize) {
+  const needRows = Math.ceil(atlas.slots.size / cols);
+  if (needRows <= atlas.rowsAlloc) return false;
+  atlas.rowsAlloc = Math.min(Math.max(atlas.rowsAlloc * 2, needRows), maxRows);
+  // Resizing clears the canvas — redraw every existing entry from the slot map
+  atlas.canvas.height = atlas.rowsAlloc * cell;
+  _setSourceAtlasFont(atlas, fontSize);
+  for (const [slotKey, slot] of atlas.slots) {
+    const ci = (slotKey / 65536) | 0;
+    const colorKey = slotKey % 65536;
+    _drawSourceGlyph(atlas, chars, ci, colorKey, slot, cell, cols, fontSize);
+  }
+  return true;
+}
+
+function _setSourceAtlasFont(atlas, fontSize) {
+  const actx = atlas.ctx;
+  actx.font = `${fontSize * ATLAS_SS}px monospace`;
+  actx.textAlign = 'center';
+  actx.textBaseline = 'middle';
+}
+
+function _drawSourceGlyph(atlas, chars, ci, colorKey, slot, cell, cols, fontSize) {
+  const actx = atlas.ctx;
+  actx.fillStyle = sourceColorFromKey(colorKey);
+  actx.fillText(chars[ci], (slot % cols) * cell + cell * 0.5, ((slot / cols) | 0) * cell + cell * 0.5);
 }
 
 // ─── Internal helper used by renderLayer3D ───

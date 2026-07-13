@@ -1,4 +1,5 @@
 import { buildAtlas, buildSourceAtlas, ATLAS_SS, ATLAS_PAD } from './renderer.js';
+import { drawGlyphBatch } from './renderer-gl.js';
 
 /**
  * Render edge-detected ASCII characters onto a canvas context.
@@ -22,6 +23,10 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
 
+  // Only touch canvas state when the quantized value actually changes
+  let lastAlpha = 1;
+  let lastStyle = null;
+
   for (let r = 0; r < rows; r++) {
     const py = r * ch;
     for (let c = 0; c < cols; c++) {
@@ -33,7 +38,11 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
       if (fade > 0) {
         const alpha = 1 - fade * (1 - fadeField(c, r, time, ar));
         if (alpha < 0.02) continue;
-        ctx.globalAlpha = alpha;
+        const qa = ((alpha * 64) | 0) / 64;
+        if (qa !== lastAlpha) {
+          ctx.globalAlpha = qa;
+          lastAlpha = qa;
+        }
       }
 
       // Pick character based on direction and neighbours
@@ -41,7 +50,11 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
 
       // Color from magnitude
       const ci = (mag * lutMax) | 0;
-      ctx.fillStyle = sourceColors ? sourceColorAt(sourceColors, i) : colorLUT[ci];
+      const style = sourceColors ? sourceColorAt(sourceColors, i) : colorLUT[ci];
+      if (style !== lastStyle) {
+        ctx.fillStyle = style;
+        lastStyle = style;
+      }
       ctx.fillText(ch_, c * cw, py);
     }
   }
@@ -186,6 +199,17 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
   for (let b = 1; b <= 256; b++) _counts[b] += _counts[b - 1];
   for (let i = 0; i < count; i++) _order3d[_counts[_gb3d[i]]++] = i;
 
+  // Fast path: one instanced WebGL draw call for the whole batch.
+  // Colors by edge magnitude (matching the 2D edge path) via colorIndex.
+  if (drawGlyphBatch(ctx, width, height, {
+    chars: charsStr, fontSize, count, order: _order3d,
+    x: _gx3d, y: _gy3d, scale: _gs3d, alpha: _ga3d,
+    charIndex: _gci3d, colorIndex: colorLUT ? _gco3d : null, colorLUT,
+    sourceColors, sourceIndex: _gsi3d,
+  })) return;
+
+  let lastAlpha = -1;
+
   if (sourceColors) {
     const atlas = buildSourceAtlas(charsStr, sourceColors, _gci3d, _gsi3d, count, fontSize, _gai3d);
     const cell = atlas.cell;
@@ -194,7 +218,11 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
       const i = _order3d[k];
       const size = baseSize * _gs3d[i];
       const ai = _gai3d[i];
-      ctx.globalAlpha = _ga3d[i];
+      const qa = ((_ga3d[i] * 64) | 0) / 64;
+      if (qa !== lastAlpha) {
+        ctx.globalAlpha = qa;
+        lastAlpha = qa;
+      }
       ctx.drawImage(
         atlas.canvas,
         (ai % atlas.cols) * cell, ((ai / atlas.cols) | 0) * cell, cell, cell,
@@ -213,7 +241,11 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
   for (let k = 0; k < count; k++) {
     const i = _order3d[k];
     const size = baseSize * _gs3d[i];
-    ctx.globalAlpha = _ga3d[i];
+    const qa = ((_ga3d[i] * 64) | 0) / 64;
+    if (qa !== lastAlpha) {
+      ctx.globalAlpha = qa;
+      lastAlpha = qa;
+    }
     ctx.drawImage(
       atlas.canvas,
       _gci3d[i] * cell, 0, cell, cell,

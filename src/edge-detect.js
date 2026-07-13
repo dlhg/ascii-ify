@@ -45,7 +45,23 @@ export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
     gray[i] = (pixels[idx] * 0.299 + pixels[idx + 1] * 0.587 + pixels[idx + 2] * 0.114) / 255;
   }
 
-  // Sobel kernels
+  const { magnitude, direction } = sobelFromGray(gray, cols, rows, threshold);
+  return { magnitude, direction, colors, ctx: offCtx };
+}
+
+/**
+ * Sobel edge detection over a pre-sampled grayscale buffer.
+ * Lets callers share one source readback across layers and run edge
+ * detection on the downsampled result.
+ *
+ * @param {Float32Array} gray - grayscale values [0-1], length = cols * rows
+ * @param {number} cols - grid columns
+ * @param {number} rows - grid rows
+ * @param {number} threshold - magnitude below this is zeroed (0-1)
+ * @returns {{ magnitude: Float32Array, direction: Float32Array }}
+ */
+export function sobelFromGray(gray, cols, rows, threshold) {
+  const len = cols * rows;
   const magnitude = new Float32Array(len);
   const direction = new Float32Array(len);
   let maxMag = 0;
@@ -84,5 +100,5 @@ export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
     }
   }
 
-  return { magnitude, direction, colors, ctx: offCtx };
+  return { magnitude, direction };
 }

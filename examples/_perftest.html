@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>perf test</title>
+<style>body{margin:0;background:#000}#wrap{position:relative;width:1200px;height:700px}canvas{display:block}#fps{position:fixed;top:4px;left:4px;z-index:99;color:#0f0;font:16px monospace;background:#000a;padding:4px}</style>
+</head>
+<body>
+<div id="wrap"><canvas id="src" width="1200" height="700"></canvas></div>
+<div id="fps">…</div>
+<script type="module">
+if (new URLSearchParams(location.search).has('nogl')) {
+  globalThis.ASCIIIFY_DISABLE_WEBGL = true;
+}
+import { AsciiIfy } from '/src/index.js';
+
+// Animated colorful source — plasma blobs
+const src = document.getElementById('src');
+const sctx = src.getContext('2d');
+const bright = new URLSearchParams(location.search).has('bright');
+function drawSource(t) {
+  const w = src.width, h = src.height;
+  if (bright) {
+    // Worst case: every cell lit -> maximum glyph count
+    const g0 = sctx.createLinearGradient(0, Math.sin(t) * 100, w, h);
+    g0.addColorStop(0, `hsl(${(t * 60) % 360} 90% 60%)`);
+    g0.addColorStop(1, `hsl(${(t * 60 + 180) % 360} 90% 70%)`);
+    sctx.fillStyle = g0;
+  } else {
+    sctx.fillStyle = '#101018';
+  }
+  sctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 12; i++) {
+    const x = w / 2 + Math.sin(t * 0.7 + i * 2.1) * w * 0.38;
+    const y = h / 2 + Math.cos(t * 0.9 + i * 1.7) * h * 0.38;
+    const r = 120 + Math.sin(t + i) * 60;
+    const g = sctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `hsl(${(i * 47 + t * 40) % 360} 90% 60%)`);
+    g.addColorStop(1, 'transparent');
+    sctx.fillStyle = g;
+    sctx.beginPath();
+    sctx.arc(x, y, r, 0, 7);
+    sctx.fill();
+  }
+}
+drawSource(0);
+requestAnimationFrame(function loop(now) {
+  drawSource(now / 1000);
+  requestAnimationFrame(loop);
+});
+
+const config = {"enabled":true,"fontSize":12,"density":1,"charset":"density","colorScheme":"rainbow","background":"#08080c","fade":0,"speed":3.5,"pattern":null,"patternMix":0,"colorCycle":false,"colorCycleRate":0.5,"sourceOpacity":0.65,"opacity":1,"blendMode":"replace","offsetX":0,"offsetY":0,"zIndex":0,"renderMode":"3d","depthScale":-248.72286308131189,"perspective":1570,"rotationX":-0.45,"rotationY":0,"rotationZ":0.04,"cameraZ":430,"depthOpacity":0.44,"depthSmoothing":0.51,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","crtEnabled":false,"crtScanlines":0.3,"crtGlow":0,"crtDistortion":0,"crtFlicker":0,"automations":{"depthScale":{"type":"sine","base":-330,"min":-400,"max":-235,"amount":95,"relative":true,"rate":0.12,"phase":0,"seed":3227481216}},"layers":[{"visible":true,"fontSize":4,"density":1,"charset":"density","colorScheme":"source","pattern":null,"patternMix":0,"fade":0,"opacity":1,"blendMode":"replace","offsetX":0,"offsetY":0,"zIndex":0,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","maskLayer":null,"invertMask":false},{"visible":true,"fontSize":14,"density":1,"charset":"density","colorScheme":"rainbow","pattern":null,"patternMix":0,"fade":null,"opacity":1,"blendMode":"replace","offsetX":0,"offsetY":0,"zIndex":0,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","maskLayer":null,"invertMask":false},{"visible":true,"fontSize":8,"density":1,"charset":"braille","colorScheme":"vapor","pattern":null,"patternMix":0,"fade":null,"opacity":0.4,"blendMode":"add","offsetX":0,"offsetY":0,"zIndex":1,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","maskLayer":null,"invertMask":false}]};
+
+const { layers, ...params } = config;
+const az = new AsciiIfy(src, params);
+for (const l of layers) az.addLayer(l);
+az.removeLayer(az.layers[0]); // drop the auto-created implicit base layer
+window.__az = az;
+az.start();
+
+// FPS: average over trailing window, exposed for the driver script
+const times = [];
+window.__fps = 0;
+window.__frames = 0;
+az.on('render', () => {
+  const now = performance.now();
+  times.push(now);
+  window.__frames++;
+  while (times.length && times[0] < now - 3000) times.shift();
+  if (times.length > 1) {
+    window.__fps = (times.length - 1) / ((now - times[0]) / 1000);
+  }
+  document.getElementById('fps').textContent =
+    `${window.__fps.toFixed(1)} fps ${globalThis.ASCIIIFY_DISABLE_WEBGL ? '(canvas2d)' : '(webgl)'}`;
+});
+</script>
+</body>
+</html>
