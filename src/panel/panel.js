@@ -991,8 +991,7 @@ export class ControlPanel {
     maybePattern(ascii, 0.14);
     maybeSet(ascii, 'colorCycle', !ascii.get('colorCycle'), 0.08);
 
-    // Mode switches are high-impact, so keep them rare.
-    maybeSet(ascii, 'renderMode', ascii.get('renderMode') === '3d' ? '2d' : '3d', 0.04);
+    // Keep the selected render mode stable; randomize should only nudge mode-specific settings.
     const threeDChance = ascii.get('renderMode') === '3d' ? 0.35 : 0.08;
     drift(ascii, 'depthScale', 0.12, threeDChance);
     drift(ascii, 'perspective', 0.08, threeDChance);
