@@ -1,5 +1,5 @@
 import { buildAtlas, buildSourceAtlas, ATLAS_SS, ATLAS_PAD } from './renderer.js';
-import { drawGlyphBatch } from './renderer-gl.js';
+import { drawGlyphBatch, glyphBatchAvailable } from './renderer-gl.js';
 
 /**
  * Render edge-detected ASCII characters onto a canvas context.
@@ -19,6 +19,49 @@ import { drawGlyphBatch } from './renderer-gl.js';
 export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeChars, fade, time, sourceColors = null) {
   const { cols, rows, cw, ch, ar } = grid;
   const lutMax = colorLUT ? colorLUT.length - 1 : 255;
+
+  // Fast path: batch every glyph into one instanced WebGL draw call
+  if (glyphBatchAvailable()) {
+    const fontSize = parseFloat(ctx.font) || 12;
+    const adv = grid.adv ?? cw;
+    const { charMap, charsStr } = buildEdgeCharMap(edgeChars);
+
+    _ensureCapacity3D(cols * rows);
+    let count = 0;
+    for (let r = 0; r < rows; r++) {
+      const py = r * ch + fontSize * 0.5;
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const mag = magnitude[i];
+        if (mag < 0.02) continue;
+
+        let alpha = 1;
+        if (fade > 0) {
+          alpha = 1 - fade * (1 - fadeField(c, r, time, ar));
+          if (alpha < 0.02) continue;
+        }
+
+        const ch_ = pickEdgeChar(magnitude, direction, c, r, cols, rows, edgeChars);
+        _gx3d[count] = c * cw + adv * 0.5;
+        _gy3d[count] = py;
+        _gs3d[count] = 1;
+        _ga3d[count] = alpha;
+        _gci3d[count] = charMap[ch_];
+        _gsi3d[count] = i;
+        _gco3d[count] = (mag * lutMax) | 0;
+        _order3d[count] = count;
+        count++;
+      }
+    }
+    if (count === 0) return;
+    const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio) || 1;
+    if (drawGlyphBatch(ctx, ctx.canvas.width / dpr, ctx.canvas.height / dpr, {
+      chars: charsStr, fontSize, count, order: _order3d,
+      x: _gx3d, y: _gy3d, scale: _gs3d, alpha: _ga3d,
+      charIndex: _gci3d, colorIndex: colorLUT ? _gco3d : null, colorLUT,
+      sourceColors, sourceIndex: _gsi3d,
+    })) return;
+  }
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -106,15 +149,7 @@ export function renderEdgeLayer3D(ctx, magnitude, direction, grid, colorLUT, edg
   const halfGlyph = fontSize * ATLAS_PAD * 0.5;
 
   // Create char index mapping and char string for atlas
-  const charMap = {};
-  const charArray = ['\0']; // index 0 is null
-  for (const [key, ch] of Object.entries(edgeChars)) {
-    if (!charMap[ch]) {
-      charMap[ch] = charArray.length;
-      charArray.push(ch);
-    }
-  }
-  const charsStr = charArray.join('');
+  const { charMap, charsStr } = buildEdgeCharMap(edgeChars);
 
   _ensureCapacity3D(cols * rows);
   let count = 0;
@@ -283,6 +318,19 @@ function sourceColorAt(colors, i) {
   const a = colors[p + 3];
   if (a === 255) return `rgb(${colors[p]}, ${colors[p + 1]}, ${colors[p + 2]})`;
   return `rgba(${colors[p]}, ${colors[p + 1]}, ${colors[p + 2]}, ${a / 255})`;
+}
+
+/** Map edge characters to atlas indices (index 0 is reserved/blank). */
+function buildEdgeCharMap(edgeChars) {
+  const charMap = {};
+  const charArray = ['\0'];
+  for (const ch of Object.values(edgeChars)) {
+    if (!charMap[ch]) {
+      charMap[ch] = charArray.length;
+      charArray.push(ch);
+    }
+  }
+  return { charMap, charsStr: charArray.join('') };
 }
 
 /**

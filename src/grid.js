@@ -16,13 +16,14 @@ export function calculateGrid(width, height, fontSize, density) {
   }
 
   _measureCtx.font = `${fontSize}px monospace`;
-  const charW = _measureCtx.measureText('M').width * density;
+  const adv = _measureCtx.measureText('M').width;
+  const charW = adv * density;
   const charH = fontSize * 1.35 * density;
   const ar = charH / charW;
   const cols = Math.floor(width / charW);
   const rows = Math.floor(height / charH);
 
-  return { cols, rows, cw: charW, ch: charH, ar };
+  return { cols, rows, cw: charW, ch: charH, ar, adv };
 }
 
 let _measureCtx = null;

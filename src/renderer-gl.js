@@ -330,6 +330,15 @@ function _getRenderer() {
 }
 
 /**
+ * Cheap availability probe so callers can skip building instance arrays
+ * when the WebGL path can't run.
+ */
+export function glyphBatchAvailable() {
+  const r = _getRenderer();
+  return !!(r && r.ok && !r.gl.isContextLost());
+}
+
+/**
  * Draw a sorted glyph batch via WebGL into the given 2D context.
  *
  * @param {CanvasRenderingContext2D} ctx2d - target context (layer offscreen)

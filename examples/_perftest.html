@@ -49,6 +49,10 @@ requestAnimationFrame(function loop(now) {
 
 const config = {"enabled":true,"fontSize":12,"density":1,"charset":"density","colorScheme":"rainbow","background":"#08080c","fade":0,"speed":3.5,"pattern":null,"patternMix":0,"colorCycle":false,"colorCycleRate":0.5,"sourceOpacity":0.65,"opacity":1,"blendMode":"replace","offsetX":0,"offsetY":0,"zIndex":0,"renderMode":"3d","depthScale":-248.72286308131189,"perspective":1570,"rotationX":-0.45,"rotationY":0,"rotationZ":0.04,"cameraZ":430,"depthOpacity":0.44,"depthSmoothing":0.51,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","crtEnabled":false,"crtScanlines":0.3,"crtGlow":0,"crtDistortion":0,"crtFlicker":0,"automations":{"depthScale":{"type":"sine","base":-330,"min":-400,"max":-235,"amount":95,"relative":true,"rate":0.12,"phase":0,"seed":3227481216}},"layers":[{"visible":true,"fontSize":4,"density":1,"charset":"density","colorScheme":"source","pattern":null,"patternMix":0,"fade":0,"opacity":1,"blendMode":"replace","offsetX":0,"offsetY":0,"zIndex":0,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","maskLayer":null,"invertMask":false},{"visible":true,"fontSize":14,"density":1,"charset":"density","colorScheme":"rainbow","pattern":null,"patternMix":0,"fade":null,"opacity":1,"blendMode":"replace","offsetX":0,"offsetY":0,"zIndex":0,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","maskLayer":null,"invertMask":false},{"visible":true,"fontSize":8,"density":1,"charset":"braille","colorScheme":"vapor","pattern":null,"patternMix":0,"fade":null,"opacity":0.4,"blendMode":"add","offsetX":0,"offsetY":0,"zIndex":1,"edgeDetect":false,"edgeThreshold":0.15,"edgeCharset":"box-light","maskLayer":null,"invertMask":false}]};
 
+if (new URLSearchParams(location.search).get('mode') === '2d') {
+  config.renderMode = '2d';
+  delete config.automations;
+}
 const { layers, ...params } = config;
 const az = new AsciiIfy(src, params);
 for (const l of layers) az.addLayer(l);

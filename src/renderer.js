@@ -1,4 +1,4 @@
-import { drawGlyphBatch } from './renderer-gl.js';
+import { drawGlyphBatch, glyphBatchAvailable } from './renderer-gl.js';
 
 /**
  * Render ASCII characters onto a canvas context from a brightness buffer.
@@ -16,6 +16,49 @@ import { drawGlyphBatch } from './renderer-gl.js';
 export function renderLayer(ctx, brightness, grid, colorLUT, chars, fade, time, sourceColors = null) {
   const { cols, rows, cw, ch, ar } = grid;
   const clen = chars.length - 1;
+
+  // Fast path: batch every glyph into one instanced WebGL draw call.
+  // Glyphs draw at grid positions with scale 1, centered where the
+  // fillText em box would put them.
+  if (glyphBatchAvailable()) {
+    const fontSize = parseFloat(ctx.font) || 12;
+    const adv = grid.adv ?? cw;
+    _ensureCapacity(cols * rows);
+    let count = 0;
+    for (let r = 0; r < rows; r++) {
+      const py = r * ch + fontSize * 0.5;
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        let v = brightness[i];
+        v = v < 0 ? 0 : v > 1 ? 1 : v;
+        const ci = (v * clen) | 0;
+        if (ci === 0) continue;
+
+        let alpha = 1;
+        if (fade > 0) {
+          alpha = 1 - fade * (1 - fadeField(c, r, time, ar));
+          if (alpha < 0.02) continue;
+        }
+
+        _gx[count] = c * cw + adv * 0.5;
+        _gy[count] = py;
+        _gs[count] = 1;
+        _ga[count] = alpha;
+        _gci[count] = ci;
+        _gsi[count] = i;
+        _order[count] = count;
+        count++;
+      }
+    }
+    if (count === 0) return;
+    const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio) || 1;
+    if (drawGlyphBatch(ctx, ctx.canvas.width / dpr, ctx.canvas.height / dpr, {
+      chars, fontSize, count, order: _order,
+      x: _gx, y: _gy, scale: _gs, alpha: _ga,
+      charIndex: _gci, colorIndex: null, colorLUT,
+      sourceColors, sourceIndex: _gsi,
+    })) return;
+  }
 
   // Font is expected to be set by the caller before invoking renderLayer.
   ctx.textAlign = 'left';
