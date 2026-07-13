@@ -47,7 +47,7 @@ export const DEFAULTS = {
 };
 
 export const PARAM_RANGES = {
-  fontSize: { min: 4, max: 48, step: 0.5 },
+  fontSize: { min: 1, max: 48, step: 0.5 },
   density: { min: 1, max: 4, step: 0.25 },
   fade: { min: 0, max: 1, step: 0.01 },
   speed: { min: 0.1, max: 5, step: 0.1 },

@@ -13,7 +13,7 @@ const COLOR_OPTIONS = ['source', ...SCHEME_NAMES];
 const PATTERN_NAMES = ['none', ...PATTERNS.map(p => p.name)];
 const BLEND_MODES = ['replace', 'add'];
 const RENDER_MODES = ['2d', '3d'];
-const AUTOMATION_TYPES = ['sine', 'triangle', 'noise'];
+const AUTOMATION_TYPES = ['sine', 'triangle', 'noise', 'mouseX', 'mouseY', 'scroll'];
 
 const GLOBAL_KEYS = [
   'enabled', 'fontSize', 'density', 'charset', 'colorScheme',
@@ -1158,6 +1158,10 @@ export class ControlPanel {
     if (key === 'renderMode') return RENDER_MODES.includes(value);
     if (key === 'maskLayer') return value == null || (Number.isInteger(value) && value > 0);
     if (key === 'fade' && layerValue && value == null) return true;
+    if (PARAM_RANGES[key]) {
+      const range = PARAM_RANGES[key];
+      return typeof value === 'number' && Number.isFinite(value) && value >= range.min && value <= range.max;
+    }
     return typeof value === 'number' && Number.isFinite(value);
   }
 
