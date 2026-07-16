@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Orbit Insertion</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp, lerp, mulberry32, rgb, smoothstep } from './utils.js';
+
+      // ─── Retro-futurist orbit-insertion console ─────────────
+      // Inspired by the Nostromo's approach screens: blue bezel,
+      // green wireframe planet with red terrain contours, nested
+      // target optics, and a dense column of flight readouts.
+      // Designed as a slow, periodic background loop.
+
+      const TAU = Math.PI * 2;
+
+      const BLUE       = [92, 148, 255];
+      const BLUE_DIM   = [58, 96, 190];
+      const BLUE_HOT   = [150, 198, 255];
+      const GREEN      = [108, 235, 138];
+      const GREEN_DIM  = [62, 160, 92];
+      const RED        = [235, 86, 52];
+      const ORANGE     = [255, 152, 74];
+      const AMBER      = [255, 202, 108];
+      const INK        = [4, 8, 16];
+      const PAPER      = [206, 224, 250];
+
+      // ─── Seeded static geometry ─────────────────────────────
+      const rand = mulberry32(2122);
+
+      // Terrain features: concentric topo contour rings on the sphere,
+      // defined in lat/lon so they rotate with the planet.
+      const FEATURES = Array.from({ length: 6 }, () => ({
+        lat: (rand() - 0.42) * 1.5,
+        lon: rand() * TAU,
+        base: 0.16 + rand() * 0.3,
+        rings: 3 + Math.floor(rand() * 3),
+        squash: 0.62 + rand() * 0.5,
+        p1: rand() * TAU,
+        p2: rand() * TAU,
+        p3: rand() * TAU,
+        w1: 0.14 + rand() * 0.16,
+        w2: 0.08 + rand() * 0.12,
+      }));
+
+      // Surface beacons that blink as they cross the visible hemisphere.
+      const BEACONS = Array.from({ length: 7 }, () => ({
+        lat: (rand() - 0.5) * 2.2,
+        lon: rand() * TAU,
+        phase: rand() * TAU,
+      }));
+
+      const GLITCH_POOL = '0123456789ABCDEF·-';
+
+      // ─── Small helpers ──────────────────────────────────────
+      function glitchText(len, tick, salt) {
+        const g = mulberry32(salt * 7919 + tick);
+        let s = '';
+        for (let i = 0; i < len; i++) s += GLITCH_POOL[(g() * GLITCH_POOL.length) | 0];
+        return s;
+      }
+
+      function setFont(ctx, px, weight = 400) {
+        ctx.font = `${weight} ${Math.max(8, px | 0)}px monospace`;
+      }
+
+      // Inverse-video label (filled box, dark text). Returns box width.
+      function inverseBox(ctx, text, x, y, px, col, solid = true) {
+        setFont(ctx, px, 700);
+        const w = ctx.measureText(text).width + px * 0.9;
+        const h = px * 1.55;
+        if (solid) {
+          ctx.fillStyle = rgb(col, 0.92);
+          ctx.fillRect(x, y, w, h);
+          ctx.fillStyle = rgb(INK, 1);
+        } else {
+          ctx.strokeStyle = rgb(col, 0.9);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+          ctx.fillStyle = rgb(col, 0.95);
+        }
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, x + px * 0.45, y + h * 0.56);
+        return w;
+      }
+
+      function text(ctx, str, x, y, px, col, a = 1, align = 'left', weight = 400) {
+        setFont(ctx, px, weight);
+        ctx.fillStyle = rgb(col, a);
+        ctx.textAlign = align;
+        ctx.textBaseline = 'middle';
+        ctx.fillText(str, x, y);
+      }
+
+      // ─── Sphere projection ──────────────────────────────────
+      const TILT = -0.26;   // pitch toward viewer
+      const ROLL = 0.05;    // slight screen roll
+
+      function spherePoint(lat, lon, yaw) {
+        const cl = Math.cos(lat);
+        const x = cl * Math.sin(lon + yaw);
+        let y = Math.sin(lat);
+        let z = cl * Math.cos(lon + yaw);
+        const y2 = y * Math.cos(TILT) - z * Math.sin(TILT);
+        z = y * Math.sin(TILT) + z * Math.cos(TILT);
+        y = y2;
+        return {
+          x: x * Math.cos(ROLL) - y * Math.sin(ROLL),
+          y: x * Math.sin(ROLL) + y * Math.cos(ROLL),
+          z,
+        };
+      }
+
+      // Trace a path on the sphere, breaking the stroke wherever it
+      // wraps behind the visible hemisphere.
+      function traceOnSphere(ctx, cx, cy, R, n, yaw, sampler) {
+        ctx.beginPath();
+        let pen = false;
+        for (let i = 0; i <= n; i++) {
+          const [lat, lon] = sampler(i / n);
+          const p = spherePoint(lat, lon, yaw);
+          if (p.z > 0.015) {
+            const px = cx + p.x * R;
+            const py = cy - p.y * R;
+            pen ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+            pen = true;
+          } else {
+            pen = false;
+          }
+        }
+        ctx.stroke();
+      }
+
+      // ─── Planet: wireframe + terrain contours ───────────────
+      function drawPlanet(ctx, vp, t) {
+        const R = Math.min(vp.h * 0.44, vp.w * 0.335);
+        const cx = vp.x + vp.w * 0.705;
+        const cy = vp.y + vp.h * 0.512;
+        const yaw = t * 0.052;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(vp.x, vp.y, vp.w, vp.h);
+        ctx.clip();
+
+        // Halo + limb
+        const halo = ctx.createRadialGradient(cx, cy, R * 0.82, cx, cy, R * 1.22);
+        halo.addColorStop(0, rgb(GREEN_DIM, 0.10));
+        halo.addColorStop(0.62, rgb(GREEN_DIM, 0.045));
+        halo.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 1.22, 0, TAU);
+        ctx.fill();
+
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = rgb(GREEN, 0.85);
+        ctx.beginPath();
+        ctx.arc(cx, cy, R, 0, TAU);
+        ctx.stroke();
+
+        // Meridians and parallels
+        ctx.lineWidth = 1;
+        for (let m = 0; m < 24; m++) {
+          const lon = (m / 24) * TAU;
+          ctx.strokeStyle = rgb(m % 6 === 0 ? GREEN : GREEN_DIM, m % 6 === 0 ? 0.62 : 0.42);
+          traceOnSphere(ctx, cx, cy, R, 44, yaw, (u) => [lerp(-1.5, 1.5, u), lon]);
+        }
+        for (let p = 1; p < 11; p++) {
+          const lat = lerp(-1.35, 1.35, p / 11);
+          ctx.strokeStyle = rgb(p === 5 ? GREEN : GREEN_DIM, p === 5 ? 0.6 : 0.4);
+          traceOnSphere(ctx, cx, cy, R, 72, yaw, (u) => [lat, u * TAU]);
+        }
+
+        // Terrain contours (topo rings), rotating with the sphere
+        ctx.lineWidth = 1.1;
+        for (const f of FEATURES) {
+          for (let ring = 0; ring < f.rings; ring++) {
+            const rr = (f.base * (ring + 1)) / f.rings;
+            const inner = ring === 0;
+            ctx.strokeStyle = rgb(
+              ring % 2 === 0 ? RED : ORANGE,
+              inner ? 0.85 : 0.68 - ring * 0.07
+            );
+            traceOnSphere(ctx, cx, cy, R, 56, yaw, (u) => {
+              const a = u * TAU;
+              const wob = 1 + f.w1 * Math.sin(a * 3 + f.p1)
+                            + f.w2 * Math.sin(a * 5 + f.p2)
+                            + 0.07 * Math.sin(a * 8 + f.p3);
+              return [
+                f.lat + rr * wob * Math.cos(a) * f.squash,
+                f.lon + rr * wob * Math.sin(a) * 1.25,
+              ];
+            });
+          }
+        }
+
+        // Blinking surface beacons
+        for (let i = 0; i < BEACONS.length; i++) {
+          const b = BEACONS[i];
+          const p = spherePoint(b.lat, b.lon, yaw);
+          if (p.z <= 0.06) continue;
+          const bx = cx + p.x * R;
+          const by = cy - p.y * R;
+          const blink = 0.35 + 0.6 * (0.5 + 0.5 * Math.sin(t * 2.2 + b.phase));
+          ctx.fillStyle = rgb(i % 3 === 0 ? AMBER : GREEN, blink * clamp(p.z * 3, 0, 1));
+          ctx.fillRect(bx - 1.7, by - 1.7, 3.4, 3.4);
+        }
+
+        // Polar axis ticks
+        for (const s of [-1, 1]) {
+          const p = spherePoint(s * Math.PI / 2, 0, yaw);
+          const px = cx + p.x * R;
+          const py = cy - p.y * R * 1.12;
+          ctx.strokeStyle = rgb(GREEN, 0.5);
+          ctx.beginPath();
+          ctx.moveTo(px, py - 5);
+          ctx.lineTo(px, py + 5);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+        return { cx, cy, R };
+      }
+
+      // ─── Target optics: nested rectangles + sweep fan ───────
+      function drawOptics(ctx, vp, t) {
+        const ox = vp.x + vp.w * 0.245;
+        const oy = vp.y + vp.h * 0.53;
+        const w0 = vp.w * 0.295;
+        const h0 = vp.h * 0.35;
+
+        const rects = [
+          { w: w0,        h: h0,        dx: 0,          dy: 0 },
+          { w: w0 * 0.62, h: h0 * 0.64, dx: -w0 * 0.055, dy: h0 * 0.035 },
+          { w: w0 * 0.40, h: h0 * 0.42, dx: -w0 * 0.095, dy: h0 * 0.06 },
+          { w: w0 * 0.235, h: h0 * 0.25, dx: -w0 * 0.125, dy: h0 * 0.075 },
+        ].map((r) => ({
+          x: ox + r.dx - r.w / 2, y: oy + r.dy - r.h / 2, w: r.w, h: r.h,
+        }));
+
+        ctx.save();
+        ctx.lineWidth = 1.2;
+
+        // Corner-to-corner zoom lines between successive rects
+        ctx.strokeStyle = rgb(GREEN_DIM, 0.5);
+        for (let i = 0; i < rects.length - 1; i++) {
+          const a = rects[i], b = rects[i + 1];
+          for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            ctx.beginPath();
+            ctx.moveTo(a.x + u * a.w, a.y + v * a.h);
+            ctx.lineTo(b.x + u * b.w, b.y + v * b.h);
+            ctx.stroke();
+          }
+        }
+
+        // The rectangles themselves
+        for (let i = 0; i < rects.length; i++) {
+          const r = rects[i];
+          ctx.strokeStyle = rgb(GREEN, 0.5 + i * 0.13);
+          ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
+        }
+
+        // Corner brackets on the outer frame
+        const r0 = rects[0];
+        const cb = Math.min(14, w0 * 0.07);
+        ctx.strokeStyle = rgb(AMBER, 0.75);
+        ctx.lineWidth = 1.6;
+        for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+          const px = r0.x + u * r0.w, py = r0.y + v * r0.h;
+          ctx.beginPath();
+          ctx.moveTo(px + (u ? -cb : cb), py);
+          ctx.lineTo(px, py);
+          ctx.lineTo(px, py + (v ? -cb : cb));
+          ctx.stroke();
+        }
+
+        // Sweep fan inside the innermost rect
+        const r3 = rects[3];
+        const slide = 0.5 + 0.5 * Math.sin(t * 0.42);
+        ctx.strokeStyle = rgb(GREEN, 0.72);
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 7; i++) {
+          const u = (i + slide) / 7;
+          ctx.beginPath();
+          ctx.moveTo(r3.x, r3.y);
+          if (u < 0.5) ctx.lineTo(r3.x + r3.w, r3.y + r3.h * (u * 2));
+          else ctx.lineTo(r3.x + r3.w * (2 - u * 2), r3.y + r3.h);
+          ctx.stroke();
+        }
+
+        // Lock-in pulse: a bright frame collapsing from outer to inner
+        const cycle = (t % 7) / 7;
+        if (cycle < 0.4) {
+          const u = smoothstep(0, 1, cycle / 0.4);
+          const px = lerp(r0.x, r3.x, u);
+          const py = lerp(r0.y, r3.y, u);
+          const pw = lerp(r0.w, r3.w, u);
+          const ph = lerp(r0.h, r3.h, u);
+          ctx.strokeStyle = rgb(GREEN, 0.9 * (1 - u * 0.5));
+          ctx.lineWidth = 1.8;
+          ctx.strokeRect(px, py, pw, ph);
+        }
+
+        // Window readout beneath the assembly
+        const wv = (0.0290 + 0.0090 * Math.sin(t * 0.3)).toFixed(4);
+        text(ctx, `WINDOW ${wv}`, r0.x, r0.y + r0.h + h0 * 0.09, vp.fs * 0.9, GREEN, 0.8);
+        text(ctx, `DRIFT ${(Math.sin(t * 0.23) * 1.2).toFixed(2).padStart(5)} MRAD`,
+          r0.x, r0.y + r0.h + h0 * 0.175, vp.fs * 0.9, GREEN_DIM, 0.85);
+
+        ctx.restore();
+        return { cx: ox - w0 * 0.125, cy: oy + h0 * 0.075, rect: r0 };
+      }
+
+      // ─── Trajectory: dashed arc from optics to planet ───────
+      function drawTrajectory(ctx, vp, t, from, planet) {
+        const x0 = from.cx, y0 = from.cy;
+        const x1 = planet.cx - planet.R * 0.72;
+        const y1 = planet.cy - planet.R * 0.28;
+        const mx = (x0 + x1) / 2, my = Math.min(y0, y1) - vp.h * 0.16;
+
+        ctx.save();
+        ctx.strokeStyle = rgb(BLUE_HOT, 0.55);
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 7]);
+        ctx.lineDashOffset = -t * 26;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.quadraticCurveTo(mx, my, x1, y1);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Traveling blip with a short tail
+        const u = (t / 9) % 1;
+        for (let k = 4; k >= 0; k--) {
+          const uu = Math.max(0, u - k * 0.014);
+          const bx = lerp(lerp(x0, mx, uu), lerp(mx, x1, uu), uu);
+          const by = lerp(lerp(y0, my, uu), lerp(my, y1, uu), uu);
+          const a = k === 0 ? 0.95 : 0.4 - k * 0.075;
+          ctx.fillStyle = rgb(AMBER, a);
+          const s = k === 0 ? 3.4 : 2.2;
+          ctx.save();
+          ctx.translate(bx, by);
+          ctx.rotate(Math.PI / 4);
+          ctx.fillRect(-s / 2, -s / 2, s, s);
+          ctx.restore();
+        }
+
+        // Arrival ripple at the insertion point
+        const rp = (t % 9) / 9;
+        if (rp > 0.94) {
+          const rr = (rp - 0.94) / 0.06;
+          ctx.strokeStyle = rgb(AMBER, 0.8 * (1 - rr));
+          ctx.beginPath();
+          ctx.arc(x1, y1, 4 + rr * 16, 0, TAU);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ─── Blue crosshair registration marks ──────────────────
+      function drawCrosshairs(ctx, vp, t) {
+        const spots = [
+          [vp.x + vp.w * 0.075, vp.y + vp.h * 0.14],
+          [vp.x + vp.w * 0.075, vp.y + vp.h * 0.84],
+        ];
+        const s = Math.min(vp.w, vp.h) * 0.038;
+        ctx.save();
+        ctx.lineWidth = 3;
+        for (let i = 0; i < spots.length; i++) {
+          const [x, y] = spots[i];
+          ctx.strokeStyle = rgb(BLUE, 0.5 + 0.28 * Math.sin(t * 0.7 + i * 2.4));
+          ctx.beginPath();
+          ctx.moveTo(x - s, y); ctx.lineTo(x - s * 0.28, y);
+          ctx.moveTo(x + s * 0.28, y); ctx.lineTo(x + s, y);
+          ctx.moveTo(x, y - s); ctx.lineTo(x, y - s * 0.28);
+          ctx.moveTo(x, y + s * 0.28); ctx.lineTo(x, y + s);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ─── Bottom range ruler ─────────────────────────────────
+      function drawRuler(ctx, vp, t) {
+        const rh = vp.h * 0.075;
+        const ry = vp.y + vp.h - rh;
+        ctx.save();
+        ctx.strokeStyle = rgb(BLUE_DIM, 0.55);
+        ctx.beginPath();
+        ctx.moveTo(vp.x, ry);
+        ctx.lineTo(vp.x + vp.w, ry);
+        ctx.stroke();
+
+        const step = Math.max(22, vp.w / 34);
+        const off = (t * 16) % (step * 5);
+        ctx.beginPath();
+        let n = 0;
+        for (let x = vp.x - off; x < vp.x + vp.w + step; x += step, n++) {
+          if (x < vp.x) continue;
+          const major = n % 5 === 0;
+          ctx.strokeStyle = rgb(BLUE, major ? 0.62 : 0.35);
+          ctx.beginPath();
+          ctx.moveTo(x, ry + rh * 0.22);
+          ctx.lineTo(x, ry + rh * (major ? 0.78 : 0.5));
+          ctx.stroke();
+        }
+
+        // Center caret + range digits
+        const cxr = vp.x + vp.w * 0.5;
+        ctx.strokeStyle = rgb(AMBER, 0.9);
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(cxr - 5, ry + rh * 0.85);
+        ctx.lineTo(cxr, ry + rh * 0.4);
+        ctx.lineTo(cxr + 5, ry + rh * 0.85);
+        ctx.stroke();
+
+        const range = 42800 - Math.floor((t * 137) % 28000);
+        text(ctx, `RANGE ${String(range).padStart(5, '0')} KM`,
+          vp.x + vp.w - 8, ry + rh * 0.52, vp.fs * 0.92, BLUE_HOT, 0.85, 'right');
+        text(ctx, `REL V 0${(6.4 + Math.sin(t * 0.4) * 0.6).toFixed(2)}`,
+          vp.x + 8, ry + rh * 0.52, vp.fs * 0.92, BLUE, 0.7);
+        ctx.restore();
+      }
+
+      // ─── Sidebar readout column ─────────────────────────────
+      function drawSidebar(ctx, sb, t) {
+        const fs = sb.fs;
+        const pad = fs * 1.05;
+        const x = sb.x + pad;
+        const iw = sb.w - pad * 2;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(sb.x, sb.y, sb.w, sb.h);
+        ctx.clip();
+
+        // Proportional block layout keeps the column balanced at any size.
+        const weights = [1.12, 1.42, 1.42, 0.92, 1.02, 1.42];
+        const wSum = weights.reduce((a, b) => a + b, 0);
+        let y = sb.y;
+        const blocks = weights.map((wt) => {
+          const r = { y, h: (sb.h * wt) / wSum };
+          y += r.h;
+          return r;
+        });
+
+        const sep = (by) => {
+          ctx.strokeStyle = rgb(BLUE_DIM, 0.4);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sb.x, by);
+          ctx.lineTo(sb.x + sb.w, by);
+          ctx.stroke();
+        };
+
+        // 1 — mission clock
+        {
+          const b = blocks[0];
+          text(ctx, 'TIME FROM RF', x, b.y + b.h * 0.26, fs * 0.92, BLUE, 0.85);
+          const tt = t % 3600;
+          const mm = String(Math.floor(tt / 60)).padStart(2, '0');
+          const ss = String(Math.floor(tt % 60)).padStart(2, '0');
+          const ds = Math.floor((tt * 10) % 10);
+          inverseBox(ctx, `T+ ${mm}:${ss}.${ds}`, x, b.y + b.h * 0.42, fs * 1.05, BLUE);
+          sep(b.y + b.h);
+        }
+
+        // 2 — present P.O.R.
+        {
+          const b = blocks[1];
+          text(ctx, 'PRESENT P.O.R.', x, b.y + b.h * 0.2, fs * 0.92, BLUE, 0.85);
+          text(ctx, 'NOSTROMO', x, b.y + b.h * 0.44, fs * 1.12, PAPER, 0.95, 'left', 700);
+          const la = (16.42 + Math.sin(t * 0.11) * 0.35).toFixed(2);
+          const lo = (358.07 + Math.sin(t * 0.07 + 2) * 0.5) % 360;
+          text(ctx, `${String(la).padStart(6, '0')} / ${lo.toFixed(2)}`,
+            x, b.y + b.h * 0.7, fs, GREEN, 0.9);
+          sep(b.y + b.h);
+        }
+
+        // 3 — attitude correction
+        {
+          const b = blocks[2];
+          text(ctx, 'ATTITUDE CORRECTION', x, b.y + b.h * 0.2, fs * 0.92, BLUE, 0.85);
+          text(ctx, '(LAT. ROT)', x, b.y + b.h * 0.42, fs * 0.92, BLUE_DIM, 0.9);
+          const att = 0.31 + 0.24 * Math.sin(t * 0.21) + 0.08 * Math.sin(t * 0.53);
+          inverseBox(ctx, `${att < 0 ? '-' : ' '}.${String(Math.abs(att * 100) | 0).padStart(2, '0')} DEG`,
+            x, b.y + b.h * 0.56, fs * 1.05, BLUE);
+          sep(b.y + b.h);
+        }
+
+        // 4 — mark
+        {
+          const b = blocks[3];
+          const burnT = 14 - (t % 14);
+          const hot = burnT < 4.2;
+          text(ctx, 'MARK', x, b.y + b.h * 0.32, fs * 0.92, BLUE, 0.85);
+          const mv = (-0.46 + Math.sin(t * 0.17) * 0.06).toFixed(2);
+          text(ctx, mv, x + iw, b.y + b.h * 0.32, fs * 1.05,
+            hot ? AMBER : PAPER, hot ? 0.7 + 0.3 * Math.sin(t * 9) : 0.9, 'right', 700);
+          sep(b.y + b.h);
+        }
+
+        // 5 — burn countdown
+        {
+          const b = blocks[4];
+          const burnT = 14 - (t % 14);
+          text(ctx, 'BURN 1', x, b.y + b.h * 0.28, fs * 0.92, BLUE, 0.85);
+          if (burnT > 3) {
+            inverseBox(ctx, `${(burnT - 3).toFixed(2).padStart(5, '0')} SECS`,
+              x, b.y + b.h * 0.44, fs * 1.05, BLUE);
+          } else {
+            const on = Math.sin(t * 10) > -0.2;
+            inverseBox(ctx, ' COMMIT ', x, b.y + b.h * 0.44, fs * 1.05, AMBER, on);
+          }
+          sep(b.y + b.h);
+        }
+
+        // 6 — system tag + autocount
+        {
+          const b = blocks[5];
+          const on = (t % 2.2) < 1.55;
+          inverseBox(ctx, 'SYSTEM #16', x, b.y + b.h * 0.12, fs * 0.98, BLUE, on);
+          text(ctx, 'AUTOCOUNT', x, b.y + b.h * 0.52, fs * 0.92, BLUE, 0.85);
+
+          // segmented progress bar
+          const segs = 10;
+          const fill = (t * 0.11) % 1;
+          const segW = iw / segs;
+          for (let i = 0; i < segs; i++) {
+            const lit = i / segs < fill;
+            ctx.fillStyle = rgb(lit ? GREEN : BLUE_DIM, lit ? 0.85 : 0.3);
+            ctx.fillRect(x + i * segW, b.y + b.h * 0.62, segW - 2, fs * 0.6);
+          }
+          const count = String(100000 + Math.floor(t * 7) % 900000).slice(-6);
+          text(ctx, count, x, b.y + b.h * 0.88, fs, GREEN, 0.9);
+          text(ctx, 'CYC', x + iw, b.y + b.h * 0.88, fs * 0.85, BLUE_DIM, 0.9, 'right');
+        }
+
+        ctx.restore();
+      }
+
+      // ─── Header band ────────────────────────────────────────
+      function drawHeader(ctx, fr, hh, t) {
+        const fs = fr.fs;
+        ctx.save();
+        ctx.fillStyle = 'rgba(2,4,10,0.5)';
+        ctx.fillRect(fr.x, fr.y, fr.w, hh);
+        ctx.strokeStyle = rgb(BLUE, 0.6);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(fr.x, fr.y + hh);
+        ctx.lineTo(fr.x + fr.w, fr.y + hh);
+        ctx.stroke();
+
+        const ty = fr.y + hh * 0.5 - fs * 1.55 * 0.5;
+        let hx = fr.x + fs;
+        hx += inverseBox(ctx, ' ORBIT INSERTION ', hx, ty, fs * 1.18, BLUE) + fs * 1.4;
+
+        // Glitching approach/system tags
+        const tick = Math.floor(t * 2.7);
+        hx += inverseBox(ctx, 'APPROACH', hx, ty + fs * 0.1, fs * 0.95, BLUE_DIM,
+          tick % 7 !== 0) + fs;
+        inverseBox(ctx, `SYSTEM 1B ${glitchText(4, tick, 3)} ${glitchText(2, tick, 9)} (S)`,
+          hx, ty + fs * 0.1, fs * 0.95, BLUE_DIM, tick % 5 === 0);
+
+        // Right-side link status
+        const link = 94 + Math.floor(Math.sin(t * 1.1) * 4);
+        text(ctx, `DSCNT LINK ${link}%  ·  GUID LOCK`,
+          fr.x + fr.w - fs, fr.y + hh * 0.5, fs * 0.95, AMBER, 0.85, 'right');
+        ctx.restore();
+      }
+
+      // ─── Bezel, backdrop, vignette ──────────────────────────
+      function drawBezel(ctx, w, h, fr) {
+        // Outer darkness
+        ctx.fillStyle = '#010204';
+        ctx.fillRect(0, 0, w, h);
+
+        // Screen backdrop
+        const g = ctx.createLinearGradient(fr.x, fr.y, fr.x + fr.w, fr.y + fr.h);
+        g.addColorStop(0, '#030711');
+        g.addColorStop(0.55, '#02050c');
+        g.addColorStop(1, '#010307');
+        ctx.fillStyle = g;
+        ctx.fillRect(fr.x, fr.y, fr.w, fr.h);
+
+        // Double frame + soft glow rings
+        for (let i = 0; i < 3; i++) {
+          ctx.strokeStyle = rgb(BLUE, 0.22 - i * 0.06);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(fr.x - 4 - i * 3, fr.y - 4 - i * 3, fr.w + 8 + i * 6, fr.h + 8 + i * 6);
+        }
+        ctx.strokeStyle = rgb(BLUE_HOT, 0.75);
+        ctx.lineWidth = 2;
+        ctx.strokeRect(fr.x, fr.y, fr.w, fr.h);
+      }
+
+      function drawGridWash(ctx, vp) {
+        ctx.save();
+        ctx.strokeStyle = rgb(BLUE_DIM, 0.09);
+        ctx.lineWidth = 0.5;
+        const step = Math.max(30, vp.w / 22);
+        for (let x = vp.x + step; x < vp.x + vp.w; x += step) {
+          ctx.beginPath(); ctx.moveTo(x, vp.y); ctx.lineTo(x, vp.y + vp.h); ctx.stroke();
+        }
+        for (let y = vp.y + step; y < vp.y + vp.h; y += step) {
+          ctx.beginPath(); ctx.moveTo(vp.x, y); ctx.lineTo(vp.x + vp.w, y); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function drawVignette(ctx, w, h) {
+        const g = ctx.createRadialGradient(w * 0.5, h * 0.48, 0, w * 0.5, h * 0.48, Math.max(w, h) * 0.72);
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(0.72, 'rgba(0,0,0,0.08)');
+        g.addColorStop(1, 'rgba(0,0,0,0.6)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // ─── Main draw ──────────────────────────────────────────
+      let paused = false;
+      let pauseAlpha = 0;
+
+      function draw(ctx, { time, dt, width: w, height: h }) {
+        const t = time / 1000;
+
+        if (!paused) {
+          const m = Math.min(w, h);
+          const fs = clamp(m * 0.017, 10, 16);
+          const inset = m * 0.03;
+          const fr = { x: inset, y: inset, w: w - inset * 2, h: h - inset * 2, fs };
+
+          drawBezel(ctx, w, h, fr);
+
+          const hh = clamp(m * 0.075, 36, 62);
+          drawHeader(ctx, fr, hh, t);
+
+          const sbW = clamp(fr.w * 0.235, 190, 330);
+          const vp = { x: fr.x, y: fr.y + hh, w: fr.w - sbW, h: fr.h - hh, fs };
+          const sb = { x: fr.x + fr.w - sbW, y: fr.y + hh, w: sbW, h: fr.h - hh, fs };
+
+          // Sidebar divider
+          ctx.strokeStyle = rgb(BLUE, 0.55);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sb.x, sb.y);
+          ctx.lineTo(sb.x, sb.y + sb.h);
+          ctx.stroke();
+
+          drawGridWash(ctx, vp);
+          const planet = drawPlanet(ctx, vp, t);
+          const optics = drawOptics(ctx, vp, t);
+          drawTrajectory(ctx, vp, t, optics, planet);
+          drawCrosshairs(ctx, vp, t);
+          drawRuler(ctx, vp, t);
+          drawSidebar(ctx, sb, t);
+          drawVignette(ctx, w, h);
+        }
+
+        if (pauseAlpha > 0.01) {
+          pauseAlpha -= dt * 0.7;
+          ctx.save();
+          ctx.globalAlpha = clamp(pauseAlpha, 0, 1);
+          setFont(ctx, 22, 700);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = rgb(AMBER);
+          ctx.fillText(paused ? 'HOLD' : 'LIVE', w / 2, h / 2);
+          ctx.restore();
+        }
+
+        ctx.save();
+        ctx.globalAlpha = 0.26;
+        setFont(ctx, 11);
+        ctx.fillStyle = rgb(BLUE, 0.75);
+        ctx.textAlign = 'center';
+        ctx.fillText('space hold - P panel - E toggle - G filters', w / 2, h - 10);
+        ctx.restore();
+      }
+
+      // ─── App ────────────────────────────────────────────────
+      createApp({
+        asciiConfig: {
+          enabled: true,
+          background: '#010308',
+          speed: 0.8,
+          sourceOpacity: 0,
+          renderMode: '2d',
+          crtEnabled: true,
+          crtScanlines: 0.35,
+          crtGlow: 0.45,
+          crtDistortion: 0.05,
+          crtFlicker: 0.05,
+        },
+        layers: [
+          {
+            fontSize: 2,
+            density: 1,
+            charset: 'density',
+            colorScheme: 'source',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 7,
+            density: 1,
+            charset: 'braille',
+            colorScheme: 'source',
+            blendMode: 'add',
+            opacity: 0.38,
+          },
+          {
+            fontSize: 13,
+            density: 1,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            blendMode: 'add',
+            opacity: 0.13,
+          },
+        ],
+        draw,
+        onKeydown(e) {
+          if (e.key === ' ') {
+            e.preventDefault();
+            paused = !paused;
+            pauseAlpha = 1;
+          }
+        },
+        showPanel: true,
+      });
+    </script>
+  </body>
+</html>
