@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Telemetry Wall</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createVfxDashboard } from './vfx-dashboard-core.js';
+
+      createVfxDashboard({
+        kind: 'telemetry',
+        title: 'VESSEL TELEMETRY WALL',
+        seed: 3209,
+        asciiConfig: {
+          background: '#08060c',
+          speed: 0.68,
+          renderMode: '3d',
+          depthScale: 360,
+          perspective: 1480,
+          rotationX: -0.21,
+          rotationY: 0.46,
+          rotationZ: 0.04,
+        },
+        layers: [
+          {
+            fontSize: 1,
+            density: 1,
+            charset: 'density',
+            colorScheme: 'vapor',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 12,
+            density: 1,
+            charset: 'blocks',
+            colorScheme: 'vapor',
+            blendMode: 'add',
+            opacity: 0.55,
+          },
+          {
+            fontSize: 6,
+            density: 1,
+            charset: 'braille',
+            colorScheme: 'ocean',
+            pattern: 'plasma',
+            patternMix: 0.08,
+            blendMode: 'add',
+            opacity: 0.55,
+          },
+          {
+            fontSize: 18,
+            density: 1,
+            charset: 'minimal',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.12,
+          },
+        ],
+      });
+    </script>
+  </body>
+</html>
+

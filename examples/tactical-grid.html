@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Tactical Grid</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createVfxDashboard } from './vfx-dashboard-core.js';
+
+      createVfxDashboard({
+        kind: 'tactical',
+        title: 'TACTICAL SENSOR GRID',
+        seed: 8917,
+        asciiConfig: {
+          background: '#050806',
+          speed: 0.86,
+          renderMode: '3d',
+          depthScale: 420,
+          perspective: 1600,
+          rotationX: -0.12,
+          rotationY: 0.62,
+          rotationZ: -0.02,
+        },
+        layers: [
+          {
+            fontSize: 1,
+            density: 1,
+            charset: 'binary',
+            colorScheme: 'acid',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 8,
+            density: 1,
+            charset: 'density',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.8,
+          },
+          {
+            fontSize: 14,
+            density: 1,
+            charset: 'blocks',
+            colorScheme: 'fire',
+            blendMode: 'add',
+            opacity: 0.25,
+          },
+          {
+            fontSize: 5,
+            density: 1,
+            charset: 'braille',
+            colorScheme: 'mono',
+            edgeDetect: true,
+            edgeCharset: 'box-light',
+            blendMode: 'add',
+            opacity: 0.35,
+          },
+        ],
+      });
+    </script>
+  </body>
+</html>
+

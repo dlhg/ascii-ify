@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Navigation Console</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createVfxDashboard } from './vfx-dashboard-core.js';
+
+      createVfxDashboard({
+        kind: 'navigation',
+        title: 'LONG RANGE NAVIGATION',
+        seed: 4401,
+        asciiConfig: {
+          background: '#04070b',
+          speed: 0.72,
+          renderMode: '3d',
+          depthScale: 380,
+          perspective: 1500,
+          rotationX: -0.18,
+          rotationY: 0.52,
+          rotationZ: 0.025,
+        },
+        layers: [
+          {
+            fontSize: 1,
+            density: 1,
+            charset: 'density',
+            colorScheme: 'rainbow',
+            blendMode: 'replace',
+            opacity: 1,
+          },
+          {
+            fontSize: 13,
+            density: 1,
+            charset: 'blocks',
+            colorScheme: 'ocean',
+            blendMode: 'add',
+            opacity: 0.8,
+          },
+          {
+            fontSize: 5,
+            density: 1,
+            charset: 'braille',
+            colorScheme: 'neon',
+            blendMode: 'add',
+            opacity: 0.45,
+          },
+          {
+            fontSize: 10,
+            density: 1,
+            charset: 'density',
+            colorScheme: 'vapor',
+            pattern: 'waves',
+            patternMix: 0.1,
+            blendMode: 'add',
+            opacity: 0.18,
+          },
+        ],
+      });
+    </script>
+  </body>
+</html>
+
