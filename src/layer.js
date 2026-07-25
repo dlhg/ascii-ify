@@ -19,6 +19,7 @@ export class Layer {
 
     this._params = {
       fontSize: options.fontSize ?? DEFAULTS.fontSize,
+      fontSizeSmoothing: options.fontSizeSmoothing ?? DEFAULTS.fontSizeSmoothing,
       density: options.density ?? DEFAULTS.density,
       charset: options.charset ?? null,
       colorScheme: options.colorScheme ?? null,
@@ -50,6 +51,7 @@ export class Layer {
     this._depthBuf = null;
     this._offscreen = null;
     this._offCtx = null;
+    this._fontSmooth = null;
   }
 
   /**
@@ -156,6 +158,7 @@ export class Layer {
   destroy() {
     this._offscreen = null;
     this._offCtx = null;
+    this._fontSmooth = null;
     this._sampleCtx = null;
     this._sampleBuf = null;
     this._sampleColorBuf = null;

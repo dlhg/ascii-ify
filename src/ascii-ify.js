@@ -28,6 +28,7 @@ export class AsciiIfy extends EventEmitter {
     this._time = 0;
     this._automationTime = 0;
     this._colorPhase = 0;
+    this._dt = 0;
     this._panel = null;
     this._transitioning = false;
     this._enableTimer = null;
@@ -140,7 +141,7 @@ export class AsciiIfy extends EventEmitter {
 
     // Propagate to implicit-mode layers
     if (this._implicitMode && this._layers.length > 0) {
-      const layerKeys = ['fontSize', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode', 'offsetX', 'offsetY', 'zIndex', 'edgeDetect', 'edgeThreshold', 'edgeCharset'];
+      const layerKeys = ['fontSize', 'fontSizeSmoothing', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode', 'offsetX', 'offsetY', 'zIndex', 'edgeDetect', 'edgeThreshold', 'edgeCharset'];
       if (layerKeys.includes(key)) {
         this._layers[0].set(key, value);
       }
@@ -256,6 +257,7 @@ export class AsciiIfy extends EventEmitter {
     const now = performance.now();
     const dt = this._prevTime ? Math.min((now - this._prevTime) / 1000, 0.05) : 0;
     this._prevTime = now;
+    this._dt = dt;
     this._automationTime += dt;
     this._applyAutomations();
     this._time += dt * this._params.speed;
@@ -444,6 +446,20 @@ export class AsciiIfy extends EventEmitter {
     const grid = this._grid;
     if (grid.cols <= 0 || grid.rows <= 0) return;
 
+    const smoothing = this._params.fontSizeSmoothing || 0;
+    if (smoothing > 0) {
+      const smoothCtx = this._beginFontSizeSmoothing(this, w, h, smoothing, this._gridKey(grid));
+      smoothCtx.clearRect(0, 0, w, h);
+      this._drawImplicit(smoothCtx, w, h, t, grid);
+      this._finishFontSizeSmoothing(this, ctx, w, h, smoothing);
+      return;
+    }
+
+    this._fontSmooth = null;
+    this._drawImplicit(ctx, w, h, t, grid);
+  }
+
+  _drawImplicit(ctx, w, h, t, grid) {
     const useSourceColors = this._params.colorScheme === 'source';
     const schemeIndex = useSourceColors ? 0 : this._resolveSchemeIndex(this._params.colorScheme);
     ctx.font = `${this._params.fontSize}px monospace`;
@@ -545,8 +561,13 @@ export class AsciiIfy extends EventEmitter {
       // Render layer to its offscreen canvas
       const offCanvas = layer._ensureOffscreen(w, h);
       const offCtx = layer._offCtx;
-      offCtx.clearRect(0, 0, w, h);
-      offCtx.font = `${layer.get('fontSize')}px monospace`;
+      const smoothing = layer.get('fontSizeSmoothing') || 0;
+      const smoothCtx = smoothing > 0
+        ? this._beginFontSizeSmoothing(layer, w, h, smoothing, this._gridKey(grid))
+        : null;
+      const renderCtx = smoothCtx || offCtx;
+      renderCtx.clearRect(0, 0, w, h);
+      renderCtx.font = `${layer.get('fontSize')}px monospace`;
 
       if (layer.get('edgeDetect')) {
         // Edge detection path — Sobel over the shared (downsampled) sample
@@ -562,9 +583,9 @@ export class AsciiIfy extends EventEmitter {
         if (this._params.renderMode === '3d') {
           const opts = this._projectionOptions(w, h, layer.get('fontSize'));
           opts.depthValues = this._depthValues(magnitude, layer);
-          renderEdgeLayer3D(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, opts, colors);
+          renderEdgeLayer3D(renderCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, opts, colors);
         } else {
-          renderEdgeLayer(offCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, colors);
+          renderEdgeLayer(renderCtx, magnitude, direction, grid, colorLUT, edgeChars, fade, t, colors);
         }
       } else {
         // Standard brightness path — shared sample, resampled to this grid
@@ -596,10 +617,17 @@ export class AsciiIfy extends EventEmitter {
         if (this._params.renderMode === '3d') {
           const opts = this._projectionOptions(w, h, layer.get('fontSize'));
           opts.depthValues = this._depthValues(brightness, layer);
-          renderLayer3D(offCtx, brightness, grid, colorLUT, chars, fade, t, opts, colors);
+          renderLayer3D(renderCtx, brightness, grid, colorLUT, chars, fade, t, opts, colors);
         } else {
-          renderLayer(offCtx, brightness, grid, colorLUT, chars, fade, t, colors);
+          renderLayer(renderCtx, brightness, grid, colorLUT, chars, fade, t, colors);
         }
+      }
+
+      if (smoothCtx) {
+        offCtx.clearRect(0, 0, w, h);
+        this._finishFontSizeSmoothing(layer, offCtx, w, h, smoothing);
+      } else {
+        layer._fontSmooth = null;
       }
     }
 
@@ -758,6 +786,92 @@ export class AsciiIfy extends EventEmitter {
       cameraZ: this._params.cameraZ,
       opacityDepth: this._params.depthOpacity,
     };
+  }
+
+  _gridKey(grid) {
+    return `${grid.cols}:${grid.rows}`;
+  }
+
+  _beginFontSizeSmoothing(owner, w, h, duration, key) {
+    const state = this._ensureFontSmoothState(owner, w, h);
+    if (state.hasFrame && state.key !== key) {
+      state.prevCtx.save();
+      state.prevCtx.setTransform(1, 0, 0, 1, 0, 0);
+      state.prevCtx.clearRect(0, 0, state.prev.width, state.prev.height);
+      state.prevCtx.drawImage(state.current, 0, 0);
+      state.prevCtx.restore();
+      state.progress = 0;
+      state.transitioning = duration > 0;
+    } else if (!state.hasFrame) {
+      state.progress = 1;
+      state.transitioning = false;
+    }
+    state.key = key;
+    return state.currentCtx;
+  }
+
+  _finishFontSizeSmoothing(owner, outputCtx, w, h, duration) {
+    const state = owner._fontSmooth;
+    let mix = 1;
+    if (state.transitioning) {
+      state.progress = Math.min(1, state.progress + (duration > 0 ? this._dt / duration : 1));
+      mix = state.progress * state.progress * (3 - 2 * state.progress);
+      if (state.progress >= 1) state.transitioning = false;
+    }
+
+    outputCtx.save();
+    if (state.transitioning || mix < 1) {
+      outputCtx.globalAlpha = 1 - mix;
+      outputCtx.drawImage(state.prev, 0, 0, w, h);
+      outputCtx.globalAlpha = mix;
+      outputCtx.drawImage(state.current, 0, 0, w, h);
+    } else {
+      outputCtx.drawImage(state.current, 0, 0, w, h);
+    }
+    outputCtx.restore();
+    state.hasFrame = true;
+  }
+
+  _ensureFontSmoothState(owner, w, h) {
+    if (!owner._fontSmooth) {
+      owner._fontSmooth = {
+        current: document.createElement('canvas'),
+        currentCtx: null,
+        prev: document.createElement('canvas'),
+        prevCtx: null,
+        key: null,
+        progress: 1,
+        transitioning: false,
+        hasFrame: false,
+      };
+      owner._fontSmooth.currentCtx = owner._fontSmooth.current.getContext('2d');
+      owner._fontSmooth.prevCtx = owner._fontSmooth.prev.getContext('2d');
+    }
+
+    const state = owner._fontSmooth;
+    const dpr = devicePixelRatio || 1;
+    const pw = Math.round(w * dpr);
+    const ph = Math.round(h * dpr);
+    const resizedCurrent = this._resizeSmoothCanvas(state.current, state.currentCtx, pw, ph, dpr);
+    const resizedPrev = this._resizeSmoothCanvas(state.prev, state.prevCtx, pw, ph, dpr);
+    const resized = resizedCurrent || resizedPrev;
+    if (resized) {
+      state.hasFrame = false;
+      state.transitioning = false;
+      state.progress = 1;
+      state.key = null;
+    }
+    return state;
+  }
+
+  _resizeSmoothCanvas(canvas, ctx, pw, ph, dpr) {
+    const resized = canvas.width !== pw || canvas.height !== ph;
+    if (resized) {
+      canvas.width = pw;
+      canvas.height = ph;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return resized;
   }
 
   _depthValues(signal, owner) {

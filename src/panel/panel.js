@@ -16,7 +16,7 @@ const RENDER_MODES = ['2d', '3d'];
 const AUTOMATION_TYPES = ['sine', 'triangle', 'noise', 'mouseX', 'mouseY', 'scroll'];
 
 const GLOBAL_KEYS = [
-  'enabled', 'fontSize', 'density', 'charset', 'colorScheme',
+  'enabled', 'fontSize', 'fontSizeSmoothing', 'density', 'charset', 'colorScheme',
   'background', 'fade', 'speed', 'pattern', 'patternMix',
   'colorCycle', 'colorCycleRate', 'sourceOpacity', 'opacity',
   'blendMode', 'offsetX', 'offsetY', 'zIndex',
@@ -27,7 +27,7 @@ const GLOBAL_KEYS = [
 ];
 
 const LAYER_KEYS = [
-  'visible', 'fontSize', 'density', 'charset', 'colorScheme',
+  'visible', 'fontSize', 'fontSizeSmoothing', 'density', 'charset', 'colorScheme',
   'pattern', 'patternMix', 'fade', 'opacity', 'blendMode',
   'offsetX', 'offsetY', 'zIndex',
   'edgeDetect', 'edgeThreshold', 'edgeCharset',
@@ -233,6 +233,14 @@ export class ControlPanel {
       get: () => ascii.get('fontSize'),
       set: (v) => ascii.set('fontSize', v),
       format: (v) => v.toFixed(1) + 'px',
+    }), body);
+
+    // Font Size Smoothing
+    this._registerImplicit(new BarControl({
+      label: 'Font Smooth', ...r.fontSizeSmoothing,
+      get: () => ascii.get('fontSizeSmoothing'),
+      set: (v) => ascii.set('fontSizeSmoothing', v),
+      format: (v) => Math.round(v * 1000) + 'ms',
     }), body);
 
     // Density
@@ -577,6 +585,14 @@ export class ControlPanel {
       get: () => layer.get('fontSize'),
       set: (v) => layer.set('fontSize', v),
       format: (v) => v.toFixed(1) + 'px',
+    }), container);
+
+    // Font Size Smoothing
+    this._register(new BarControl({
+      label: 'Font Smooth', ...r.fontSizeSmoothing,
+      get: () => layer.get('fontSizeSmoothing'),
+      set: (v) => layer.set('fontSizeSmoothing', v),
+      format: (v) => Math.round(v * 1000) + 'ms',
     }), container);
 
     // Density

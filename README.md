@@ -65,6 +65,7 @@ new AsciiIfy(sourceCanvas, options?)
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `fontSize` | number | 16 | Character size in pixels |
+| `fontSizeSmoothing` | number | 0 | Seconds to crossfade font-size grid jumps (`0` disables) |
 | `density` | number | 1 | Spacing multiplier (1=tight, 4=loose) |
 | `charset` | string | 'density' | Preset name or raw character string |
 | `colorScheme` | string | 'rainbow' | Color scheme name, or `'source'` to color glyphs from sampled source pixels |
@@ -176,6 +177,7 @@ overlay.set('pattern', 'kaleidoscope');
 |--------|------|---------|-------------|
 | `source` | Canvas | parent source | Canvas to sample |
 | `fontSize` | number | 16 | Per-layer font size |
+| `fontSizeSmoothing` | number | 0 | Per-layer crossfade duration for font-size grid jumps |
 | `density` | number | 1 | Per-layer spacing |
 | `charset` | string\|null | inherit | Override charset |
 | `colorScheme` | string\|null | inherit | Override color scheme |
