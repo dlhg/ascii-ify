@@ -11,6 +11,11 @@ import { lerpHue } from '../utils.js';
  */
 export function buildColorLUT(schemeIndex, charCount, time, cycleState) {
   const lut = new Array(charCount);
+  const rgb = {
+    r: new Uint8Array(charCount),
+    g: new Uint8Array(charCount),
+    b: new Uint8Array(charCount),
+  };
   const clen = charCount - 1;
 
   if (!cycleState.cycling) {
@@ -19,6 +24,7 @@ export function buildColorLUT(schemeIndex, charCount, time, cycleState) {
       const v = clen > 0 ? i / clen : 0;
       const [h, s, l] = scheme.fn(v, time);
       lut[i] = `hsl(${h} ${s}% ${l}%)`;
+      setRgb(rgb, i, h, s, l);
     }
   } else {
     const phase = cycleState.phase;
@@ -36,8 +42,30 @@ export function buildColorLUT(schemeIndex, charCount, time, cycleState) {
       const s = s1 + (s2 - s1) * blend;
       const l = l1 + (l2 - l1) * blend;
       lut[i] = `hsl(${h} ${s}% ${l}%)`;
+      setRgb(rgb, i, h, s, l);
     }
   }
 
+  Object.defineProperty(lut, '_rgb', { value: rgb });
   return lut;
+}
+
+function setRgb(rgb, i, h, s, l) {
+  s /= 100;
+  l /= 100;
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const xv = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0, g = 0, b = 0;
+  if (hp < 1) { r = c; g = xv; }
+  else if (hp < 2) { r = xv; g = c; }
+  else if (hp < 3) { g = c; b = xv; }
+  else if (hp < 4) { g = xv; b = c; }
+  else if (hp < 5) { r = xv; b = c; }
+  else { r = c; b = xv; }
+  const m = l - c / 2;
+  rgb.r[i] = ((r + m) * 255) | 0;
+  rgb.g[i] = ((g + m) * 255) | 0;
+  rgb.b[i] = ((b + m) * 255) | 0;
 }

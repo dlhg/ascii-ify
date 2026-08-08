@@ -200,6 +200,7 @@ class GlyphGLRenderer {
   }
 
   _lutRGB(colorLUT) {
+    if (colorLUT._rgb) return colorLUT._rgb;
     const cache = this._lutCache;
     if (cache.lut === colorLUT) return cache;
     const n = colorLUT.length;

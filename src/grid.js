@@ -15,8 +15,13 @@ export function calculateGrid(width, height, fontSize, density) {
     _measureCtx = c.getContext('2d');
   }
 
-  _measureCtx.font = `${fontSize}px monospace`;
-  const adv = _measureCtx.measureText('M').width;
+  const fontKey = `${fontSize}`;
+  let adv = _advanceCache.get(fontKey);
+  if (adv === undefined) {
+    _measureCtx.font = `${fontSize}px monospace`;
+    adv = _measureCtx.measureText('M').width;
+    _advanceCache.set(fontKey, adv);
+  }
   const charW = adv * density;
   const charH = fontSize * 1.35 * density;
   const ar = charH / charW;
@@ -27,3 +32,4 @@ export function calculateGrid(width, height, fontSize, density) {
 }
 
 let _measureCtx = null;
+const _advanceCache = new Map();

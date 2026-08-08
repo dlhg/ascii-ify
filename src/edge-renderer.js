@@ -8,7 +8,7 @@ import { drawGlyphBatch, glyphBatchAvailable } from './renderer-gl.js';
  *
  * @param {CanvasRenderingContext2D} ctx
  * @param {Float32Array} magnitude - edge magnitude [0-1], length = cols * rows
- * @param {Float32Array} direction - edge direction in radians, length = cols * rows
+ * @param {Float32Array|Uint8Array} direction - edge direction radians or 4-bin orientation, length = cols * rows
  * @param {{ cols: number, rows: number, cw: number, ch: number, ar: number }} grid
  * @param {string[]} colorLUT - color strings indexed 0-255
  * @param {object} edgeChars - { h, v, dr, dl, ur, ul, cross, diagR, diagL }
@@ -110,7 +110,7 @@ export function renderEdgeLayer(ctx, magnitude, direction, grid, colorLUT, edgeC
  *
  * @param {CanvasRenderingContext2D} ctx - target canvas context
  * @param {Float32Array} magnitude - edge magnitude [0-1], length = cols * rows
- * @param {Float32Array} direction - edge direction in radians, length = cols * rows
+ * @param {Float32Array|Uint8Array} direction - edge direction radians or 4-bin orientation, length = cols * rows
  * @param {{ cols: number, rows: number, cw: number, ch: number, ar: number }} grid
  * @param {string[]} colorLUT - color strings indexed by character index
  * @param {object} edgeChars - { h, v, dr, dl, ur, ul, cross, diagR, diagL }
@@ -322,6 +322,9 @@ function sourceColorAt(colors, i) {
 
 /** Map edge characters to atlas indices (index 0 is reserved/blank). */
 function buildEdgeCharMap(edgeChars) {
+  const cached = _edgeCharMapCache.get(edgeChars);
+  if (cached) return cached;
+
   const charMap = {};
   const charArray = ['\0'];
   for (const ch of Object.values(edgeChars)) {
@@ -330,15 +333,20 @@ function buildEdgeCharMap(edgeChars) {
       charArray.push(ch);
     }
   }
-  return { charMap, charsStr: charArray.join('') };
+  const result = { charMap, charsStr: charArray.join('') };
+  _edgeCharMapCache.set(edgeChars, result);
+  return result;
 }
+
+const _edgeCharMapCache = new WeakMap();
 
 /**
  * Select an edge character based on direction at (c, r) and neighbouring edges.
  * Checks for corners/junctions where two perpendicular edges meet.
  */
 function pickEdgeChar(magnitude, direction, c, r, cols, rows, chars) {
-  const dir = quantizeDirection(direction[r * cols + c]);
+  const i = r * cols + c;
+  const dir = direction.BYTES_PER_ELEMENT === 1 ? direction[i] : quantizeDirection(direction[i]);
 
   // Check neighbours for junction detection
   const hasUp = r > 0 && magnitude[(r - 1) * cols + c] > 0.02;

@@ -48,6 +48,7 @@ export class Layer {
     this._sampleCtx = null;
     this._sampleBuf = null;
     this._sampleColorBuf = null;
+    this._edgeBuffers = null;
     this._depthBuf = null;
     this._offscreen = null;
     this._offCtx = null;
@@ -162,6 +163,7 @@ export class Layer {
     this._sampleCtx = null;
     this._sampleBuf = null;
     this._sampleColorBuf = null;
+    this._edgeBuffers = null;
     this._depthBuf = null;
     this._automations.clear(false);
     this._parent = null;

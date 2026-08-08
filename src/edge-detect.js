@@ -8,11 +8,12 @@
  * @param {CanvasRenderingContext2D} [offCtx] - reusable offscreen context
  * @param {number} threshold - magnitude below this is zeroed (0-1)
  * @param {Uint8ClampedArray} [colorBuf] - optional reusable RGBA buffer
- * @returns {{ magnitude: Float32Array, direction: Float32Array, colors?: Uint8ClampedArray, ctx: CanvasRenderingContext2D }}
+ * @param {object} [buffers] - optional reusable buffers
+ * @returns {{ magnitude: Float32Array, direction: Uint8Array, directionBins: Uint8Array, colors?: Uint8ClampedArray, ctx: CanvasRenderingContext2D }}
  */
-export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
+export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf, buffers = null) {
   if (cols <= 0 || rows <= 0) {
-    return { magnitude: new Float32Array(0), direction: new Float32Array(0), ctx: offCtx };
+    return { magnitude: new Float32Array(0), direction: new Uint8Array(0), directionBins: new Uint8Array(0), ctx: offCtx };
   }
 
   if (!offCtx) {
@@ -34,7 +35,7 @@ export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
 
   // Build grayscale buffer
   const len = cols * rows;
-  const gray = new Float32Array(len);
+  const gray = ensureBuffer(buffers, 'gray', Float32Array, len);
   if (colorBuf !== undefined) {
     colors = colorBuf && colorBuf.length === pixels.length ? colorBuf : new Uint8ClampedArray(pixels.length);
     colors.set(pixels);
@@ -45,8 +46,8 @@ export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
     gray[i] = (pixels[idx] * 0.299 + pixels[idx + 1] * 0.587 + pixels[idx + 2] * 0.114) / 255;
   }
 
-  const { magnitude, direction } = sobelFromGray(gray, cols, rows, threshold);
-  return { magnitude, direction, colors, ctx: offCtx };
+  const { magnitude, direction, directionBins } = sobelFromGray(gray, cols, rows, threshold, buffers, 'bins');
+  return { magnitude, direction, directionBins, colors, ctx: offCtx };
 }
 
 /**
@@ -58,12 +59,17 @@ export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf) {
  * @param {number} cols - grid columns
  * @param {number} rows - grid rows
  * @param {number} threshold - magnitude below this is zeroed (0-1)
- * @returns {{ magnitude: Float32Array, direction: Float32Array }}
+ * @param {object} [buffers] - optional reusable output buffers
+ * @param {'angle'|'bins'} [directionMode='angle'] - return radians or 4-bin edge orientation
+ * @returns {{ magnitude: Float32Array, direction: Float32Array|Uint8Array, directionBins?: Uint8Array }}
  */
-export function sobelFromGray(gray, cols, rows, threshold) {
+export function sobelFromGray(gray, cols, rows, threshold, buffers = null, directionMode = 'angle') {
   const len = cols * rows;
-  const magnitude = new Float32Array(len);
-  const direction = new Float32Array(len);
+  const magnitude = ensureBuffer(buffers, 'magnitude', Float32Array, len);
+  const useBins = directionMode === 'bins';
+  const direction = useBins
+    ? ensureBuffer(buffers, 'directionBins', Uint8Array, len)
+    : ensureBuffer(buffers, 'direction', Float32Array, len);
   let maxMag = 0;
 
   for (let r = 0; r < rows; r++) {
@@ -84,8 +90,9 @@ export function sobelFromGray(gray, cols, rows, threshold) {
       const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
 
       const mag = Math.sqrt(gx * gx + gy * gy);
-      magnitude[r * cols + col] = mag;
-      direction[r * cols + col] = Math.atan2(gy, gx);
+      const i = r * cols + col;
+      magnitude[i] = mag;
+      direction[i] = useBins ? quantizeGradientToEdgeBin(gx, gy) : Math.atan2(gy, gx);
 
       if (mag > maxMag) maxMag = mag;
     }
@@ -100,5 +107,27 @@ export function sobelFromGray(gray, cols, rows, threshold) {
     }
   }
 
-  return { magnitude, direction };
+  return useBins ? { magnitude, direction, directionBins: direction } : { magnitude, direction };
+}
+
+function ensureBuffer(holder, key, Type, len) {
+  if (!holder) return new Type(len);
+  let buf = holder[key];
+  if (!buf || buf.length !== len || !(buf instanceof Type)) {
+    buf = new Type(len);
+    holder[key] = buf;
+  }
+  return buf;
+}
+
+function quantizeGradientToEdgeBin(gx, gy) {
+  const ax = Math.abs(gx);
+  const ay = Math.abs(gy);
+  if (ax === 0 && ay === 0) return 0;
+
+  // Sobel gives gradient direction; edge direction is perpendicular to it.
+  // Bins match edge-renderer: 0=horizontal, 1=diagR, 2=vertical, 3=diagL.
+  if (ay <= ax * 0.41421356237) return 2;
+  if (ay >= ax * 2.41421356237) return 0;
+  return gx * gy >= 0 ? 3 : 1;
 }
