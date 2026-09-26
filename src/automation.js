@@ -104,7 +104,10 @@ export class AutomationSet {
     return this._items.size;
   }
 
-  set(key, currentValue, options) {
+  set(key, currentValue, options = {}) {
+    // Re-automating an automated key: anchor to its base, not the in-flight value
+    const existing = this._items.get(key);
+    if (existing && options.base == null) options = { ...options, base: existing.base };
     const item = normalizeAutomation(key, currentValue, options);
     this._items.set(key, item);
     return this.get(key);

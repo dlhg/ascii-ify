@@ -3,6 +3,14 @@
   "version": "0.0.1",
   "type": "module",
   "description": "ASCII-ify any canvas. Layered compositing, procedural patterns, optional control panel.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dlhg/ascii-ify.git"
+  },
+  "homepage": "https://github.com/dlhg/ascii-ify#readme",
+  "bugs": {
+    "url": "https://github.com/dlhg/ascii-ify/issues"
+  },
   "main": "dist/ascii-ify.cjs",
   "module": "dist/ascii-ify.js",
   "exports": {
@@ -11,7 +19,11 @@
       "require": "./dist/ascii-ify.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -19,7 +31,13 @@
     "test:perf": "node tests/perf/compare.mjs",
     "test:perf:current": "playwright test tests/perf/perf.spec.js"
   },
-  "keywords": ["ascii", "canvas", "visualization", "ascii-art", "creative-coding"],
+  "keywords": [
+    "ascii",
+    "canvas",
+    "visualization",
+    "ascii-art",
+    "creative-coding"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@playwright/test": "^1.54.2",

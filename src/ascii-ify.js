@@ -141,14 +141,6 @@ export class AsciiIfy extends EventEmitter {
       this._handleResize();
     }
 
-    // Propagate to implicit-mode layers
-    if (this._implicitMode && this._layers.length > 0) {
-      const layerKeys = ['fontSize', 'fontSizeSmoothing', 'density', 'charset', 'colorScheme', 'pattern', 'patternMix', 'fade', 'opacity', 'blendMode', 'offsetX', 'offsetY', 'zIndex', 'edgeDetect', 'edgeThreshold', 'edgeCharset'];
-      if (layerKeys.includes(key)) {
-        this._layers[0].set(key, value);
-      }
-    }
-
     if (old !== value && !automated) {
       this.emit('paramchange', { key, value });
     }
@@ -201,17 +193,25 @@ export class AsciiIfy extends EventEmitter {
       this._implicitMode = false;
     } else if (this._implicitMode && this._layers.length === 0) {
       // Create the default layer first, then add the new one on top
+      const p = this._params;
       const defaultLayer = new Layer(this, {
         source: this._source,
-        fontSize: this._params.fontSize,
-        density: this._params.density,
-        charset: this._params.charset,
-        colorScheme: this._params.colorScheme,
-        pattern: this._params.pattern,
-        patternMix: this._params.patternMix,
-        fade: this._params.fade,
-        opacity: this._params.opacity,
+        fontSize: p.fontSize,
+        fontSizeSmoothing: p.fontSizeSmoothing,
+        density: p.density,
+        charset: p.charset,
+        colorScheme: p.colorScheme,
+        pattern: p.pattern,
+        patternMix: p.patternMix,
+        fade: p.fade,
+        opacity: p.opacity,
         blendMode: 'replace',
+        offsetX: p.offsetX,
+        offsetY: p.offsetY,
+        zIndex: p.zIndex,
+        edgeDetect: p.edgeDetect,
+        edgeThreshold: p.edgeThreshold,
+        edgeCharset: p.edgeCharset,
       });
       this._layers.push(defaultLayer);
       this._implicitMode = false;
@@ -302,6 +302,7 @@ export class AsciiIfy extends EventEmitter {
       return;
     }
     import('./panel/panel.js').then(({ ControlPanel }) => {
+      if (this._destroyed || this._panel) return;
       this._panel = new ControlPanel(this, options);
       this._panel.show();
     });
@@ -323,6 +324,7 @@ export class AsciiIfy extends EventEmitter {
 
   /** Destroy the instance — remove overlay, detach observers, stop loop */
   destroy() {
+    this._destroyed = true;
     this.stop();
     clearTimeout(this._enableTimer);
     if (this._crt) {
@@ -338,6 +340,7 @@ export class AsciiIfy extends EventEmitter {
       this._canvas.parentElement.removeChild(this._canvas);
     }
     this._source.style.opacity = '';
+    this._source.style.transition = '';
     for (const layer of this._layers) layer.destroy();
     this._layers = [];
     if (this._masters) this._masters.clear();
@@ -389,20 +392,28 @@ export class AsciiIfy extends EventEmitter {
     const w = this._source.offsetWidth || this._source.width;
     const h = this._source.offsetHeight || this._source.height;
 
-    // Update overlay canvas size
+    // Update overlay canvas size — only when it changed, since assigning
+    // width/height reallocates the canvas (fontSize automation hits this per frame)
     const dpr = devicePixelRatio || 1;
-    this._canvas.width = w * dpr;
-    this._canvas.height = h * dpr;
-    this._canvas.style.width = w + 'px';
-    this._canvas.style.height = h + 'px';
-    this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const pw = Math.round(w * dpr);
+    const ph = Math.round(h * dpr);
+    if (this._canvas.width !== pw || this._canvas.height !== ph) {
+      this._canvas.width = pw;
+      this._canvas.height = ph;
+      this._canvas.style.width = w + 'px';
+      this._canvas.style.height = h + 'px';
+      this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
 
     // Calculate grid for implicit mode
+    const prev = this._grid;
     this._grid = calculateGrid(w, h, this._params.fontSize, this._params.density);
     this._width = w;
     this._height = h;
 
-    this.emit('resize', { cols: this._grid.cols, rows: this._grid.rows });
+    if (!prev || prev.cols !== this._grid.cols || prev.rows !== this._grid.rows) {
+      this.emit('resize', { cols: this._grid.cols, rows: this._grid.rows });
+    }
   }
 
   _renderFrame() {
@@ -539,13 +550,29 @@ export class AsciiIfy extends EventEmitter {
   _renderLayers(ctx, w, h, t) {
     const sorted = this._sortedLayers();
 
-    // Collect visible layers and their grids
-    const active = [];
+    // Collect shown layers, plus any layer they use as a mask — a hidden mask
+    // layer still has to render each frame or its mask would freeze.
+    const shown = [];
+    const needed = new Set();
     for (const layer of sorted) {
       if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
+      shown.push(layer);
+      needed.add(layer);
+      const maskId = layer.get('maskLayer');
+      if (maskId != null) {
+        const maskLayer = this._layers.find(l => l.id === maskId);
+        if (maskLayer) needed.add(maskLayer);
+      }
+    }
+
+    const active = [];
+    const rendered = new Set();
+    for (const layer of sorted) {
+      if (!needed.has(layer)) continue;
       const grid = calculateGrid(w, h, layer.get('fontSize'), layer.get('density'));
       if (grid.cols <= 0 || grid.rows <= 0) continue;
       active.push({ layer, grid });
+      rendered.add(layer);
     }
 
     // Pass 0: one readback per distinct source, at the finest active grid.
@@ -639,9 +666,8 @@ export class AsciiIfy extends EventEmitter {
     }
 
     // Pass 2: Apply masks and composite onto output
-    for (const layer of sorted) {
-      if (this._soloLayer ? layer !== this._soloLayer : !layer.visible) continue;
-      if (!layer._offscreen) continue;
+    for (const layer of shown) {
+      if (!rendered.has(layer)) continue;
 
       const offCanvas = layer._offscreen;
       const offCtx = layer._offCtx;
@@ -650,7 +676,7 @@ export class AsciiIfy extends EventEmitter {
       const maskId = layer.get('maskLayer');
       if (maskId != null) {
         const maskLayer = this._layers.find(l => l.id === maskId);
-        if (maskLayer && maskLayer._offscreen) {
+        if (maskLayer && rendered.has(maskLayer)) {
           // Reset to pixel space so the DPR-scaled canvases align 1:1
           offCtx.save();
           offCtx.setTransform(1, 0, 0, 1, 0, 0);

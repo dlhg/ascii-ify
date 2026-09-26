@@ -26,7 +26,9 @@ export function sampleCanvas(source, cols, rows, offCtx, buf, colorBuf) {
     c.height = rows;
   }
 
-  // Hardware-accelerated downscale — one pixel per ASCII cell
+  // Hardware-accelerated downscale — one pixel per ASCII cell. Clear first so
+  // transparent source pixels don't let the previous frame show through.
+  offCtx.clearRect(0, 0, cols, rows);
   offCtx.drawImage(source, 0, 0, cols, rows);
   const imageData = offCtx.getImageData(0, 0, cols, rows);
   const pixels = imageData.data;

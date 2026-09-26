@@ -27,7 +27,8 @@ export function detectEdges(source, cols, rows, offCtx, threshold, colorBuf, buf
     c.height = rows;
   }
 
-  // Hardware-accelerated downscale
+  // Hardware-accelerated downscale (cleared so transparent pixels don't ghost)
+  offCtx.clearRect(0, 0, cols, rows);
   offCtx.drawImage(source, 0, 0, cols, rows);
   const imageData = offCtx.getImageData(0, 0, cols, rows);
   const pixels = imageData.data;
