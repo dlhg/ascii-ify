@@ -100,15 +100,17 @@
     <nav>
       <div class="top-row">
         <span class="title">ascii-ify</span>
+        <button id="audio-toggle" title="Add the audio dock and default reactive routes to every scene">Audio: off</button>
         <span class="keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> cycle &nbsp; <kbd>P</kbd> panel &nbsp; <kbd>E</kbd> <span id="filter-label">disable filter</span></span>
       </div>
       <div class="btn-grid" id="btn-grid"></div>
     </nav>
-    <iframe id="frame"></iframe>
+    <iframe id="frame" allow="microphone; autoplay"></iframe>
 
     <script>
       const EXAMPLES_BASE = 'examples/';
       const examples = [
+        { name: 'Audio Reactive', src: 'audio-reactive.html' },
         { name: 'Lightning', src: 'lightning.html' },
         { name: 'Bioluminescent', src: 'bioluminescent.html' },
 
@@ -203,9 +205,27 @@
         }
       }
 
+      // Audio mode reloads scenes with ?audio, which adds the audio dock and
+      // the default reactive routes (see examples/boilerplate.js).
+      let audioOn = false;
+      try { audioOn = localStorage.getItem('ascii-audio') === '1'; } catch (_) {}
+      const audioBtn = document.getElementById('audio-toggle');
+      function updateAudioBtn() {
+        audioBtn.textContent = audioOn ? 'Audio: on' : 'Audio: off';
+        audioBtn.classList.toggle('active', audioOn);
+      }
+      updateAudioBtn();
+      audioBtn.addEventListener('click', () => {
+        audioOn = !audioOn;
+        try { localStorage.setItem('ascii-audio', audioOn ? '1' : '0'); } catch (_) {}
+        updateAudioBtn();
+        load(current);
+        audioBtn.blur();
+      });
+
       function load(index) {
         current = index;
-        frame.src = EXAMPLES_BASE + examples[index].src;
+        frame.src = EXAMPLES_BASE + examples[index].src + (audioOn ? '?audio' : '');
         buttons.forEach((b, i) => b.classList.toggle('active', i === index));
         // Reset filter state when switching examples (they always start enabled)
         filterEnabled = true;

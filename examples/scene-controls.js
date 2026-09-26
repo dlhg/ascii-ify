@@ -522,8 +522,23 @@ export class ScenePopup {
     if (this._onChange) this._onChange();
   }
 
+  /**
+   * Add a live offset to a control: effective value = slider + fn(), clamped.
+   * Used for audio pulses; the sliders themselves are untouched.
+   */
+  setMod(key, fn) {
+    if (!this._mods) this._mods = {};
+    if (fn) this._mods[key] = fn; else delete this._mods[key];
+  }
+
+  _effective(c) {
+    const fn = this._mods?.[c.key];
+    const v = this.values[c.key] + (fn ? fn() : 0);
+    return Math.max(c.min, Math.min(c.max, v));
+  }
+
   /** Speed multiplier for the scene clock. */
-  get speed() { return this.values.speed; }
+  get speed() { return this._effective(CONTROLS.find(c => c.key === 'speed')); }
 
   /**
    * CSS filter string for the source canvas, or null if all image controls
@@ -533,7 +548,7 @@ export class ScenePopup {
     const parts = [];
     for (const c of CONTROLS) {
       if (!c.css) continue;
-      const v = this.values[c.key];
+      const v = this._effective(c);
       if (Math.abs(v - c.def) < 1e-6) continue;
       parts.push(`${c.css}(${v}${c.suffix || ''})`);
     }

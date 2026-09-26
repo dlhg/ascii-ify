@@ -158,6 +158,25 @@ export class AsciiIfy extends EventEmitter {
     return automation;
   }
 
+  /**
+   * Add a modulation route: value = base + depth × source × range. Several
+   * routes can drive one parameter.
+   * @param {string} key
+   * @param {object} route - { source, depth, smooth, curve, bipolar, rate, phase }
+   */
+  route(key, route) {
+    const automation = this._automations.route(key, this.get(key), route);
+    this.emit('paramchange', { key: 'automation', value: this.getAutomations() });
+    return automation;
+  }
+
+  /** Remove a route by index or source name. */
+  unroute(key, which) {
+    const changed = this._automations.unroute(key, which);
+    if (changed) this.emit('paramchange', { key: 'automation', value: this.getAutomations() });
+    return changed;
+  }
+
   /** Stop animating one parameter and restore its base value. */
   stopAutomation(key, restore = true) {
     const changed = this._automations.delete(key, restore);

@@ -28,8 +28,20 @@ function ensurePointerTracking() {
   window.addEventListener('wheel', wheel, { passive: true });
 }
 
+// ─── External signal registry (audio, MIDI, …) ──────────────────────────
+// A signal is a named function returning a normalized 0..1 value. Names are
+// plain strings (e.g. 'audio:bass') so automation definitions stay serializable.
+const signals = new Map();
+
+/** Register a named 0..1 signal usable as an automation `type`. Returns an unregister fn. */
+export function registerSignal(name, read) {
+  signals.set(name, read);
+  return () => { if (signals.get(name) === read) signals.delete(name); };
+}
+
 export function isInputAutomation(type) {
-  return type === 'mouseX' || type === 'mouseY' || type === 'scroll';
+  return type === 'mod' || type === 'mouseX' || type === 'mouseY' || type === 'scroll' || signals.has(type)
+    || (typeof type === 'string' && type.startsWith('audio:'));
 }
 
 function hashString(str) {
@@ -81,6 +93,20 @@ function normalizeAutomation(key, currentValue, options = {}) {
   const type = options.type || options.mode || 'sine';
   if (isInputAutomation(type)) ensurePointerTracking();
 
+  if (type === 'mod') {
+    // Matrix mode: value = base + Σ depth × shaped(source) × span, clamped to the range.
+    const routes = (options.routes || []).map(normalizeRoute);
+    routes.forEach(r => { if (isInputAutomation(r.source)) ensurePointerTracking(); });
+    return {
+      type, base,
+      min: range ? range.min : -1e9,
+      max: range ? range.max : 1e9,
+      amount: 0, relative: false, rate: 0, phase: 0,
+      seed: options.seed ?? hashString(key),
+      routes,
+    };
+  }
+
   return {
     type,
     base,
@@ -94,10 +120,38 @@ function normalizeAutomation(key, currentValue, options = {}) {
   };
 }
 
+const CURVES = ['linear', 'exp', 'log'];
+
+function normalizeRoute(route = {}) {
+  if (!route.source || typeof route.source !== 'string') {
+    throw new TypeError('A route needs a `source` (e.g. "audio:kick", "sine", "mouseX")');
+  }
+  return {
+    source: route.source,
+    depth: Number.isFinite(route.depth) ? route.depth : 0.5, // fraction of the parameter's range; negative inverts
+    smooth: Math.max(0, Number(route.smooth ?? 0)),           // seconds of slew
+    curve: CURVES.includes(route.curve) ? route.curve : 'linear',
+    bipolar: !!route.bipolar,                                 // signal spans -1..1 instead of 0..1
+    rate: Math.max(0, Number(route.rate ?? 1)),               // LFO sources only
+    phase: Number(route.phase ?? 0),
+    seed: route.seed ?? hashString(route.source),
+  };
+}
+
+function shape(n, curve) {
+  return curve === 'exp' ? n * n : curve === 'log' ? Math.sqrt(n) : n;
+}
+
+function copyItem(item) {
+  return item.routes ? { ...item, routes: item.routes.map(r => ({ ...r })) } : { ...item };
+}
+
 export class AutomationSet {
   constructor(setter) {
     this._setter = setter;
     this._items = new Map();
+    this._state = new Map();   // per-route smoothing state, kept out of serialized output
+    this._lastTime = null;
   }
 
   get size() {
@@ -108,9 +162,34 @@ export class AutomationSet {
     // Re-automating an automated key: anchor to its base, not the in-flight value
     const existing = this._items.get(key);
     if (existing && options.base == null) options = { ...options, base: existing.base };
+    // A UI re-automating a matrix item without routes must not wipe them
+    if (existing?.type === 'mod' && options.type === 'mod' && !options.routes) {
+      options = { ...options, routes: existing.routes };
+    }
     const item = normalizeAutomation(key, currentValue, options);
     this._items.set(key, item);
+    this._state.delete(key);
     return this.get(key);
+  }
+
+  /** Add a modulation route to a parameter (creating its matrix if needed). */
+  route(key, currentValue, route) {
+    const existing = this._items.get(key);
+    const routes = existing?.type === 'mod' ? existing.routes.map(r => ({ ...r })) : [];
+    routes.push(normalizeRoute(route));
+    return this.set(key, currentValue, { type: 'mod', base: existing?.base, routes });
+  }
+
+  /** Remove a route by index or source name. Drops the automation when none remain. */
+  unroute(key, which, restore = true) {
+    const item = this._items.get(key);
+    if (!item || item.type !== 'mod') return false;
+    const index = typeof which === 'number' ? which : item.routes.findIndex(r => r.source === which);
+    if (index < 0 || index >= item.routes.length) return false;
+    item.routes.splice(index, 1);
+    this._state.get(key)?.splice(index, 1);
+    if (item.routes.length === 0) this.delete(key, restore);
+    return true;
   }
 
   has(key) {
@@ -119,12 +198,12 @@ export class AutomationSet {
 
   get(key) {
     const item = this._items.get(key);
-    return item ? { ...item } : null;
+    return item ? copyItem(item) : null;
   }
 
   all() {
     const out = {};
-    for (const [key, item] of this._items) out[key] = { ...item };
+    for (const [key, item] of this._items) out[key] = copyItem(item);
     return out;
   }
 
@@ -149,6 +228,7 @@ export class AutomationSet {
     const item = this._items.get(key);
     if (!item) return false;
     this._items.delete(key);
+    this._state.delete(key);
     if (restore) this._setter(key, item.base, true);
     return true;
   }
@@ -159,41 +239,58 @@ export class AutomationSet {
 
   apply(time) {
     if (this._items.size === 0) return;
+    const dt = this._lastTime == null ? 0 : clamp(time - this._lastTime, 0, 0.1);
+    this._lastTime = time;
     for (const [key, item] of this._items) {
-      this._setter(key, this._valueAt(item, time), true);
+      const value = item.type === 'mod' ? this._modValue(key, item, time, dt) : this._valueAt(item, time);
+      this._setter(key, value, true);
     }
   }
 
-  _valueAt(item, time) {
-    const cycle = time * item.rate + item.phase;
-    const min = item.min;
-    const max = item.max;
-    let n;
+  _modValue(key, item, time, dt) {
+    const range = PARAM_RANGES[key];
+    const span = range ? range.max - range.min : Math.max(Math.abs(item.base), 1);
+    let state = this._state.get(key);
+    if (!state) this._state.set(key, state = []);
 
-    switch (item.type) {
-      case 'triangle': {
-        const f = ((cycle % 1) + 1) % 1;
-        n = f < 0.5 ? f * 2 : 2 - f * 2;
-        break;
+    let v = item.base;
+    for (let i = 0; i < item.routes.length; i++) {
+      const r = item.routes[i];
+      let n = clamp(signalAt(r.source, time * r.rate + r.phase, r.seed), 0, 1);
+      if (r.smooth > 0 && state[i] !== undefined) {
+        n = state[i] + (n - state[i]) * (dt > 0 ? 1 - Math.exp(-dt / r.smooth) : 1);
       }
-      case 'noise':
-        n = noise(item.seed, cycle);
-        break;
-      case 'mouseX':
-        n = pointer.x;
-        break;
-      case 'mouseY':
-        n = pointer.y;
-        break;
-      case 'scroll':
-        n = pointer.scroll;
-        break;
-      case 'sine':
-      default:
-        n = (Math.sin(cycle * TWO_PI) + 1) / 2;
-        break;
+      state[i] = n;
+      n = shape(n, r.curve);
+      v += r.depth * (r.bipolar ? n * 2 - 1 : n) * span;
     }
+    return clamp(v, item.min, item.max);
+  }
 
-    return lerp(min, max, n);
+  _valueAt(item, time) {
+    const n = signalAt(item.type, time * item.rate + item.phase, item.seed);
+    return lerp(item.min, item.max, n);
+  }
+}
+
+/** Normalized 0..1 value of any source: LFO waveform, pointer input, or registered signal. */
+function signalAt(type, cycle, seed) {
+  switch (type) {
+    case 'triangle': {
+      const f = ((cycle % 1) + 1) % 1;
+      return f < 0.5 ? f * 2 : 2 - f * 2;
+    }
+    case 'noise': return noise(seed, cycle);
+    case 'mouseX': return pointer.x;
+    case 'mouseY': return pointer.y;
+    case 'scroll': return pointer.scroll;
+    case 'sine': return (Math.sin(cycle * TWO_PI) + 1) / 2;
+    default: {
+      const read = signals.get(type);
+      if (read) return clamp(read(), 0, 1);
+      // Audio signal whose analyzer isn't running yet: rest at min
+      if (typeof type === 'string' && type.startsWith('audio:')) return 0;
+      return (Math.sin(cycle * TWO_PI) + 1) / 2; // unknown types fall back to sine
+    }
   }
 }

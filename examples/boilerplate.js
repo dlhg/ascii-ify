@@ -2,6 +2,10 @@
 
 import { AsciiIfy } from '../src/index.js';
 import { ScenePopup } from './scene-controls.js';
+import { createAudioDock } from './audio-dock.js';
+import { Reactivity, loadPatch } from './audio-reactivity.js';
+import { AudioPanel } from './audio-panel.js';
+import { profileFor, sceneName } from './audio-profiles.js';
 export { AsciiIfy };
 
 export function createApp({
@@ -12,6 +16,8 @@ export function createApp({
   onKeydown = null,
   showPanel = false,
   sceneControls = true,
+  audio = null,        // true/false, or omit to follow the ?audio URL flag
+  audioRecipe = true,  // apply this scene's audio profile (see audio-profiles.js)
 } = {}) {
   const canvas = document.getElementById('source');
   const ctx = canvas.getContext('2d');
@@ -32,6 +38,18 @@ export function createApp({
 
   if (showPanel) ascii.showPanel();
 
+  // Audio: one analyzer + dock, and (optionally) generic routes so any scene reacts.
+  const useAudio = audio ?? new URLSearchParams(location.search).has('audio');
+  let reactivity = null;
+  let audioPanel = null;
+  const audioDock = useAudio
+    ? createAudioDock({
+        intensity: audioRecipe,
+        onIntensity: (k) => reactivity?.setIntensity(k),
+        onOpenPanel: audioRecipe ? () => audioPanel?.show() : null,
+      })
+    : null;
+
   // Global scene controls (brightness/contrast/etc + speed) applied to the
   // source canvas each frame — see scene-controls.js.
   const scene = sceneControls ? new ScenePopup(document.body) : null;
@@ -40,9 +58,21 @@ export function createApp({
   document.addEventListener('keydown', (e) => {
     if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
     if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
+    if (audioPanel && e.key === '`') audioPanel.toggle(); // backtick: A/S/D/W belong to the games
     if (scene && (e.key === 'g' || e.key === 'G')) scene.toggle();
     if (onKeydown) onKeydown(e);
   });
+
+  if (audioDock && audioRecipe) {
+    // A saved patch for this scene wins over the scene's default profile.
+    const name = sceneName();
+    const defaults = () => profileFor(name, ascii);
+    const saved = loadPatch(name);
+    reactivity = new Reactivity({ ascii, scene, audio: audioDock.audio });
+    reactivity.load(saved ? saved.routes : defaults());
+    audioDock.setIntensity(reactivity.intensity);
+    audioPanel = new AudioPanel({ reactivity, dock: audioDock, sceneName: name, defaults, ascii, custom: !!saved });
+  }
 
   let lastTime = 0;
   let sceneTime = 0;       // speed-scaled clock, so time- and dt-based scenes both obey Speed
@@ -106,7 +136,7 @@ export function createApp({
     // Undo last frame's filter so the scene draws onto its own unaltered pixels.
     if (filtered) restorePristine();
 
-    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height });
+    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, audio: audioDock?.audio ?? null });
     applySceneFilter();
     ascii.render();
     requestAnimationFrame(loop);
@@ -118,6 +148,9 @@ export function createApp({
     ctx,
     ascii,
     scene,
+    audio: audioDock?.audio ?? null,
+    reactivity,
+    get audioPanel() { return audioPanel; },
     get width() { return canvas.width; },
     get height() { return canvas.height; },
   };

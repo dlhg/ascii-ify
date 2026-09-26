@@ -1,3 +1,5 @@
+import { isInputAutomation } from '../automation.js';
+
 // ─── DOM Helper ──────────────────────────────────────────
 export function h(tag, cls, content) {
   const el = document.createElement(tag);
@@ -164,7 +166,7 @@ export class BarControl {
   }
 
   _isInputType(type) {
-    return type === 'mouseX' || type === 'mouseY' || type === 'scroll';
+    return isInputAutomation(type);
   }
 
   _toggleInputType(type) {

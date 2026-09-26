@@ -5,6 +5,7 @@ import { EDGE_CHARSETS } from '../data/edge-charsets.js';
 import { COLOR_SCHEMES } from '../color/schemes.js';
 import { PATTERNS } from '../patterns.js';
 import { PARAM_RANGES } from '../data/defaults.js';
+import { isInputAutomation } from '../automation.js';
 
 const CHARSET_NAMES = CHARSETS.map(c => c.name);
 const EDGE_CHARSET_NAMES = EDGE_CHARSETS.map(c => c.name);
@@ -1191,7 +1192,7 @@ export class ControlPanel {
       if (!automation || typeof automation !== 'object' || Array.isArray(automation)) {
         return `Bad automation: ${key}`;
       }
-      if (automation.type != null && !AUTOMATION_TYPES.includes(automation.type)) {
+      if (automation.type != null && !AUTOMATION_TYPES.includes(automation.type) && !isInputAutomation(automation.type)) {
         return `Bad automation: ${key}`;
       }
       for (const numericKey of ['base', 'min', 'max', 'amount', 'rate', 'phase', 'seed']) {

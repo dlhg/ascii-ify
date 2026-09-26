@@ -108,6 +108,16 @@ export class Layer {
     return this._automations.set(key, this._automationValue(key), options);
   }
 
+  /** Add a modulation route (see AsciiIfy#route). */
+  route(key, route) {
+    return this._automations.route(key, this._automationValue(key), route);
+  }
+
+  /** Remove a route by index or source name. */
+  unroute(key, which) {
+    return this._automations.unroute(key, which);
+  }
+
   /** Stop animating one parameter and restore its base value. */
   stopAutomation(key, restore = true) {
     return this._automations.delete(key, restore);

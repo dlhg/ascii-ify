@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify — Audio Reactive</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #040408; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { clamp, lerp } from './utils.js';
+
+      // Without input, breathe on a synthetic signal so the page isn't dead.
+      function idleLevels(t) {
+        const s = (f, p) => 0.5 + 0.5 * Math.sin(t * f + p);
+        return { rms: 0.25, bass: 0.15 + 0.2 * s(1.1, 0), lowmid: 0.15 + 0.15 * s(0.8, 1),
+                 mid: 0.12 + 0.15 * s(1.3, 2), high: 0.1 + 0.12 * s(1.9, 3),
+                 kick: 0, snare: 0, hat: 0, centroid: 0.5 };
+      }
+
+      // ─── Scene state ──────────────────────────────────────
+      const sparks = new ParticlePool({ maxParticles: 900, drag: 0.985 });
+      const shocks = [];   // expanding rings fired by snares
+      let hue = 0;
+
+      // ─── Draw ─────────────────────────────────────────────
+      function draw(ctx, { time, dt, width: w, height: h, audio }) {
+        const t = time * 0.001;
+        const lv = audio.connected ? audio.levels : idleLevels(t);
+        const cx = w / 2, cy = h / 2;
+        const u = Math.min(w, h);
+
+        hue = (hue + dt * (10 + lv.centroid * 60)) % 360;
+
+        // Fade toward black for trails; bass makes the wipe shorter (more smear)
+        ctx.fillStyle = `rgba(0,0,0,${0.32 - lv.bass * 0.14})`;
+        ctx.fillRect(0, 0, w, h);
+
+        // Core orb — swells with bass
+        const coreR = u * (0.07 + lv.bass * 0.09);
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 1.8);
+        g.addColorStop(0, `rgba(255,255,255,${0.75 + lv.bass * 0.25})`);
+        g.addColorStop(0.55, `rgba(200,200,200,${0.35 + lv.bass * 0.4})`);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(cx, cy, coreR * 1.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // One ring per band: radius pushed out and line thickened by its level
+        const bands = ['lowmid', 'mid', 'high'];
+        bands.forEach((name, i) => {
+          const v = lv[name];
+          const r = u * (0.2 + i * 0.1) + v * u * 0.05;
+          const spin = t * (0.25 + i * 0.2) * (i % 2 ? -1 : 1);
+          const segs = 10 + i * 6;
+          ctx.strokeStyle = `rgba(255,255,255,${0.25 + v * 0.75})`;
+          ctx.lineWidth = 1.5 + v * 12;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          for (let s = 0; s < segs; s++) {
+            const a0 = spin + (s / segs) * Math.PI * 2;
+            ctx.moveTo(cx + Math.cos(a0) * r, cy + Math.sin(a0) * r);
+            ctx.arc(cx, cy, r, a0, a0 + (Math.PI * 2 / segs) * (0.35 + v * 0.45));
+          }
+          ctx.stroke();
+        });
+
+        // Snare shockwaves
+        for (let i = shocks.length - 1; i >= 0; i--) {
+          const s = shocks[i];
+          s.age += dt;
+          const p = s.age / 0.9;
+          if (p >= 1) { shocks[i] = shocks[shocks.length - 1]; shocks.pop(); continue; }
+          ctx.strokeStyle = `rgba(255,255,255,${(1 - p) * s.strength})`;
+          ctx.lineWidth = lerp(10, 1, p);
+          ctx.beginPath();
+          ctx.arc(cx, cy, u * (0.1 + p * 0.75), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Sparks (kick bursts + hat glitter)
+        sparks.update(dt);
+        sparks.forEach((p) => {
+          const a = clamp(p.life / p.max, 0, 1);
+          ctx.fillStyle = `rgba(255,255,255,${a})`;
+          ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+        });
+      }
+
+      // ─── App ──────────────────────────────────────────────
+      // The rendering reacts too: audio signals are bound as automation types,
+      // no per-frame code needed.
+      const app = createApp({
+        asciiConfig: {
+          background: '#040408',
+          sourceOpacity: 0,
+          fontSize: 12,
+          charset: 'density',
+          colorScheme: 'rainbow',
+          colorCycle: true,
+          pattern: 'waves',
+          patternMix: 0,
+          crtEnabled: true,
+          crtScanlines: 0.25,
+          crtGlow: 0.15,
+          automations: {
+            colorCycleRate: { type: 'audio:centroid', min: 0.2, max: 2.5 },
+            patternMix: { type: 'audio:mid', min: 0, max: 0.55 },
+            crtGlow: { type: 'audio:kick', min: 0.15, max: 0.85 },
+            crtDistortion: { type: 'audio:snare', min: 0, max: 0.12 },
+          },
+        },
+        draw,
+        audio: true,
+        audioRecipe: false, // this scene declares its own routes below
+      });
+      const audio = app.audio;
+
+      audio.on('kick', (s) => {
+        const { width: w, height: h } = app;
+        const r = Math.min(w, h) * 0.13;
+        sparks.emit(Math.round(16 + 34 * s), () => {
+          const a = Math.random() * Math.PI * 2;
+          const v = 140 + Math.random() * 380 * s;
+          return { x: w / 2 + Math.cos(a) * r, y: h / 2 + Math.sin(a) * r,
+                   vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+                   life: 0.7 + Math.random() * 0.8, max: 1.5, size: 1.5 + Math.random() * 2.5 };
+        });
+      });
+      audio.on('snare', (s) => shocks.push({ age: 0, strength: s }));
+      audio.on('hat', (s) => {
+        const { width: w, height: h } = app;
+        sparks.emit(3, () => ({
+          x: Math.random() * w, y: Math.random() * h, vx: 0, vy: -20,
+          life: 0.35, max: 0.35, size: 1 + s * 2,
+        }));
+      });
+
+    </script>
+  </body>
+</html>
