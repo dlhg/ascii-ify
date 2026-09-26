@@ -29,7 +29,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:perf": "node tests/perf/compare.mjs",
-    "test:perf:current": "playwright test tests/perf/perf.spec.js"
+    "test:perf:current": "playwright test tests/perf/perf.spec.js",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ascii",
