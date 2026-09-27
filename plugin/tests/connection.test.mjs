@@ -48,3 +48,20 @@ test('disconnect clears signals and stop prevents further callbacks', async () =
   await connection.poll();
   assert.equal(state, 'stopped');
 });
+test('a brief failed poll keeps the last packet; a longer outage disconnects', async () => {
+  let state, now = 0, fail = false;
+  const connection = new PluginConnection({ url: 'http://127.0.0.1/signals', onChange: s => { state = s; }, clock: () => now,
+    fetcher: async () => { if (fail) throw new Error('slow'); return { ok: true, json: async () => packet([local()]) }; } });
+  connection.running = true;
+  await connection.poll();
+  assert.equal(connection.packet.sources.length, 1);
+  fail = true; now = 2000; state = null;
+  await connection.poll();
+  assert.equal(state, null);
+  assert.equal(connection.packet.sources.length, 1);
+  now = 3000;
+  await connection.poll();
+  connection.stop();
+  assert.equal(state, 'disconnected');
+  assert.equal(connection.packet.sources.length, 0);
+});

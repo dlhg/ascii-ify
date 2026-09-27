@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ascii_plugin {
@@ -44,11 +45,19 @@ public:
     // Builds the /signals response. Public for tests.
     std::string signals(const std::string& query);
 private:
+    struct Transport { bool valid = false, playing = false; double tempo = 0, beat = 0; int64_t observed = 0; };
+    // Song position from whichever instance the host updated most recently.
+    Transport transport();
+    void follow();
     std::mutex mutex;
     std::vector<std::shared_ptr<LocalSource>> locals;
     int nextLocal = 1;
     std::vector<std::pair<std::string, int64_t>> requested; // Link channel id, last request time
     LinkReceiver link;
     Bridge bridge;
+    // Keeps our Link session on the host's tempo/beat even while no page is polling,
+    // so Live never adopts a stale timeline when it enables Link later.
+    std::thread follower;
+    std::atomic<bool> stopping{false};
 };
 }

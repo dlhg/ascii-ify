@@ -5,6 +5,9 @@ const finite = n => typeof n === 'number' && Number.isFinite(n);
 const text = (s, max = 256) => typeof s === 'string' && s.length <= max;
 const idPattern = /^(local:\d{1,6}|link:[0-9a-f]{16})$/;
 const maxSources = 256;
+// A busy page (heavy scene, slow machine) can miss a poll deadline while the device
+// is fine. Keep the last packet through short gaps instead of flashing "disconnected".
+const graceMs = 2500;
 
 export const emptyPacket = () => ({
   song: { valid: false, tempo: 0, beat: 0, playing: false },
@@ -53,6 +56,7 @@ export class PluginConnection {
     this.clock = clock;
     this.packet = emptyPacket();
     this.running = false;
+    this.lastOk = null;
   }
   start() {
     if (this.running) return;
@@ -64,6 +68,7 @@ export class PluginConnection {
     clearTimeout(this.timer);
     this.abort?.abort();
     this.packet = emptyPacket();
+    this.lastOk = null;
   }
   async poll() {
     if (!this.running) return;
@@ -79,9 +84,12 @@ export class PluginConnection {
       const packet = parseSignals(await response.json(), this.clock());
       if (!this.running) return;
       this.packet = packet;
+      this.lastOk = this.clock();
       this.onChange(connectionState(packet), packet);
     } catch {
       if (!this.running) return;
+      if (this.lastOk !== null && this.clock() - this.lastOk < graceMs) { delay = 100; return; }
+      this.lastOk = null;
       this.packet = emptyPacket();
       this.onChange('disconnected', this.packet);
       delay = 1000;

@@ -6,9 +6,9 @@
 
 namespace ascii_plugin {
 // Receives Live's tracks over Ableton Link Audio and meters the ones that are
-// subscribed. See plugin/docs/link-audio.md. Methods are called from one non-audio
-// thread (the HTTP worker) plus start/stop from the main thread; Link delivers audio
-// on its own thread.
+// subscribed. See plugin/docs/link-audio.md. Methods are thread-safe and called
+// from non-audio threads (the HTTP worker, Hub's follower, the main thread); Link
+// delivers audio on its own thread.
 class LinkReceiver {
 public:
     struct Channel {

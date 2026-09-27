@@ -1,4 +1,5 @@
 #include "Hub.h"
+#include <algorithm>
 #include <chrono>
 #include <iomanip>
 #include <locale>
@@ -54,6 +55,8 @@ std::shared_ptr<Hub> Hub::acquire() {
 }
 Hub::Hub() : bridge([this](const std::string& query) { return signals(query); }) {}
 Hub::~Hub() {
+    stopping = true;
+    if (follower.joinable()) follower.join();
     bridge.stop(); // The worker calls into link; stop it first.
     link.stop();
 }
@@ -71,7 +74,22 @@ void Hub::removeLocal(const std::shared_ptr<LocalSource>& source) {
 bool Hub::start(const std::string& directory) {
     if (!bridge.running() && !bridge.start(directory)) return false;
     link.start();
+    if (!follower.joinable()) follower = std::thread([this] { follow(); });
     return true;
+}
+void Hub::follow() {
+    while (!stopping.load()) {
+        if (const auto song = transport(); song.valid) link.followHost(song.tempo, song.beat, song.playing, song.observed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+Hub::Transport Hub::transport() {
+    std::lock_guard lock(mutex);
+    std::shared_ptr<LocalSource> clock;
+    for (const auto& source : locals)
+        if (source->transportValid && (!clock || source->transportMicros > clock->transportMicros)) clock = source;
+    if (!clock) return {};
+    return {true, clock->playing, clock->tempo, clock->beat, clock->transportMicros};
 }
 
 std::string Hub::signals(const std::string& query) {
@@ -93,25 +111,16 @@ std::string Hub::signals(const std::string& query) {
     }
     link.subscribe(subscribe);
 
-    // Song position comes from whichever instance the host updated most recently.
-    std::shared_ptr<LocalSource> clock;
-    for (const auto& source : sources)
-        if (source->transportValid && (!clock || source->transportMicros > clock->transportMicros)) clock = source;
-    double tempo = 0, beat = 0;
-    bool playing = false;
-    if (clock) {
-        tempo = clock->tempo; beat = clock->beat; playing = clock->playing;
-        const auto observed = clock->transportMicros.load();
-        link.followHost(tempo, beat, playing, observed);
-        if (playing) beat += static_cast<double>(time - observed) / 1e6 * tempo / 60;
-    }
+    const auto song = transport();
+    double beat = song.beat;
+    if (song.playing) beat += static_cast<double>(time - song.observed) / 1e6 * song.tempo / 60;
 
     std::ostringstream out;
     out.imbue(std::locale::classic());
     out << std::fixed << std::setprecision(6) << "{\"version\":2,\"features\":[";
     for (int f = 0; f < FeatureCount; ++f) out << (f ? "," : "") << '"' << featureNames[f] << '"';
-    out << "],\"song\":{\"valid\":" << (clock ? "true" : "false") << ",\"tempo\":" << tempo
-        << ",\"beat\":" << beat << ",\"playing\":" << (playing ? "true" : "false") << '}'
+    out << "],\"song\":{\"valid\":" << (song.valid ? "true" : "false") << ",\"tempo\":" << song.tempo
+        << ",\"beat\":" << beat << ",\"playing\":" << (song.playing ? "true" : "false") << '}'
         << ",\"link\":{\"running\":" << (link.running() ? "true" : "false") << ",\"peers\":" << link.peers() << '}'
         << ",\"sources\":[";
     bool first = true;

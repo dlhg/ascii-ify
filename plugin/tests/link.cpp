@@ -59,12 +59,14 @@ int main() {
         // A peer that joins later adopts our (older) session: it must get the host
         // tempo, never our constructor default, so Live keeps its own tempo. Link
         // breaks ties between sessions under 0.5 s apart randomly, so wait first.
+        // No page polls here: the hub must follow tempo changes on its own.
         std::this_thread::sleep_for(1200ms);
-        hub.signals("");
+        local->tempo = 127;
+        std::this_thread::sleep_for(200ms);
         FakeLive live(peer, {{"Kick Drum", 60, true}, {"Hats", 8000, false}, {"Say \"hi\" \\ bye", 700, false}});
         check(waitFor([&] { return live.link.numPeers() > 0; }), "Fake Live must discover the hub");
-        check(waitFor([&] { return std::abs(live.link.captureAppSessionState().tempo() - 133) < 0.01; }),
-            "A joining peer must adopt the host tempo");
+        check(waitFor([&] { return std::abs(live.link.captureAppSessionState().tempo() - 127) < 0.01; }),
+            "A joining peer must adopt the host tempo, even with no page open");
 
         std::string json;
         check(waitFor([&] { json = hub.signals(""); return !source(json, peer, "Hats").empty(); }), "Tracks must be listed");
