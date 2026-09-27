@@ -13,7 +13,7 @@ export function parseLevels(data) {
 }
 
 export class PluginConnection {
-  constructor({ url = new URL('levels', location.href), onChange = () => {}, fetcher = (...args) => globalThis.fetch(...args) } = {}) {
+  constructor({ url = new URL('../../levels', location.href), onChange = () => {}, fetcher = (...args) => globalThis.fetch(...args) } = {}) {
     this.url = url;
     this.onChange = onChange;
     this.fetcher = fetcher;

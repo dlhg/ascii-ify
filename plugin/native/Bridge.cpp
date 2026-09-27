@@ -27,7 +27,7 @@ void reply(int fd, int status, const std::string& mime, const std::string& body)
         "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n"
         "Content-Security-Policy: default-src 'self'; connect-src 'self'; "
         "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-        "frame-ancestors 'none'; base-uri 'none'\r\n\r\n" + body;
+        "frame-ancestors 'self'; base-uri 'none'\r\n\r\n" + body;
     size_t sent = 0;
     while (sent < response.size()) {
         const auto count = send(fd, response.data() + sent, response.size() - sent, 0);
@@ -50,7 +50,7 @@ bool Bridge::start(const std::string& directory) {
             assets.emplace(entry.path().lexically_relative(directory).generic_string(),
                 Asset{std::string(std::istreambuf_iterator<char>(file), {}), mimeFor(entry.path().extension())});
         }
-        if (!assets.count("index.html")) throw std::runtime_error("Bundled visuals are missing. Rebuild the plugin.");
+        if (!assets.count("plugin/web/index.html")) throw std::runtime_error("Bundled visuals are missing. Rebuild the plugin.");
         unsigned char bytes[16];
         arc4random_buf(bytes, sizeof(bytes));
         std::ostringstream hex;
@@ -87,7 +87,7 @@ void Bridge::stop() {
     port = 0;
 }
 std::string Bridge::url() const {
-    return port ? "http://127.0.0.1:" + std::to_string(port) + "/" + token + "/" : "";
+    return port ? "http://127.0.0.1:" + std::to_string(port) + "/" + token + "/plugin/web/index.html" : "";
 }
 void Bridge::run() {
     while (!stopping.load()) {
@@ -144,7 +144,7 @@ void Bridge::serve(int client) {
         return;
     }
     auto key = path.substr(prefix.size());
-    if (key.empty()) key = "index.html";
+    if (key.empty()) key = "plugin/web/index.html";
     if (key == "levels") reply(client, 200, "application/json", levels());
     else if (const auto found = assets.find(key); found != assets.end())
         reply(client, 200, found->second.mime, found->second.body);

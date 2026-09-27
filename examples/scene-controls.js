@@ -510,6 +510,16 @@ export class ScenePopup {
   open()  { this._popup.classList.add('open'); this._launcher.classList.add('active'); }
   close() { this._popup.classList.remove('open'); this._launcher.classList.remove('active'); }
   toggle() { this._popup.classList.contains('open') ? this.close() : this.open(); }
+  setLauncherHidden(hidden) { this._launcher.classList.toggle('hidden', hidden); }
+  range(key) { return this._cfgByKey[key]; }
+  effective(key) { return this._effective(this._cfgByKey[key]); }
+  setBase(key, value) {
+    const c = this._cfgByKey[key];
+    if (!c || !Number.isFinite(value)) return;
+    this.values[key] = Math.max(c.min, Math.min(c.max, value));
+    this._automations.updateBase(this._autoKey(c), this.values[key]);
+    this._updateRow(c);
+  }
 
   reset() {
     this._automations.clear(false); // don't restore bases — we're forcing defaults

@@ -100,5 +100,5 @@ bool DeinitModule() { return true; }
 BEGIN_FACTORY_DEF("ascii-ify", "https://github.com/dlhg/ascii-ify", "")
 DEF_CLASS2(INLINE_UID(0xA548E728, 0xD1AD4F2C, 0xBD808BC3, 0x9EF79D11),
     PClassInfo::kManyInstances, kVstAudioEffectClass, "ASCII Visuals", 0,
-    "Fx|Analyzer", "0.1.0", kVstVersionString, ascii_plugin::Plugin::createInstance)
+    "Fx|Analyzer", "0.2.1", kVstVersionString, ascii_plugin::Plugin::createInstance)
 END_FACTORY

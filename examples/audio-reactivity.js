@@ -238,6 +238,8 @@ export class Reactivity {
 
   _applyAscii(r) {
     const source = `audio:${r.source}`;
+    // Engine routes append; replace our previous route when a control is edited.
+    if (this._applied.some(([t, s]) => t === r.target && s === source)) this.ascii.unroute(r.target, source);
     this.ascii.route(r.target, {
       source,
       depth: r.depth * this.intensity,

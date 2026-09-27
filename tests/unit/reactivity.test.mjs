@@ -2,6 +2,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Reactivity } from '../../examples/audio-reactivity.js';
 import { profileFor, sceneKind } from '../../examples/audio-profiles.js';
+import { AutomationSet, registerSignal } from '../../src/automation.js';
+
+test('editing a route replaces the actual engine route and disabling restores its base', () => {
+  const params = { fontSize: 10 };
+  const matrix = new AutomationSet((key, value) => { params[key] = value; });
+  const unregister = registerSignal('audio:bass', () => 1);
+  try {
+    const ascii = {
+      get: key => params[key],
+      route: (key, route) => matrix.route(key, params[key], route),
+      unroute: (key, source) => matrix.unroute(key, source),
+    };
+    const rx = new Reactivity({ ascii, audio: { value: () => 1 } });
+    const route = rx.addRoute({ target: 'fontSize', source: 'bass', depth: 0.2, smooth: 0 });
+    for (const depth of [0.3, 0.4, 0.1]) {
+      rx.updateRoute(route.id, { depth }); matrix.apply(depth);
+      assert.equal(matrix.get('fontSize').routes.length, 1);
+    }
+    rx.setIntensity(0); matrix.apply(1);
+    assert.equal(params.fontSize, 10);
+    rx.removeRoute(route.id);
+    assert.equal(matrix.size, 0);
+    assert.equal(params.fontSize, 10);
+  } finally { unregister(); }
+});
 
 function rig(params = {}) {
   const engine = new Map();   // "target|source" → route

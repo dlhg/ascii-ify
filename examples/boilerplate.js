@@ -6,6 +6,8 @@ import { createAudioDock } from './audio-dock.js';
 import { Reactivity, loadPatch } from './audio-reactivity.js';
 import { AudioPanel } from './audio-panel.js';
 import { profileFor, sceneName } from './audio-profiles.js';
+import { registerSignal } from '../src/automation.js';
+import { embeddedHost, idleAudio } from './embedded-host.js';
 export { AsciiIfy };
 
 export function createApp({
@@ -19,6 +21,13 @@ export function createApp({
   audio = null,        // true/false, or omit to follow the ?audio URL flag
   audioRecipe = true,  // apply this scene's audio profile (see audio-profiles.js)
 } = {}) {
+  const host = embeddedHost();
+  if (host) {
+    // Prevent hidden, hard-coded audio routes from competing with the mapping UI.
+    const automations = Object.fromEntries(Object.entries(asciiConfig.automations || {})
+      .filter(([, value]) => !String(value.type).startsWith('audio:')));
+    asciiConfig = { ...asciiConfig, automations };
+  }
   const canvas = document.getElementById('source');
   const ctx = canvas.getContext('2d');
 
@@ -36,10 +45,10 @@ export function createApp({
     ascii.addLayer({ source: canvas, ...layerConfig });
   }
 
-  if (showPanel) ascii.showPanel();
+  if (showPanel && !host) ascii.showPanel();
 
   // Audio: one analyzer + dock, and (optionally) generic routes so any scene reacts.
-  const useAudio = audio ?? new URLSearchParams(location.search).has('audio');
+  const useAudio = !host && (audio ?? new URLSearchParams(location.search).has('audio'));
   let reactivity = null;
   let audioPanel = null;
   const audioDock = useAudio
@@ -53,9 +62,11 @@ export function createApp({
   // Global scene controls (brightness/contrast/etc + speed) applied to the
   // source canvas each frame — see scene-controls.js.
   const scene = sceneControls ? new ScenePopup(document.body) : null;
+  if (host && scene) scene.setLauncherHidden(true);
   let scratch = null; // lazily-created buffer for the filter post-process
 
   document.addEventListener('keydown', (e) => {
+    if (host?.onKeydown(e)) return;
     if (e.key === 'p' || e.key === 'P') ascii.togglePanel();
     if (e.key === 'e' || e.key === 'E') ascii.set('enabled', !ascii.get('enabled'));
     if (audioPanel && e.key === '`') audioPanel.toggle(); // backtick: A/S/D/W belong to the games
@@ -136,7 +147,7 @@ export function createApp({
     // Undo last frame's filter so the scene draws onto its own unaltered pixels.
     if (filtered) restorePristine();
 
-    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, audio: audioDock?.audio ?? null });
+    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, audio: host ? idleAudio : audioDock?.audio ?? null });
     applySceneFilter();
     ascii.render();
     requestAnimationFrame(loop);
@@ -148,12 +159,19 @@ export function createApp({
     ctx,
     ascii,
     scene,
-    audio: audioDock?.audio ?? null,
+    audio: host ? idleAudio : audioDock?.audio ?? null,
     reactivity,
     get audioPanel() { return audioPanel; },
     get width() { return canvas.width; },
     get height() { return canvas.height; },
   };
+
+  if (host) {
+    const unregister = host.sourceIds.map(id => registerSignal(`audio:${id}`, () => host.audio.value(id)));
+    // Let the example finish its synchronous setup before the host applies saved mappings.
+    queueMicrotask(() => host.attach(app, window));
+    window.addEventListener('pagehide', () => unregister.forEach(fn => fn()), { once: true });
+  }
 
   return app;
 }

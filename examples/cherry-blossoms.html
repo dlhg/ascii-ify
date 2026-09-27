@@ -179,7 +179,9 @@
         for (const tip of branchTips) {
           const pulse = 0.6 + 0.4 * Math.sin(t * 1.2 + tip.x * 0.05);
           const radius = 12 + pulse * 8;
-          const color = PINKS[(tip.x * 7 | 0) % PINKS.length];
+          // Branch tips can extend left of the canvas; wrap negative indices too.
+          const index = (tip.x * 7 | 0) % PINKS.length;
+          const color = PINKS[(index + PINKS.length) % PINKS.length];
           const grad = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, radius);
           grad.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${0.4 * pulse})`);
           grad.addColorStop(0.6, `rgba(${color[0]},${color[1]},${color[2]},${0.15 * pulse})`);
