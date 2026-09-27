@@ -75,6 +75,7 @@ body.hidden #hint { animation: hint 3s forwards; }
 .field input[type=range] { flex: 1; min-width: 0; }
 .field output { min-width: 47px; text-align: right; }
 .route-detail { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
+.route-timing { grid-template-columns: 1fr 1fr 1fr; margin-bottom: 4px; }
 .route-detail .field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
 .route-detail select, .route-detail input { width: 100%; min-width: 0; font: inherit; color: inherit; background: #142821; border: 1px solid #3b554d; border-radius: 5px; padding: 6px; }
 .route-live { display: flex; gap: 9px; align-items: center; color: #8fa99d; font-size: 10px; margin-top: 14px; }

@@ -34,6 +34,13 @@ test('version 1 files move to this device’s track', () => {
   old.patches.galaxy.routes[0].source = 'plugin/*/bass';
   assert.throws(() => cleanSetup(old, ['galaxy']), 'v1 files could not name tracks');
 });
+test('old song signals load as timed signals', () => {
+  const old = setup();
+  old.patches.galaxy.routes[0].source = 'song/bar';
+  assert.equal(cleanSetup(old, ['galaxy']).patches.galaxy.routes[0].source, 'song/ramp/1/bar/1');
+  old.patches.galaxy.routes.push({ ...route, source: 'song/ramp/1/bar/1' });
+  assert.throws(() => cleanSetup(old, ['galaxy']), 'a migrated key still counts as a duplicate');
+});
 test('scene presets use this device’s track and only signals the plugin measures', () => {
   assert.deepEqual(defaultRoutes([{ source: 'kick', target: 'crtGlow' }, { source: 'centroid', target: 'scene.hue' },
     { source: 'lowmid', target: 'fontSize' }, { source: 'mid', target: 'fontSize' }]),

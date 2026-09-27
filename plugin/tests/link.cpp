@@ -46,6 +46,7 @@ int main() {
         auto local = hub.addLocal();
         local->setName("Main");
         local->tempo = 133; local->beat = 8; local->playing = true; local->transportValid = true;
+        local->sigNumerator = 7; local->sigDenominator = 8; local->barStart = 7;
         local->transportMicros = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         check(hub.start(web.string()), "Hub must start");
@@ -55,6 +56,7 @@ int main() {
         check(first.find("\"features\":[\"rms\",\"bass\",\"mid\",\"high\",\"kick\",\"snare\",\"hat\"]") != std::string::npos, "Feature list");
         check(first.find("\"name\":\"Main\"") != std::string::npos, "Local track name must be reported");
         check(first.find("\"song\":{\"valid\":true,\"tempo\":133.000000") != std::string::npos, "Song tempo from host");
+        check(first.find("\"num\":7,\"den\":8,\"barStart\":7.000000}") != std::string::npos, "Time signature from host");
 
         // A peer that joins later adopts our (older) session: it must get the host
         // tempo, never our constructor default, so Live keeps its own tempo. Link

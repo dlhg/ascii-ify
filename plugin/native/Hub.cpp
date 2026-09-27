@@ -89,7 +89,8 @@ Hub::Transport Hub::transport() {
     for (const auto& source : locals)
         if (source->transportValid && (!clock || source->transportMicros > clock->transportMicros)) clock = source;
     if (!clock) return {};
-    return {true, clock->playing, clock->tempo, clock->beat, clock->transportMicros};
+    return {true, clock->playing, clock->tempo, clock->beat, clock->barStart,
+        clock->sigNumerator, clock->sigDenominator, clock->transportMicros};
 }
 
 std::string Hub::signals(const std::string& query) {
@@ -120,7 +121,8 @@ std::string Hub::signals(const std::string& query) {
     out << std::fixed << std::setprecision(6) << "{\"version\":2,\"features\":[";
     for (int f = 0; f < FeatureCount; ++f) out << (f ? "," : "") << '"' << featureNames[f] << '"';
     out << "],\"song\":{\"valid\":" << (song.valid ? "true" : "false") << ",\"tempo\":" << song.tempo
-        << ",\"beat\":" << beat << ",\"playing\":" << (song.playing ? "true" : "false") << '}'
+        << ",\"beat\":" << beat << ",\"playing\":" << (song.playing ? "true" : "false")
+        << ",\"num\":" << song.numerator << ",\"den\":" << song.denominator << ",\"barStart\":" << song.barStart << '}'
         << ",\"link\":{\"running\":" << (link.running() ? "true" : "false") << ",\"peers\":" << link.peers() << '}'
         << ",\"sources\":[";
     bool first = true;

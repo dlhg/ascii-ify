@@ -25,8 +25,10 @@ Each scene starts with an editable mapping preset. Open **Audio mappings** to:
 
 - Choose an input. The picker lists this device's track, every track Live shares
   over Link Audio, and **Song** signals. Each track offers **Level, Bass, Mids,
-  Highs** and **Kick, Snare and Hat hits**; Song offers **Beat pulse, Beat ramp,
-  Bar ramp** and **Playing**, following Live's tempo and transport. Type to search
+  Highs** and **Kick, Snare and Hat hits**; Song offers **Pulse, Ramp** and
+  **Playing**, following Live's tempo, time signature and transport. A pulse or
+  ramp's mapping sets its length (e.g. 4 bars or 3 8ths) and which bar or beat it
+  starts on. Type to search
   (e.g. "drums kick"); opening a track group previews its live meters.
 - Choose a destination: scene brightness/hue/speed, glyph size, glow, 3D rotation,
   and other numeric parameters. **Layer 1**, **Layer 2**, etc. destinations control

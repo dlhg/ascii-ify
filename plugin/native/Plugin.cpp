@@ -68,6 +68,14 @@ tresult PLUGIN_API Plugin::process(ProcessData& data) {
             local->tempo.store(context->tempo, std::memory_order_relaxed);
             local->beat.store(context->projectTimeMusic, std::memory_order_relaxed);
             local->playing.store((context->state & ProcessContext::kPlaying) != 0, std::memory_order_relaxed);
+            // Without a time signature, bars fall back to 4/4 counted from the song start.
+            const bool signature = (context->state & ProcessContext::kTimeSigValid)
+                && context->timeSigNumerator >= 1 && context->timeSigNumerator <= 64
+                && context->timeSigDenominator >= 1 && context->timeSigDenominator <= 64;
+            local->sigNumerator.store(signature ? context->timeSigNumerator : 4, std::memory_order_relaxed);
+            local->sigDenominator.store(signature ? context->timeSigDenominator : 4, std::memory_order_relaxed);
+            local->barStart.store((context->state & ProcessContext::kBarPositionValid) && std::isfinite(context->barPositionMusic)
+                ? context->barPositionMusic : 0, std::memory_order_relaxed);
             local->transportMicros.store(std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
             local->transportValid.store(true, std::memory_order_relaxed);

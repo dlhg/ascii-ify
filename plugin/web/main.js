@@ -2,7 +2,7 @@ import scenes from 'virtual:plugin-scenes';
 import buildInfo from 'virtual:plugin-build';
 import { PluginConnection } from './connection.js';
 import { cleanSetup, defaultRoutes, patchForScene } from './mappings.js';
-import { FEATURES, SONG, THIS_TRACK, sourceKey, sourceValue, sourceLabel, sourceProblem, channelsFor, trackGroups } from './sources.js';
+import { FEATURES, SONG, UNITS, MAX_COUNT, THIS_TRACK, sourceKey, parseSource, sourceValue, sourceLabel, sourceProblem, channelsFor, trackGroups } from './sources.js';
 import { openPicker, openPickerNow } from './picker.js';
 import { Reactivity } from '../../examples/audio-reactivity.js';
 import { listTargets, targetInfo, targetHint, destination, destinations, baseTargets, numericValue, routingEngine } from './targets.js';
@@ -158,6 +158,32 @@ function inputGroups(packet) {
     key: sourceKey.song(s.id), name: s.name, detail: s.detail, meter: sourceKey.song(s.id) })) });
   return groups;
 }
+// Timed song signals keep their length when switching between pulse and ramp.
+const timed = key => { const p = parseSource(key); return p?.count ? p : null; };
+const pickerKey = key => { const p = timed(key); return p ? sourceKey.song(p.signal) : key; };
+function pickedSource(key, current) {
+  const next = timed(key), now = timed(current);
+  return next && now ? sourceKey.song(next.signal, now) : key;
+}
+// Length, unit and first cycle for a pulse or ramp, e.g. every 4 bars from bar 3.
+function timingFields(length, change) {
+  const unit = UNITS.find(u => u.id === length.unit);
+  const count = element('input'); count.type = 'number'; count.setAttribute('aria-label', 'Length');
+  Object.assign(count, { min: 1, max: MAX_COUNT, step: 1, value: length.count });
+  count.onchange = () => {
+    const n = Math.round(Number(count.value));
+    if (!Number.isFinite(n) || n < 1) { count.value = length.count; return; }
+    const next = Math.min(MAX_COUNT, n);
+    change({ ...length, count: next, start: Math.min(length.start, next) });
+  };
+  const units = select(UNITS.map(u => ({ id: u.id, name: length.count === 1 ? u.one : u.many })), length.unit, 'Length unit');
+  units.onchange = () => change({ ...length, unit: units.value });
+  const start = select(Array.from({ length: length.count }, (_, i) => ({ id: String(i + 1), name: `${unit.one} ${i + 1}` })), String(length.start), 'Starts on');
+  start.onchange = () => change({ ...length, start: Number(start.value) });
+  const row = element('div', 'route-detail route-timing');
+  row.append(field('Length', count), field('Unit', units), field('Starts on', start));
+  return row;
+}
 function linkNote(packet) {
   const tracks = packet.sources.filter(s => s.kind === 'link').length;
   if (tracks) return `${tracks} Live track${tracks === 1 ? '' : 's'} available over Link Audio.`;
@@ -217,8 +243,8 @@ function renderRoutes() {
     }
     const source = pickButton('Input signal', sourceLabel(route.source, connection.packet), () => {
       sourcePicker = openPicker({ title: 'Choose an input', searchLabel: 'Search tracks and signals',
-        groups: inputGroups(connection.packet), selected: route.source, note: linkNote(connection.packet),
-        onPick: key => changePair({ source: key }) });
+        groups: inputGroups(connection.packet), selected: pickerKey(route.source), note: linkNote(connection.packet),
+        onPick: key => changePair({ source: pickedSource(key, route.source) }) });
     });
     source.dataset.source = route.source;
     const target = pickButton('Visual parameter', `${targetInfo(route.target).group} · ${targetInfo(route.target).label}`, () => {
@@ -228,6 +254,8 @@ function renderRoutes() {
     const remove = element('button', 'remove', '×'); remove.setAttribute('aria-label', 'Remove mapping');
     remove.onclick = () => rx.removeRoute(route.id);
     top.append(toggle, source, element('span', '', '→'), target, remove); card.append(top);
+    const length = timed(route.source);
+    if (length) card.append(timingFields(length, next => changePair({ source: sourceKey.song(length.signal, next) })));
     card.append(slider('Amount', route.depth, -1, 1, 0.01, n => rx.updateRoute(route.id, { depth: n }), n => `${n > 0 ? '+' : ''}${Math.round(n * 100)}%`));
     card.append(slider('Smoothing', route.smooth, 0, 3, 0.01, n => rx.updateRoute(route.id, { smooth: n }), n => `${n.toFixed(2)} s`));
     const detail = element('div', 'route-detail');

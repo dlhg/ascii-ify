@@ -19,6 +19,12 @@ test('valid packets clamp values and distinguish live, silence, stop and bypass'
   assert.equal(connectionState(bypassed), 'bypass');
   assert.deepEqual(bypassed.sources[0].values, [0, 0, 0, 0, 0, 0, 0], 'sources that are not live read zero');
 });
+test('time signature defaults to 4/4 when missing or invalid', () => {
+  assert.deepEqual(parseSignals(packet()).song, { valid: true, tempo: 120, beat: 4, playing: true, num: 4, den: 4, barStart: 0 });
+  const song = { valid: true, tempo: 120, beat: 4, playing: true, num: 7, den: 8, barStart: 3.5 };
+  assert.deepEqual(parseSignals(packet([], { song })).song, song);
+  assert.deepEqual(parseSignals(packet([], { song: { ...song, num: 0, barStart: NaN } })).song, { ...song, num: 4, den: 4, barStart: 0 });
+});
 test('invalid packets cannot inject invalid visual parameters', () => {
   for (const data of [null, {}, { version: 1 }, packet([local({ values: [NaN, 0, 0, 0, 0, 0, 0] })]),
     packet([local({ values: [0, 0] })]), packet([link({ id: 'link:xyz' })]), packet([link({ kind: 'local' })]),

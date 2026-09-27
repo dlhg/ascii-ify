@@ -13,7 +13,8 @@ namespace ascii_plugin {
 // transport atomics; the host's main thread writes `name`.
 struct LocalSource {
     Signals signals;
-    std::atomic<double> tempo{0}, beat{0};
+    std::atomic<double> tempo{0}, beat{0}, barStart{0};
+    std::atomic<int> sigNumerator{4}, sigDenominator{4};
     std::atomic<int64_t> transportMicros{0};
     std::atomic<bool> playing{false}, transportValid{false};
     int id = 0;
@@ -45,7 +46,12 @@ public:
     // Builds the /signals response. Public for tests.
     std::string signals(const std::string& query);
 private:
-    struct Transport { bool valid = false, playing = false; double tempo = 0, beat = 0; int64_t observed = 0; };
+    struct Transport {
+        bool valid = false, playing = false;
+        double tempo = 0, beat = 0, barStart = 0;
+        int numerator = 4, denominator = 4;
+        int64_t observed = 0;
+    };
     // Song position from whichever instance the host updated most recently.
     Transport transport();
     void follow();

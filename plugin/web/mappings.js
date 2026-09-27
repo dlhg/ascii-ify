@@ -1,5 +1,5 @@
 import { knownTarget, sceneTarget, baseTargets } from './targets.js';
-import { validSource, sourceKey, THIS_TRACK } from './sources.js';
+import { validSource, canonicalSource, sourceKey, THIS_TRACK } from './sources.js';
 
 // Older presets offered globals which are overridden in layered scenes. Move
 // those mappings to the visible layers; an existing explicit All layers route wins.
@@ -27,7 +27,7 @@ export function cleanPatch(patch, version = 2) {
       || typeof patch.enabled !== 'boolean') throw new Error('Invalid mapping settings.');
   const pairs = new Set();
   const routes = patch.routes.map(raw => {
-    const r = raw && version === 1 ? { ...raw, source: migrateSource(raw.source) } : raw;
+    const r = raw && (version === 1 ? { ...raw, source: migrateSource(raw.source) } : { ...raw, source: canonicalSource(raw.source) });
     if (!r || !validSource(r.source) || !knownTarget(r.target)
         || !finite(r.depth, -1, 1) || !finite(r.smooth, 0, 3)
         || !['linear', 'exp', 'log'].includes(r.curve)

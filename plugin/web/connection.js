@@ -10,7 +10,7 @@ const maxSources = 256;
 const graceMs = 2500;
 
 export const emptyPacket = () => ({
-  song: { valid: false, tempo: 0, beat: 0, playing: false },
+  song: { valid: false, tempo: 0, beat: 0, playing: false, num: 4, den: 4, barStart: 0 },
   link: { running: false, peers: 0 }, sources: [], receivedAt: 0,
 });
 
@@ -32,7 +32,12 @@ export function parseSignals(data, receivedAt = 0) {
       : { id: s.id, kind: s.kind, name: s.name, live: s.live, bypass: s.bypass, values };
   });
   const { valid, tempo, beat, playing } = data.song;
-  return { song: { valid, tempo, beat, playing }, link: { running: data.link.running, peers: data.link.peers }, sources, receivedAt };
+  // Time signature and the latest bar start; older plugins and some hosts omit them.
+  const meter = n => Number.isInteger(n) && n >= 1 && n <= 64;
+  const signed = meter(data.song.num) && meter(data.song.den);
+  const song = { valid, tempo, beat, playing, num: signed ? data.song.num : 4, den: signed ? data.song.den : 4,
+    barStart: finite(data.song.barStart) ? data.song.barStart : 0 };
+  return { song, link: { running: data.link.running, peers: data.link.peers }, sources, receivedAt };
 }
 
 /** One word for the header: live, silent, waiting, bypass (or disconnected, set by the poller). */

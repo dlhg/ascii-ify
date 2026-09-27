@@ -6,7 +6,9 @@
 //   link/<peer>/<track>/<feature>   a Live track received over Link Audio
 //   plugin/<track>/<feature>        the track an ASCII Visuals device sits on
 //   plugin/*/<feature>              whichever track the first device sits on
-//   song/<signal>                   tempo-synced signals from Live's transport
+//   song/<signal>/<count>/<unit>/<start>   a pulse or ramp repeating every <count>
+//                                   units, starting on unit <start> (1-based)
+//   song/playing                    Live's transport state
 //
 // Link channel ids only last while a channel exists, so routes store names and are
 // resolved against the latest /signals packet.
@@ -21,14 +23,25 @@ export const FEATURES = [
   { id: 'snare', name: 'Snare hits', kind: 'hit' },
   { id: 'hat', name: 'Hat hits', kind: 'hit' },
 ];
+// Timed signals repeat over a length chosen on the mapping; `length` is the default.
 export const SONG = [
-  { id: 'pulse', name: 'Beat pulse', detail: 'Jumps on every beat, then fades' },
-  { id: 'beat', name: 'Beat ramp', detail: 'Rises from 0 to 1 across each beat' },
-  { id: 'bar', name: 'Bar ramp', detail: 'Rises from 0 to 1 across each 4-beat bar' },
+  { id: 'pulse', name: 'Pulse', detail: 'Jumps at the start of each cycle, then fades. Set its length on the mapping.', length: { count: 1, unit: 'beat', start: 1 } },
+  { id: 'ramp', name: 'Ramp', detail: 'Rises from 0 to 1 across each cycle. Set its length on the mapping.', length: { count: 1, unit: 'bar', start: 1 } },
   { id: 'playing', name: 'Playing', detail: '1 while Live is playing' },
 ];
+// Bars follow Live's time signature; the others are fractions of a quarter-note beat.
+export const UNITS = [
+  { id: '16th', one: '16th', many: '16ths', perBeat: 4 },
+  { id: '8th', one: '8th', many: '8ths', perBeat: 2 },
+  { id: 'beat', one: 'beat', many: 'beats', perBeat: 1 },
+  { id: 'bar', one: 'bar', many: 'bars' },
+];
+export const MAX_COUNT = 64;
 const featureIds = new Set(FEATURES.map(f => f.id));
-const songIds = new Set(SONG.map(s => s.id));
+const timedIds = new Set(SONG.filter(s => s.length).map(s => s.id));
+const unitIds = new Set(UNITS.map(u => u.id));
+// Keys from before lengths were configurable.
+const legacySong = { pulse: 'song/pulse/1/beat/1', beat: 'song/ramp/1/beat/1', bar: 'song/ramp/1/bar/1' };
 const maxPart = 256;
 
 const enc = encodeURIComponent;
@@ -36,8 +49,15 @@ export const THIS_TRACK = '*';
 export const sourceKey = {
   link: (peer, track, feature) => `link/${enc(peer)}/${enc(track)}/${feature}`,
   plugin: (track, feature) => `plugin/${track === THIS_TRACK ? THIS_TRACK : enc(track)}/${feature}`,
-  song: signal => `song/${signal}`,
+  song: (signal, { count, unit, start } = SONG.find(s => s.id === signal).length ?? {}) =>
+    (timedIds.has(signal) ? `song/${signal}/${count}/${unit}/${start}` : `song/${signal}`),
 };
+/** The current form of a route source key; older song keys are rewritten. */
+export function canonicalSource(key) {
+  const name = /^song\/(\w+)$/.exec(key)?.[1];
+  return name && Object.hasOwn(legacySong, name) ? legacySong[name] : key;
+}
+const whole = (text, max) => (/^[1-9]\d{0,2}$/.test(text) && Number(text) <= max ? Number(text) : null);
 
 /** Parse a route source; returns null when it is not a supported source. */
 export function parseSource(key) {
@@ -46,12 +66,17 @@ export function parseSource(key) {
   let decoded;
   try { decoded = parts.map(p => decodeURIComponent(p)); } catch { return null; }
   if (decoded.some(p => p.length > maxPart)) return null;
+  if (canonicalSource(key) !== key) return parseSource(canonicalSource(key));
   const [kind] = decoded;
   if (kind === 'link' && parts.length === 4 && decoded[1] && decoded[2] && featureIds.has(decoded[3]))
     return { kind, peer: decoded[1], track: decoded[2], feature: decoded[3] };
   if (kind === 'plugin' && parts.length === 3 && decoded[1] && featureIds.has(decoded[2]))
     return { kind, track: parts[1] === THIS_TRACK ? THIS_TRACK : decoded[1], feature: decoded[2] };
-  if (kind === 'song' && parts.length === 2 && songIds.has(decoded[1])) return { kind, signal: decoded[1] };
+  if (kind === 'song' && parts.length === 2 && decoded[1] === 'playing') return { kind, signal: 'playing' };
+  if (kind === 'song' && parts.length === 5 && timedIds.has(decoded[1]) && unitIds.has(decoded[3])) {
+    const count = whole(decoded[2], MAX_COUNT), start = whole(decoded[4], MAX_COUNT);
+    if (count && start && start <= count) return { kind, signal: decoded[1], count, unit: decoded[3], start };
+  }
   return null;
 }
 export const validSource = key => parseSource(key) !== null;
@@ -73,8 +98,17 @@ export function songAt(packet, now) {
   const song = packet?.song;
   if (!song?.valid) return null;
   const elapsed = Math.max(0, Math.min(1000, now - packet.receivedAt)) / 1000;
-  return { ...song, beat: song.playing ? song.beat + elapsed * song.tempo / 60 : song.beat };
+  return { num: 4, den: 4, barStart: 0, ...song, beat: song.playing ? song.beat + elapsed * song.tempo / 60 : song.beat };
 }
+
+/** Song position in `unit`s. Bars assume the current time signature held since bar 1. */
+function position(song, unit) {
+  if (unit !== 'bar') return song.beat * UNITS.find(u => u.id === unit).perBeat;
+  const barLength = song.num * 4 / song.den;
+  return (song.beat - song.barStart) / barLength + Math.round(song.barStart / barLength);
+}
+/** 0..1 through the current cycle of a timed song signal. */
+export const cyclePhase = (song, { count, unit, start }) => frac((position(song, unit) - (start - 1)) / count);
 
 /** Current 0..1 value of a route source. Level features are square-rooted for a livelier response. */
 export function sourceValue(packet, key, now = performance.now()) {
@@ -85,9 +119,8 @@ export function sourceValue(packet, key, now = performance.now()) {
     if (!song) return 0;
     if (parsed.signal === 'playing') return song.playing ? 1 : 0;
     if (!song.playing) return 0;
-    if (parsed.signal === 'beat') return frac(song.beat);
-    if (parsed.signal === 'bar') return frac(song.beat / 4);
-    return Math.pow(1 - frac(song.beat), 3); // pulse
+    const phase = cyclePhase(song, parsed);
+    return parsed.signal === 'ramp' ? phase : Math.pow(1 - phase, 3);
   }
   const track = findTrack(packet, parsed);
   if (!track?.live) return 0;
@@ -110,7 +143,12 @@ export function channelsFor(packet, keys) {
 export function sourceLabel(key, packet) {
   const parsed = parseSource(key);
   if (!parsed) return 'Unknown input';
-  if (parsed.kind === 'song') return `Song · ${SONG.find(s => s.id === parsed.signal).name}`;
+  if (parsed.kind === 'song') {
+    const name = `Song · ${SONG.find(s => s.id === parsed.signal).name}`;
+    if (!parsed.count) return name;
+    const unit = UNITS.find(u => u.id === parsed.unit);
+    return `${name} · ${parsed.count} ${parsed.count === 1 ? unit.one : unit.many}${parsed.start > 1 ? ` from ${unit.one} ${parsed.start}` : ''}`;
+  }
   const feature = FEATURES.find(f => f.id === parsed.feature).name;
   if (parsed.kind === 'plugin' && parsed.track === THIS_TRACK) {
     const name = findTrack(packet, parsed)?.name;
