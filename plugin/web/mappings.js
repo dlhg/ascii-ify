@@ -1,4 +1,5 @@
 import { knownTarget, sceneTarget, baseTargets } from './targets.js';
+import { validSource, sourceKey, THIS_TRACK } from './sources.js';
 
 // Older presets offered globals which are overridden in layered scenes. Move
 // those mappings to the visible layers; an existing explicit All layers route wins.
@@ -17,18 +18,17 @@ export function patchForScene(patch, ascii) {
   return { ...patch, routes, bases };
 }
 
-export const INPUTS = [
-  { id: 'rms', name: 'Loudness' }, { id: 'bass', name: 'Bass' },
-  { id: 'mid', name: 'Mids' }, { id: 'high', name: 'Highs' },
-];
-const sourceIds = new Set(INPUTS.map(s => s.id));
+// Version 1 files only knew the device's own track and four levels.
+const v1Sources = new Set(['rms', 'bass', 'mid', 'high']);
+const migrateSource = source => (v1Sources.has(source) ? sourceKey.plugin(THIS_TRACK, source) : null);
 const finite = (n, min, max) => typeof n === 'number' && Number.isFinite(n) && n >= min && n <= max;
-export function cleanPatch(patch) {
+export function cleanPatch(patch, version = 2) {
   if (!patch || !Array.isArray(patch.routes) || patch.routes.length > 64 || !finite(patch.intensity, 0, 4)
       || typeof patch.enabled !== 'boolean') throw new Error('Invalid mapping settings.');
   const pairs = new Set();
-  const routes = patch.routes.map(r => {
-    if (!r || !sourceIds.has(r.source) || !knownTarget(r.target)
+  const routes = patch.routes.map(raw => {
+    const r = raw && version === 1 ? { ...raw, source: migrateSource(raw.source) } : raw;
+    if (!r || !validSource(r.source) || !knownTarget(r.target)
         || !finite(r.depth, -1, 1) || !finite(r.smooth, 0, 3)
         || !['linear', 'exp', 'log'].includes(r.curve)
         || typeof r.enabled !== 'boolean' || typeof r.bipolar !== 'boolean')
@@ -47,19 +47,31 @@ export function cleanPatch(patch) {
   return { intensity: patch.intensity, enabled: patch.enabled, bases, routes };
 }
 export function cleanSetup(data, sceneIds) {
-  if (!data || data.version !== 1 || !sceneIds.includes(data.scene) || !data.patches
+  if (!data || ![1, 2].includes(data.version) || !sceneIds.includes(data.scene) || !data.patches
       || typeof data.patches !== 'object' || Array.isArray(data.patches)) throw new Error('Not an ASCII Visuals mapping file.');
   const patches = {};
   for (const [id, patch] of Object.entries(data.patches)) {
     if (!sceneIds.includes(id)) throw new Error(`Unknown scene: ${id}`);
-    patches[id] = cleanPatch(patch);
+    patches[id] = cleanPatch(patch, data.version);
   }
-  return { version: 1, scene: data.scene, patches };
+  return { version: 2, scene: data.scene, patches };
 }
+// Scene presets (examples/audio-profiles.js) use the browser analyser's signal
+// names. Map them onto this device's track; signals the plugin lacks are dropped.
+const presetFeatures = { rms: 'rms', bass: 'bass', lowmid: 'mid', mid: 'mid', high: 'high', kick: 'kick', snare: 'snare', hat: 'hat', onset: 'kick' };
 export function defaultRoutes(profile) {
-  const routes = profile.filter(r => sourceIds.has(r.source));
+  const seen = new Set();
+  const routes = profile.flatMap(r => {
+    const feature = presetFeatures[r.source];
+    if (!feature) return [];
+    const route = { ...r, source: sourceKey.plugin(THIS_TRACK, feature) };
+    const pair = `${route.source}:${route.target}`;
+    if (seen.has(pair)) return [];
+    seen.add(pair);
+    return [route];
+  });
   return routes.length ? routes : [
-    { target: 'scene.brightness', source: 'rms', depth: 0.2, smooth: 0.15 },
-    { target: 'crtGlow', source: 'bass', depth: 0.3, smooth: 0.1 },
+    { target: 'scene.brightness', source: sourceKey.plugin(THIS_TRACK, 'rms'), depth: 0.2, smooth: 0.15 },
+    { target: 'crtGlow', source: sourceKey.plugin(THIS_TRACK, 'bass'), depth: 0.3, smooth: 0.1 },
   ];
 }

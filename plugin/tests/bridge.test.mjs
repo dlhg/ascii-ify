@@ -9,6 +9,7 @@ import { readFile } from 'node:fs/promises';
 
 const directory = fileURLToPath(new URL('../build/native/VST3/Release/ASCII Visuals.vst3', import.meta.url));
 const executable = fileURLToPath(new URL('../build/native/bin/Release/ascii-bridge-fixture', import.meta.url));
+const senderExecutable = fileURLToPath(new URL('../build/native/bin/Release/ascii-link-sender', import.meta.url));
 const { version: pluginVersion } = JSON.parse(await readFile(new URL('../version.json', import.meta.url), 'utf8'));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function fixture(t) {
@@ -30,8 +31,35 @@ async function fixture(t) {
     child.once('error', error => { clearTimeout(timeout); reject(error); });
     child.once('exit', () => { clearTimeout(timeout); reject(new Error(stderr || 'Fixture exited')); });
   });
-  const levels = async () => (await fetch(new URL('../../levels', url))).json();
+  // The device's own track: { live, bypass, values: [rms, bass, mid, high, kick, snare, hat] }.
+  const levels = async () => (await (await fetch(new URL('../../signals', url))).json()).sources.find(s => s.kind === 'local');
   return { child, url, levels, command: text => child.stdin.write(text) };
+}
+// A Link Audio peer standing in for Live, publishing "Kick Drum" (60 Hz bursts),
+// "Hats" (8 kHz) and "Pad \"Wide\"" under a unique peer name.
+async function sender(t) {
+  const peer = `ASCII Test Live ${process.pid}-${Math.random().toString(36).slice(2, 7)}`;
+  const child = spawn(senderExecutable, [peer], { stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(async () => {
+    if (child.exitCode !== null) return;
+    const exited = once(child, 'exit');
+    child.stdin.write('q');
+    await exited;
+  });
+  await new Promise((resolve, reject) => {
+    createInterface({ input: child.stdout }).once('line', resolve);
+    child.once('exit', () => reject(new Error('Sender exited')));
+  });
+  return peer;
+}
+// Choose from a picker opened by the button with this accessible label.
+async function pick(page, label, group, item) {
+  await page.getByLabel(label, { exact: true }).last().click();
+  const sheet = page.locator('.picker');
+  const exact = text => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  if (group) await sheet.locator('.picker-group').filter({ has: page.locator('.picker-name', { hasText: exact(group) }) }).first().click();
+  await sheet.locator('.picker-item').filter({ has: page.locator('.picker-name', { hasText: exact(item) }) }).first().click();
+  await sheet.waitFor({ state: 'detached' });
 }
 
 test('real native bridge serves bundled visuals, isolates instances and handles audio lifecycle', { timeout: 20000 }, async t => {
@@ -41,20 +69,20 @@ test('real native bridge serves bundled visuals, isolates instances and handles 
   await first.levels();
   await delay(100);
   const bass = await first.levels();
-  assert.equal(bass.active, true);
-  assert.ok(bass.bass > bass.high * 4);
+  assert.equal(bass.live, true);
+  assert.ok(bass.values[1] > bass.values[3] * 4);
   const page = await fetch(first.url);
   assert.equal(page.status, 200);
   assert.deepEqual(await (await fetch(new URL('../../info', first.url))).json(), { pluginVersion });
   assert.match(await page.text(), /ASCII Visuals/);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'self'/);
   assert.equal(page.headers.get('access-control-allow-origin'), null);
-  assert.equal((await fetch(new URL('/levels', first.url))).status, 404);
+  assert.equal((await fetch(new URL('/signals', first.url))).status, 404);
   assert.equal((await fetch(new URL('../index.html', first.url))).status, 404);
-  assert.equal((await fetch(new URL('../../levels', first.url), { headers: { Origin: 'https://example.com' } })).status, 403);
-  assert.equal((await fetch(new URL('../../levels', first.url), { method: 'POST' })).status, 403);
+  assert.equal((await fetch(new URL('../../signals', first.url), { headers: { Origin: 'https://example.com' } })).status, 403);
+  assert.equal((await fetch(new URL('../../signals', first.url), { method: 'POST' })).status, 403);
   const wrongHost = await new Promise((resolve, reject) => {
-    const req = http.get(new URL('../../levels', first.url), { headers: { Host: 'example.com' } }, res => {
+    const req = http.get(new URL('../../signals', first.url), { headers: { Host: 'example.com' } }, res => {
       res.resume(); resolve(res.statusCode);
     });
     req.on('error', reject);
@@ -63,21 +91,21 @@ test('real native bridge serves bundled visuals, isolates instances and handles 
   first.command('b');
   await delay(80);
   assert.equal((await first.levels()).bypass, true);
-  assert.equal((await first.levels()).bass, 0);
+  assert.equal((await first.levels()).values[1], 0);
   assert.equal((await second.levels()).bypass, false);
   first.command('r');
   await delay(80);
-  assert.equal((await first.levels()).active, true);
+  assert.equal((await first.levels()).live, true);
   first.command('p');
   await delay(50);
   await first.levels();
   await delay(450);
   const stale = await first.levels();
-  assert.equal(stale.active, false);
-  assert.equal(stale.rms, 0);
+  assert.equal(stale.live, false);
+  assert.equal(stale.values[0], 0);
   first.command('r');
   await delay(80);
-  assert.equal((await first.levels()).active, true);
+  assert.equal((await first.levels()).live, true);
 });
 
 test('browser renders the native audio stream and reports disconnects', { timeout: 30000 }, async t => {
@@ -137,8 +165,8 @@ test('mappings change real parameters, disable cleanly, and survive scene change
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
   await page.click('#clear-mappings');
   await page.click('#add-mapping');
-  await page.getByLabel('Visual parameter', { exact: true }).selectOption('layer.0.fontSize');
-  await page.getByLabel('Input signal', { exact: true }).selectOption('bass');
+  await pick(page, 'Visual parameter', 'Layer 1', 'Glyph size');
+  await pick(page, 'Input signal', null, 'Bass');
   await page.getByLabel('Resting value', { exact: true }).fill('10');
   await page.getByLabel('Resting value', { exact: true }).press('Tab');
   async function slide(label, value) {
@@ -183,7 +211,7 @@ test('mappings change real parameters, disable cleanly, and survive scene change
   await page.getByLabel('Remove mapping', { exact: true }).click();
   await page.waitForFunction(() => Math.abs(window.asciiIfyHost.current.app.ascii.layers[0].get('fontSize') - 10) < 0.01);
   await page.click('#add-mapping');
-  await page.getByLabel('Visual parameter', { exact: true }).selectOption('scene.brightness');
+  await pick(page, 'Visual parameter', 'Scene look', 'Brightness');
   await page.getByLabel('Resting value', { exact: true }).fill('0.5');
   await page.getByLabel('Resting value', { exact: true }).press('Tab');
   await slide('Smoothing', '0');
@@ -208,8 +236,13 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
   await page.click('#clear-mappings');
   const bases = await page.evaluate(() => window.asciiIfyHost.current.app.ascii.layers.map(l => l.get('fontSize')));
   await page.click('#add-mapping');
-  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).inputValue(), 'layer.all.fontSize');
-  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).locator('option[value="fontSize"]').count(), 0);
+  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).textContent(), 'All layers · Glyph size');
+  await page.getByLabel('Visual parameter', { exact: true }).click();
+  await page.locator('.picker-search').fill('glyph size');
+  const glyphSizes = (await page.locator('.picker-item .picker-name').allTextContents()).filter(n => n.endsWith('Glyph size'));
+  assert.equal(glyphSizes[0], 'All layers · Glyph size');
+  assert.ok(!glyphSizes.includes('Glyphs · Glyph size'), 'layered scenes hide the overridden global glyph size');
+  await page.keyboard.press('Escape');
   assert.equal(await page.getByLabel('Resting value', { exact: true }).inputValue(), '');
   assert.equal(await page.getByLabel('Resting value', { exact: true }).getAttribute('placeholder'), 'Mixed');
   await page.waitForFunction(bases => window.asciiIfyHost.current.app.ascii.layers.every((l, i) => l.get('fontSize') > bases[i] + 1), bases);
@@ -221,8 +254,8 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
   assert.deepEqual(bases.map((_, i) => patch.bases[`layer.${i}.fontSize`]), bases);
   await page.click('#add-mapping');
   // The new individual mapping uses the same input as the All layers mapping.
-  await page.getByLabel('Visual parameter', { exact: true }).last().selectOption('layer.0.fontSize');
-  await page.getByLabel('Input signal', { exact: true }).last().selectOption('rms');
+  await pick(page, 'Visual parameter', 'Layer 1', 'Glyph size');
+  await pick(page, 'Input signal', null, 'Level');
   await page.waitForFunction(() => window.asciiIfyHost.current.app.ascii.layers[0].getAutomation('fontSize').routes.length === 2);
   await page.getByLabel('Remove mapping', { exact: true }).first().click();
   await page.waitForFunction(bases => {
@@ -240,7 +273,7 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'cityscape');
   await page.selectOption('#scene', 'galaxy');
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
-  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).inputValue(), 'layer.all.fontSize');
+  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).textContent(), 'All layers · Glyph size');
   assert.equal(await page.getByLabel('Resting value', { exact: true }).inputValue(), '12');
   const oldSetup = { version: 1, scene: 'galaxy', patches: { galaxy: {
     routes: [{ target: 'fontSize', source: 'rms', depth: 0.1, smooth: 0, curve: 'linear', enabled: true, bipolar: false }],
@@ -251,7 +284,7 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
     const session = window.asciiIfyHost.current;
     return session?.rx.routes[0]?.target === 'layer.all.fontSize' && session.app.ascii.layers.every(l => l.getAutomation('fontSize')?.base === 10 && l.get('fontSize') > 11);
   });
-  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).inputValue(), 'layer.all.fontSize');
+  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).textContent(), 'All layers · Glyph size');
   assert.doesNotMatch(await page.locator('#routes').textContent(), /This scene uses layers/);
   assert.deepEqual(errors, []);
 });
@@ -288,5 +321,67 @@ test('every bundled scene renders with live mapping controls', { timeout: 180000
   await page.goto(new URL('../../examples/galaxy.html?audio', live.url).href);
   await page.locator('#audio-dock').waitFor();
   assert.equal(await page.locator('#scene-frame').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('any Live track shared over Link Audio can drive a parameter', { timeout: 60000 }, async t => {
+  const { chromium } = await import('@playwright/test');
+  const live = await fixture(t);
+  const peer = await sender(t);
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  page.setDefaultTimeout(15000);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.stack || error.message));
+  await page.goto(live.url);
+  await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
+  await page.click('#clear-mappings');
+  await page.click('#add-mapping');
+  await pick(page, 'Visual parameter', 'Scene look', 'Brightness');
+  await page.getByLabel('Resting value', { exact: true }).fill('0.5');
+  await page.getByLabel('Resting value', { exact: true }).press('Tab');
+  await page.getByLabel('Amount', { exact: true }).evaluate(el => { el.value = '0.4'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.getByLabel('Smoothing', { exact: true }).evaluate(el => { el.value = '0'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+
+  // The picker lists the peer's tracks, streams them while open, and names hits.
+  await page.getByLabel('Input signal', { exact: true }).click();
+  const sheet = page.locator('.picker');
+  await sheet.locator('.picker-section', { hasText: `${peer} tracks` }).waitFor();
+  await page.waitForFunction(() => /Live tracks? available over Link Audio/.test(document.querySelector('.picker-note').textContent));
+  assert.deepEqual(await sheet.locator('.picker-group .picker-name').allTextContents().then(names => names.filter(n => ['Hats', 'Kick Drum', 'Pad "Wide"'].includes(n))),
+    ['Hats', 'Kick Drum', 'Pad "Wide"']);
+  await sheet.locator('.picker-group').filter({ hasText: 'Hats' }).first().click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.picker-group')].some(g => g.textContent.includes('Hats') && g.querySelector('meter').value > 0.1),
+    null, { timeout: 15000 });
+  await sheet.locator('.picker-search').fill('kick drum kick');
+  assert.equal(await sheet.locator('.picker-item .picker-name').first().textContent(), 'Kick Drum · Kick hits');
+  await page.keyboard.press('Enter');
+  await sheet.waitFor({ state: 'detached' });
+  assert.equal(await page.getByLabel('Input signal', { exact: true }).textContent(), 'Kick Drum · Kick hits');
+  const route = await page.evaluate(() => window.asciiIfyHost.current.rx.routes[0].source);
+  assert.equal(route, `link/${encodeURIComponent(peer)}/Kick%20Drum/kick`);
+
+  // Kick hits from that track now move the scene's brightness above its resting value.
+  await page.waitForFunction(() => window.asciiIfyHost.current.app.scene.effective('brightness') > 0.8, null, { timeout: 15000 });
+  // Tracks previewed in the picker stop streaming once no page asks for them (2 s).
+  let signals;
+  for (let i = 0; i < 40; i++) {
+    signals = await (await fetch(new URL('../../signals', live.url))).json();
+    if (!signals.sources.find(s => s.peer === peer && s.name === 'Pad "Wide"').subscribed) break;
+    await delay(100);
+  }
+  assert.equal(signals.sources.find(s => s.peer === peer && s.name === 'Pad "Wide"').subscribed, false, 'unused tracks are not streamed');
+  assert.equal(signals.sources.find(s => s.peer === peer && s.name === 'Kick Drum').subscribed, true);
+
+  // Exported mappings name the track, not a session id, and group headers follow the input.
+  await page.click('#add-mapping');
+  await page.selectOption('#group-by', 'input');
+  assert.deepEqual(await page.locator('.route-group').allTextContents(), ['Kick Drum', 'This device (Plugin track)']);
+  const download = page.waitForEvent('download');
+  await page.click('#export-mappings');
+  const exported = JSON.parse(await readFile(await (await download).path()));
+  assert.equal(exported.version, 2);
+  assert.ok(exported.patches.galaxy.routes.some(r => r.source === route));
   assert.deepEqual(errors, []);
 });

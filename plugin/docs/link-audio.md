@@ -38,8 +38,9 @@ Last researched: 2026-09-27.
 - Which track types appear: groups, returns, Main — and are channel names the track names?
 - Whether channel IDs survive a Set reload / Live restart (store the name as a fallback).
 - Live's CPU cost when many tracks are subscribed.
-- A receiving peer inside Live's own process (our VST3) — should work (separate sockets),
-  not yet observed.
+- A receiving peer inside Live's own process (our VST3). Two peers in one process work
+  (verified with our tests), but not yet observed inside Live itself.
+- Whether Live keeps sending (silent) buffers while its transport is stopped.
 
 ## Receiving API (verified from `LinkAudio.hpp`)
 
@@ -68,6 +69,25 @@ ableton::LinkAudioSource src(link, ch.id, [](ableton::LinkAudioSource::BufferHan
 - Reference receiver: `examples/linkaudio/LinkAudioRenderer.hpp` (queue + beat-aligned
   resampling) and `examples/linkaudiohut/main.cpp` (CLI that lists channels and picks one).
 
+## Behaviors found by testing (verified 2026-09-27 with `plugin/tests/link.cpp`)
+
+- **Subscription timing.** A source re-sends its request only every 5 s
+  (`SourceProcessor.hpp`, `kTtl = 5`). The sink looks up where to send when the request
+  arrives (`Receivers.hpp`, `forPeer`); if it hasn't seen the receiver's announcement yet,
+  it marks itself connected (`BufferHandle` is valid) but delivers nothing until the next
+  request. Subscribing right after a channel appears failed about half the time. Fix in
+  `LinkReceiver.cpp`: wait 1.5 s after a channel first appears; if a subscription is silent
+  for 6 s, drop it and wait 1 s before resubscribing. Recreating immediately is worse: the
+  old source's stop request can land after the new request and cancel it.
+- **Two peers in one process** exchange audio over loopback fine (first buffer ~6 ms after
+  a settled subscription). Buffers arrive in ~125-frame chunks.
+- **Session merging** (`link/Sessions.hpp`): each session's clock starts at 0 when created.
+  When sessions meet, everyone joins the *older* one (larger clock), and if they're within
+  0.5 s of each other, the lower session ID wins. So if our peer is running before the user
+  enables Link in Live, **Live adopts our tempo and beat**. `LinkReceiver::followHost`
+  keeps our solo session on the host's tempo/beat (from the VST3 `ProcessContext`) to make
+  that a no-op; it never touches the session once another peer is present.
+
 ## Tempo / beat / transport (verified from `Link.hpp`)
 
 - `captureAppSessionState()` from non-audio threads; `captureAudioSessionState()` only
@@ -75,8 +95,9 @@ ableton::LinkAudioSource src(link, ch.id, [](ableton::LinkAudioSource::BufferHan
 - `SessionState`: `tempo()`, `beatAtTime(t, quantum)`, `phaseAtTime(t, quantum)`,
   `isPlaying()` (needs `enableStartStopSync(true)`), time from `link.clock().micros()`.
 - **We are a listener.** Never call `setTempo`, `forceBeatAtTime`, `setIsPlaying` or
-  commit session state. Link's `TEST-PLAN.md` requires peers not to hijack an existing
-  session's tempo or beat when joining.
+  commit session state while other peers are present. Link's `TEST-PLAN.md` requires
+  peers not to hijack an existing session's tempo or beat when joining. The one exception
+  is mirroring the host while alone (see Session merging above).
 
 ## Networking (verified from source)
 

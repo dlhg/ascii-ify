@@ -18,7 +18,7 @@
     <button id="mappings">Audio mappings</button>
     <button id="appearance">Appearance</button>
     <button id="scene-look">Scene look</button>
-    <div class="meters" aria-label="Audio levels"><label>LEVEL <meter id="rms" min="0" max="1" value="0"></meter></label><label>LOW <meter id="bass" min="0" max="1" value="0"></meter></label><label>MID <meter id="mid" min="0" max="1" value="0"></meter></label><label>HIGH <meter id="high" min="0" max="1" value="0"></meter></label></div>
+    <div class="meters" aria-label="This device’s audio levels"><label>LEVEL <meter id="rms" min="0" max="1" value="0"></meter></label><label>LOW <meter id="bass" min="0" max="1" value="0"></meter></label><label>MID <meter id="mid" min="0" max="1" value="0"></meter></label><label>HIGH <meter id="high" min="0" max="1" value="0"></meter></label></div>
     <button id="fullscreen">Fullscreen</button>
     <button id="hide">Hide controls</button>
   </footer>
@@ -29,8 +29,9 @@
         <label><input id="react-enabled" type="checkbox" checked /> Audio control on</label>
         <label class="field">Intensity <input id="intensity" type="range" min="0" max="4" step="0.05" value="1" /><output id="intensity-value">1.00×</output></label>
         <p>Choose what each signal moves. Negative amounts reverse the response.</p>
+        <p id="link-note" role="status"></p>
       </div>
-      <div class="mapping-actions"><span id="mapping-total"></span><button id="add-mapping">+ Add mapping</button></div>
+      <div class="mapping-actions"><span id="mapping-total"></span><label class="group-by">Group <select id="group-by" aria-label="Group mappings"><option value="added">as added</option><option value="input">by input</option><option value="parameter">by parameter</option></select></label><button id="add-mapping">+ Add mapping</button></div>
       <div id="routes"></div>
       <div class="mapping-actions"><button id="clear-mappings">Clear mappings</button><button id="reset-mappings">Reset scene</button></div>
     </fieldset>

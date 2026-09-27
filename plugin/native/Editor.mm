@@ -30,7 +30,7 @@ void label(NSView* view, NSString* text, NSRect rect, CGFloat size, NSColor* col
 }
 class Editor final : public Steinberg::CPluginView {
 public:
-    explicit Editor(std::shared_ptr<Bridge> connection) : bridge(std::move(connection)) {
+    explicit Editor(std::shared_ptr<Hub> connection) : hub(std::move(connection)) {
         setRect({0, 0, 460, 230});
     }
     ~Editor() override { removed(); }
@@ -43,14 +43,14 @@ public:
         if (panel) removed();
         NSBundle* bundle = [NSBundle bundleForClass:[ASCIIIfyVisualsPanel class]];
         NSString* directory = [bundle.resourcePath stringByAppendingPathComponent:@"Web"];
-        const bool ready = directory && bridge->start(directory.UTF8String);
+        const bool ready = directory && hub->start(directory.UTF8String);
         panel = [[ASCIIIfyVisualsPanel alloc] initWithFrame:NSMakeRect(0, 0, 460, 230)];
         panel.wantsLayer = YES;
         panel.layer.backgroundColor = [NSColor colorWithWhite:0.055 alpha:1].CGColor;
-        panel.visualsURL = [NSString stringWithUTF8String:bridge->url().c_str()];
+        panel.visualsURL = [NSString stringWithUTF8String:hub->url().c_str()];
         label(panel, @"ASCII VISUALS", NSMakeRect(24, 20, 412, 32), 24, NSColor.whiteColor);
         label(panel, @"v" ASCII_VISUALS_VERSION, NSMakeRect(360, 27, 80, 24), 12, NSColor.lightGrayColor);
-        label(panel, @"Put this on your main track, open the visuals, and press play.",
+        label(panel, @"One device reaches every track: turn on Link and Link Audio in Live's Settings → Link, then open the visuals.",
             NSMakeRect(24, 62, 412, 44), 14, NSColor.lightGrayColor);
         auto* button = [NSButton buttonWithTitle:@"Open Visuals" target:panel action:@selector(openVisuals:)];
         button.frame = NSMakeRect(20, 116, 174, 36);
@@ -63,7 +63,7 @@ public:
         copy.enabled = ready;
         [panel addSubview:copy];
         label(panel, ready ? @"Audio passes through unchanged.\nKeep this device in your set while using the visuals."
-                          : [NSString stringWithUTF8String:bridge->error().c_str()],
+                          : [NSString stringWithUTF8String:hub->error().c_str()],
             NSMakeRect(24, 170, 412, 50), 12, NSColor.lightGrayColor);
         [(__bridge NSView*)parent addSubview:panel];
         return CPluginView::attached(parent, type);
@@ -71,13 +71,13 @@ public:
     Steinberg::tresult PLUGIN_API removed() override {
         [panel removeFromSuperview];
         panel = nil;
-        // The bridge lives with the device, not the editor window.
+        // The connection lives with the device, not the editor window.
         return CPluginView::removed();
     }
 private:
-    std::shared_ptr<Bridge> bridge;
+    std::shared_ptr<Hub> hub;
     ASCIIIfyVisualsPanel* __strong panel = nil;
 };
 }
-Steinberg::IPlugView* makeEditor(std::shared_ptr<Bridge> bridge) { return new Editor(std::move(bridge)); }
+Steinberg::IPlugView* makeEditor(std::shared_ptr<Hub> hub) { return new Editor(std::move(hub)); }
 }

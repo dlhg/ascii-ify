@@ -1,7 +1,9 @@
 import scenes from 'virtual:plugin-scenes';
 import buildInfo from 'virtual:plugin-build';
 import { PluginConnection } from './connection.js';
-import { INPUTS, cleanSetup, defaultRoutes, patchForScene } from './mappings.js';
+import { cleanSetup, defaultRoutes, patchForScene } from './mappings.js';
+import { FEATURES, SONG, THIS_TRACK, sourceKey, sourceValue, sourceLabel, sourceProblem, channelsFor, trackGroups } from './sources.js';
+import { openPicker, openPickerNow } from './picker.js';
 import { Reactivity } from '../../examples/audio-reactivity.js';
 import { listTargets, targetInfo, targetHint, destination, destinations, baseTargets, numericValue, routingEngine } from './targets.js';
 import { profileFor, sceneKind } from '../../examples/audio-profiles.js';
@@ -12,17 +14,27 @@ const frame = $('#scene-frame'), picker = $('#scene'), status = $('#status');
 const intensity = $('#intensity'), enabled = $('#react-enabled'), routes = $('#routes');
 const sceneIds = scenes.map(s => s.id);
 const storageKey = 'ascii-plugin-mappings-v1';
-let setup = { version: 1, scene: 'galaxy', patches: {} }, session = null, saveTimer;
+let setup = { version: 2, scene: 'galaxy', patches: {} }, session = null, saveTimer, groupBy = 'added';
+let sourcePicker = null; // open input picker: its tracks' meters stream while it is open
 try { const saved = localStorage.getItem(storageKey); if (saved) setup = cleanSetup(JSON.parse(saved), sceneIds); } catch { /* Use defaults for an old/invalid save. */ }
 const messages = {
   live: 'Connected · audio arriving', silent: 'Connected · waiting for sound',
   waiting: 'Connected · press play in Ableton', bypass: 'Device bypassed · enable it in Ableton',
   disconnected: 'Device disconnected · click Open Visuals in Ableton to reconnect',
 };
-const connection = new PluginConnection({ onChange(state) {
+// Stream the Link tracks that mappings use, plus every track while the input
+// picker is open so its meters move.
+function wantedChannels() {
+  const packet = connection.packet;
+  const keys = session ? session.rx.routes.map(r => r.source) : [];
+  if (sourcePicker) for (const group of trackGroups(packet)) for (const t of group.tracks) keys.push(`${t.prefix}/rms`);
+  return channelsFor(packet, keys);
+}
+const connection = new PluginConnection({ channels: wantedChannels, onChange(state) {
   status.textContent = messages[state]; status.dataset.state = state;
 } });
-const audio = { value: id => Math.min(1, Math.sqrt(connection.levels[id] || 0)) };
+const audio = { value: id => sourceValue(connection.packet, id) };
+const thisTrack = feature => sourceKey.plugin(THIS_TRACK, feature);
 const groups = { ambient: 'Atmosphere & nature', flow: 'Flow & motion', geometry: 'Geometry & dashboards', impact: 'Light & energy', gentle: 'Games & interactive', custom: 'Audio study' };
 for (const [kind, name] of Object.entries(groups)) {
   const group = document.createElement('optgroup'); group.label = name;
@@ -77,6 +89,7 @@ function selectScene(id) {
   snapshot();
   session?.unsubscribe();
   session = null;
+  openPickerNow()?.close();
   setup.scene = id; picker.value = id;
   $('#mapping-title').textContent = scenes.find(s => s.id === id).name;
   routes.replaceChildren();
@@ -86,11 +99,11 @@ function selectScene(id) {
 }
 
 window.asciiIfyHost = {
-  version: 1, sourceIds: INPUTS.map(s => s.id), audio,
+  version: 1, sourceIds: [], audio,
   get current() { return session; },
   attach(app, child) {
     if (child !== frame.contentWindow || !child.location.pathname.endsWith(`/${setup.scene}.html`)) return;
-    const engine = routingEngine(app.ascii);
+    const engine = routingEngine(app.ascii, id => app.useSignal?.(id));
     const rx = new Reactivity({ ascii: engine, scene: app.scene, audio });
     session = { id: setup.scene, app, rx, engine, unsubscribe: () => {} };
     const patch = patchForScene(setup.patches[setup.scene] ?? { routes: defaultRoutes(profileFor(setup.scene, app.ascii)), bases: {} }, app.ascii);
@@ -134,28 +147,84 @@ function slider(label, value, min, max, step, change, format = n => n.toFixed(2)
   input.oninput = () => { const n = Number(input.value); output.textContent = format(n); change(n); };
   const row = field(label, input); row.append(output); return row;
 }
+// Input picker: tracks (this device's, then each Link peer's), then the song.
+function inputGroups(packet) {
+  const groups = trackGroups(packet).flatMap(section => section.tracks.map(t => ({
+    id: t.prefix, name: t.label, section: section.name, meter: `${t.prefix}/rms`,
+    items: FEATURES.map(f => ({ key: `${t.prefix}/${f.id}`, name: f.name, meter: `${t.prefix}/${f.id}`,
+      detail: f.kind === 'hit' ? 'Jumps on each hit, then fades' : '' })),
+  })));
+  groups.push({ id: 'song', name: 'Song', section: 'Live transport', items: SONG.map(s => ({
+    key: sourceKey.song(s.id), name: s.name, detail: s.detail, meter: sourceKey.song(s.id) })) });
+  return groups;
+}
+function linkNote(packet) {
+  const tracks = packet.sources.filter(s => s.kind === 'link').length;
+  if (tracks) return `${tracks} Live track${tracks === 1 ? '' : 's'} available over Link Audio.`;
+  if (packet.link.peers) return 'Connected over Link, but no tracks are shared. Turn on Link Audio in Live’s Settings → Link.';
+  return 'Only this device’s track is available. To use any Live track, turn on Link and Link Audio in Live’s Settings → Link.';
+}
+const sectionFor = group => (group === 'Scene look' ? 'Scene' : group === 'All layers' || group.startsWith('Layer ') ? 'Layers' : 'Rendering');
+function parameterGroups(app) {
+  const byGroup = new Map();
+  for (const id of listTargets(app.ascii, app.scene)) {
+    const info = targetInfo(id);
+    if (!byGroup.has(info.group)) byGroup.set(info.group, []);
+    const hint = targetHint(id, app.ascii);
+    byGroup.get(info.group).push({ key: id, name: info.label, detail: hint.startsWith('Enable') ? hint.replace(' to use this parameter.', ' first') : '' });
+  }
+  const order = ['Scene', 'Rendering', 'Layers'];
+  return [...byGroup].map(([name, items]) => ({ id: name, name, section: sectionFor(name), items }))
+    .sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
+}
+function pickButton(label, text, onClick) {
+  const button = element('button', 'pick', text);
+  button.type = 'button';
+  button.title = text;
+  button.setAttribute('aria-label', label);
+  button.onclick = onClick;
+  return button;
+}
+const groupLabel = {
+  input: route => sourceLabel(route.source, connection.packet).split(' · ')[0],
+  parameter: route => targetInfo(route.target).group,
+};
 function renderRoutes() {
   routes.replaceChildren();
   if (!session) return;
   const { rx, app } = session;
   $('#mapping-total').textContent = `${rx.routes.length} mappings`;
   if (!rx.routes.length) routes.append(element('p', 'empty', 'No audio mappings. Add one to choose what sound controls.'));
-  for (const route of rx.routes) {
+  let ordered = rx.routes;
+  if (groupBy !== 'added') ordered = [...rx.routes].sort((a, b) => groupLabel[groupBy](a).localeCompare(groupLabel[groupBy](b)));
+  let heading;
+  for (const route of ordered) {
+    if (groupBy !== 'added' && groupLabel[groupBy](route) !== heading) {
+      heading = groupLabel[groupBy](route);
+      routes.append(element('h2', 'route-group', heading));
+    }
     const card = element('article', `route${route.enabled ? '' : ' off'}`); card.dataset.id = route.id;
     const top = element('div', 'route-top');
     const toggle = element('input'); toggle.type = 'checkbox'; toggle.checked = route.enabled;
     toggle.setAttribute('aria-label', 'Enable mapping');
     toggle.onchange = () => rx.updateRoute(route.id, { enabled: toggle.checked });
-    const source = select(INPUTS, route.source, 'Input signal');
-    const target = select(listTargets(app.ascii, app.scene).map(id => ({ id, name: `${targetInfo(id).group} · ${targetInfo(id).label}` })), route.target, 'Visual parameter');
-    function changePair() {
-      if (rx.routes.some(r => r.id !== route.id && r.source === source.value && r.target === target.value)) {
-        source.value = route.source; target.value = route.target;
+    function changePair(change) {
+      const next = { source: route.source, target: route.target, ...change };
+      if (rx.routes.some(r => r.id !== route.id && r.source === next.source && r.target === next.target)) {
         note('That signal already controls this parameter. Edit its existing mapping.'); return;
       }
-      rx.updateRoute(route.id, { source: source.value, target: target.value });
+      rx.updateRoute(route.id, change);
     }
-    source.onchange = target.onchange = changePair;
+    const source = pickButton('Input signal', sourceLabel(route.source, connection.packet), () => {
+      sourcePicker = openPicker({ title: 'Choose an input', searchLabel: 'Search tracks and signals',
+        groups: inputGroups(connection.packet), selected: route.source, note: linkNote(connection.packet),
+        onPick: key => changePair({ source: key }) });
+    });
+    source.dataset.source = route.source;
+    const target = pickButton('Visual parameter', `${targetInfo(route.target).group} · ${targetInfo(route.target).label}`, () => {
+      openPicker({ title: 'Choose a parameter', searchLabel: 'Search parameters', groups: parameterGroups(app),
+        selected: route.target, onPick: key => changePair({ target: key }) });
+    });
     const remove = element('button', 'remove', '×'); remove.setAttribute('aria-label', 'Remove mapping');
     remove.onclick = () => rx.removeRoute(route.id);
     top.append(toggle, source, element('span', '', '→'), target, remove); card.append(top);
@@ -182,18 +251,30 @@ function renderRoutes() {
     meter.setAttribute('aria-label', 'Mapping input level');
     const value = element('output'); value.dataset.target = route.target;
     live.append(element('span', '', 'Input'), meter, element('span', '', 'Result'), value); card.append(live);
-    const hint = element('p', 'route-hint'); hint.dataset.target = route.target; card.append(hint);
+    const hint = element('p', 'route-hint'); hint.dataset.target = route.target; hint.dataset.source = route.source; card.append(hint);
     routes.append(card);
   }
 }
 
+// Keep an open picker's meters moving and its track list current.
+let pickerTracks = '';
+function updatePicker() {
+  const open = openPickerNow();
+  if (!open) { sourcePicker = null; return; }
+  const packet = connection.packet;
+  open.meters().forEach(el => { el.value = audio.value(el.dataset.meter); });
+  if (open !== sourcePicker) return;
+  const tracks = packet.sources.map(s => `${s.id}:${s.peer ?? ''}:${s.name}`).join('|');
+  if (tracks !== pickerTracks) { pickerTracks = tracks; open.update(inputGroups(packet), linkNote(packet)); }
+}
+$('#group-by').onchange = event => { groupBy = event.target.value; renderRoutes(); };
 picker.onchange = () => selectScene(picker.value);
 $('#add-mapping').onclick = () => {
   if (!session || session.rx.routes.length >= 64) return;
   for (const target of [session.app.ascii.layers.length ? 'layer.all.fontSize' : 'fontSize', ...listTargets(session.app.ascii, session.app.scene)])
-    for (const source of INPUTS)
-      if (!session.rx.routes.some(r => r.target === target && r.source === source.id)) {
-        session.rx.addRoute({ source: source.id, target, depth: 0.1, smooth: 0.15 }); return;
+    for (const feature of FEATURES)
+      if (!session.rx.routes.some(r => r.target === target && r.source === thisTrack(feature.id))) {
+        session.rx.addRoute({ source: thisTrack(feature.id), target, depth: 0.1, smooth: 0.15 }); return;
       }
 };
 function updateIntensity() {
@@ -212,12 +293,13 @@ $('#appearance').onclick = () => { $('#mapping-panel').hidden = true; session?.a
 $('#scene-look').onclick = () => session?.app.scene?.toggle();
 $('#mappings').onclick = () => {
   $('#mapping-panel').hidden = !$('#mapping-panel').hidden;
+  if ($('#mapping-panel').hidden) openPickerNow()?.close();
   session?.app.ascii.hidePanel();
 };
-$('#close-mappings').onclick = () => { $('#mapping-panel').hidden = true; };
+$('#close-mappings').onclick = () => { $('#mapping-panel').hidden = true; openPickerNow()?.close(); };
 function hideControls() {
   document.body.classList.toggle('hidden');
-  if (document.body.classList.contains('hidden')) { session?.app.ascii.hidePanel(); session?.app.scene?.close(); }
+  if (document.body.classList.contains('hidden')) { session?.app.ascii.hidePanel(); session?.app.scene?.close(); openPickerNow()?.close(); }
 }
 $('#hide').onclick = hideControls;
 addEventListener('keydown', event => window.asciiIfyHost.onKeydown(event));
@@ -246,7 +328,8 @@ $('#import-mappings').onchange = async event => {
 let timer;
 function tick() {
   if (session?.engine.syncLayers()) { renderRoutes(); save(); }
-  for (const input of INPUTS) $(`#${input.id}`).value = audio.value(input.id);
+  for (const id of ['rms', 'bass', 'mid', 'high']) $(`#${id}`).value = audio.value(thisTrack(id));
+  updatePicker();
   $('#intensity-value').textContent = `${Number(intensity.value).toFixed(2)}×`;
   if (session && !$('#mapping-panel').hidden && !document.body.classList.contains('hidden')) {
     routes.querySelectorAll('meter').forEach(el => { el.value = audio.value(el.dataset.source); });
@@ -258,8 +341,13 @@ function tick() {
       el.textContent = !values.length ? '—' : min === max ? min.toFixed(2) : `${min.toFixed(2)}–${max.toFixed(2)}`;
     });
     routes.querySelectorAll('.route-hint').forEach(el => {
-      el.textContent = targetHint(el.dataset.target, session.app.ascii);
+      el.textContent = sourceProblem(el.dataset.source, connection.packet) || targetHint(el.dataset.target, session.app.ascii);
     });
+    routes.querySelectorAll('button[data-source]').forEach(el => {
+      const label = sourceLabel(el.dataset.source, connection.packet);
+      if (el.textContent !== label) el.textContent = el.title = label;
+    });
+    $('#link-note').textContent = linkNote(connection.packet);
   }
   timer = setTimeout(tick, 60);
 }

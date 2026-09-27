@@ -167,10 +167,16 @@ export function createApp({
   };
 
   if (host) {
-    const unregister = host.sourceIds.map(id => registerSignal(`audio:${id}`, () => host.audio.value(id)));
+    // Host sources can appear at any time (e.g. new Live tracks), so the host
+    // registers each one as an engine signal when a mapping first uses it.
+    const registered = new Map();
+    app.useSignal = id => {
+      if (!registered.has(id)) registered.set(id, registerSignal(`audio:${id}`, () => host.audio.value(id)));
+    };
+    (host.sourceIds ?? []).forEach(app.useSignal);
     // Let the example finish its synchronous setup before the host applies saved mappings.
     queueMicrotask(() => host.attach(app, window));
-    window.addEventListener('pagehide', () => unregister.forEach(fn => fn()), { once: true });
+    window.addEventListener('pagehide', () => registered.forEach(fn => fn()), { once: true });
   }
 
   return app;

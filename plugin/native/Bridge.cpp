@@ -70,8 +70,6 @@ bool Bridge::start(const std::string& directory) {
             throw std::runtime_error("Could not find the local connection address.");
         port = ntohs(address.sin_port);
         stopping = false;
-        lastSequence = signals.sequence.load();
-        lastAudio = {};
         worker = std::thread([this] { run(); });
         return true;
     } catch (const std::exception& e) {
@@ -138,7 +136,9 @@ void Bridge::serve(int client) {
         reply(client, 403, "text/plain", "Local visuals only.");
         return;
     }
-    path = path.substr(0, path.find('?'));
+    const auto question = path.find('?');
+    const auto query = question == std::string::npos ? "" : path.substr(question + 1);
+    path = path.substr(0, question);
     const auto prefix = "/" + token + "/";
     if (path.compare(0, prefix.size(), prefix) != 0) {
         reply(client, 404, "text/plain", "Open Visuals from the plugin to connect.");
@@ -146,29 +146,10 @@ void Bridge::serve(int client) {
     }
     auto key = path.substr(prefix.size());
     if (key.empty()) key = "plugin/web/index.html";
-    if (key == "levels") reply(client, 200, "application/json", levels());
+    if (key == "signals") reply(client, 200, "application/json", signals(query));
     else if (key == "info") reply(client, 200, "application/json", "{\"pluginVersion\":\"" ASCII_VISUALS_VERSION "\"}");
     else if (const auto found = assets.find(key); found != assets.end())
         reply(client, 200, found->second.mime, found->second.body);
     else reply(client, 404, "text/plain", "Not found.");
-}
-std::string Bridge::levels() {
-    const auto now = std::chrono::steady_clock::now();
-    const auto sequence = signals.sequence.load(std::memory_order_acquire);
-    if (sequence != lastSequence) { lastSequence = sequence; lastAudio = now; }
-    const bool bypass = signals.bypass.load();
-    const bool active = signals.active.load() && !bypass &&
-        now - lastAudio < std::chrono::milliseconds(400);
-    std::ostringstream out;
-    out.imbue(std::locale::classic());
-    out << std::fixed << std::setprecision(6)
-        << "{\"version\":1,\"active\":" << (active ? "true" : "false")
-        << ",\"bypass\":" << (bypass ? "true" : "false")
-        << ",\"sequence\":" << sequence
-        << ",\"rms\":" << (active ? signals.rms.load() : 0)
-        << ",\"bass\":" << (active ? signals.bass.load() : 0)
-        << ",\"mid\":" << (active ? signals.mid.load() : 0)
-        << ",\"high\":" << (active ? signals.high.load() : 0) << "}";
-    return out.str();
 }
 }

@@ -15,7 +15,7 @@ test('layered scenes hide overridden globals and migrate old mappings without du
     assert.ok(choices.includes(`layer.all.${key}`));
   }
   assert.ok(choices.includes('fade'), 'global inherited fade remains available');
-  const route = { target: 'fontSize', source: 'bass', depth: 0.1, smooth: 0, enabled: true, curve: 'linear', bipolar: false };
+  const route = { target: 'fontSize', source: 'plugin/*/bass', depth: 0.1, smooth: 0, enabled: true, curve: 'linear', bipolar: false };
   const patch = { routes: [route], bases: { fontSize: 12, 'layer.1.fontSize': 9 }, enabled: true, intensity: 1 };
   const migrated = patchForScene(patch, ascii);
   assert.equal(migrated.routes[0].target, 'layer.all.fontSize');
@@ -67,7 +67,7 @@ test('all numeric layer properties are offered and exported bases retain each la
   }
   assert.deepEqual(baseTargets(ascii, 'layer.all.fontSize'), ['layer.0.fontSize', 'layer.1.fontSize']);
   const patch = { intensity: 1, enabled: true, bases: { 'layer.0.fontSize': 4, 'layer.1.fontSize': 10 },
-    routes: [{ target: 'layer.all.fontSize', source: 'bass', depth: 0.1, smooth: 0, curve: 'linear', bipolar: false, enabled: true }] };
+    routes: [{ target: 'layer.all.fontSize', source: 'plugin/*/bass', depth: 0.1, smooth: 0, curve: 'linear', bipolar: false, enabled: true }] };
   assert.deepEqual(cleanPatch(JSON.parse(JSON.stringify(patch))), patch);
   ascii.layers = [];
   assert.ok(!listTargets(ascii, null).some(id => id.startsWith('layer.all.')));

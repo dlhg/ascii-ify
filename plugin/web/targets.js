@@ -52,7 +52,9 @@ export function targetHint(id, ascii) {
 }
 // Keep logical mappings separate even when All layers and Layer 1 use the same
 // signal. The engine sums their routes, and removing one must retain the other.
-export function routingEngine(ascii) {
+// `useSource(id)` is told about every source a route reads, so the scene frame can
+// register it as an engine signal (sources such as Live tracks appear at runtime).
+export function routingEngine(ascii, useSource = () => {}) {
   const routes = new Map();
   let applied = [];
   let layers = ascii.layers;
@@ -70,7 +72,10 @@ export function routingEngine(ascii) {
   return {
     get: id => { const { owner, key } = destination(ascii, id); return numericValue(ascii, owner, key); },
     set: (...args) => ascii.set(...args),
-    route(id, route) { routes.set(`${id}:${route.source}`, { id, route }); rebuild(); },
+    route(id, route) {
+      useSource(route.source.replace(/^audio:/, ''));
+      routes.set(`${id}:${route.source}`, { id, route }); rebuild();
+    },
     unroute(id, source) { if (routes.delete(`${id}:${source}`)) rebuild(); },
     syncLayers() {
       const current = ascii.layers;
