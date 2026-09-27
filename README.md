@@ -4,6 +4,8 @@
 
 ASCII-ify any canvas. Drop-in library that overlays real-time ASCII art rendering on top of your canvas-based web application. Supports layered compositing, procedural pattern overlays, and an optional visual control panel.
 
+For audio-reactive visuals from Ableton, see the [macOS VST3 prototype](plugin/README.md).
+
 ## Install
 
 ```bash

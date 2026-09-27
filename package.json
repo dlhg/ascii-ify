@@ -27,6 +27,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:plugin-web": "vite build --config plugin/vite.config.js",
+    "build:plugin": "node plugin/build.mjs",
+    "test:plugin": "node --test plugin/tests/*.test.mjs",
     "preview": "vite preview",
     "test:unit": "node --test tests/unit/",
     "test:perf": "node tests/perf/compare.mjs",
