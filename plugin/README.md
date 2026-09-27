@@ -129,5 +129,12 @@ recording, or beat/instrument detection. Browser settings are not saved in the
 Live Set. Loading and audio-driven visuals have been checked manually in Live;
 SDK validation and synthetic/browser tests cover the expanded gallery and mappings.
 
-The project remains MIT licensed. The bundled plugin includes Steinberg's SDK
-license in its Resources directory. No third-party plugin framework is required.
+## License
+
+The plugin (everything under `plugin/`) is licensed under the GNU General Public
+License, version 2 or (at your option) any later version; see [COPYING.md](COPYING.md).
+This is required because it will link [Ableton Link](https://github.com/Ableton/link),
+which is GPLv2+. The rest of this repository, including the ascii-ify library the
+plugin bundles, remains [MIT](../LICENSE). The bundled plugin includes Steinberg's
+VST 3 SDK license (MIT) in its Resources directory. No third-party plugin framework
+is required.

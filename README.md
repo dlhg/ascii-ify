@@ -363,4 +363,4 @@ See [ROADMAP.md](ROADMAP.md) for what's planned.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The Ableton plugin in `plugin/` is GPL-2.0-or-later; see [plugin/README.md](plugin/README.md#license).
