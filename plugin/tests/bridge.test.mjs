@@ -9,6 +9,7 @@ import { readFile } from 'node:fs/promises';
 
 const directory = fileURLToPath(new URL('../build/native/VST3/Release/ASCII Visuals.vst3', import.meta.url));
 const executable = fileURLToPath(new URL('../build/native/bin/Release/ascii-bridge-fixture', import.meta.url));
+const { version: pluginVersion } = JSON.parse(await readFile(new URL('../version.json', import.meta.url), 'utf8'));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function fixture(t) {
   const child = spawn(executable, [directory], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -44,6 +45,7 @@ test('real native bridge serves bundled visuals, isolates instances and handles 
   assert.ok(bass.bass > bass.high * 4);
   const page = await fetch(first.url);
   assert.equal(page.status, 200);
+  assert.deepEqual(await (await fetch(new URL('../../info', first.url))).json(), { pluginVersion });
   assert.match(await page.text(), /ASCII Visuals/);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'self'/);
   assert.equal(page.headers.get('access-control-allow-origin'), null);
@@ -95,6 +97,8 @@ test('browser renders the native audio stream and reports disconnects', { timeou
   });
   await page.waitForFunction(() => document.querySelector('#bass').value > 0.5);
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
+  await page.waitForFunction(version => document.querySelector('#build-version').textContent === `Web v${version} · Plugin v${version}`, pluginVersion);
+  assert.match(await page.locator('#build-version').getAttribute('title'), /Web build: \d{4}-\d{2}-\d{2}T/);
   assert.equal(await page.frameLocator('#scene-frame').locator('canvas').count() >= 2, true, 'ASCII renderer must create its output');
   await page.screenshot({ path: fileURLToPath(new URL('../build/preview.png', import.meta.url)) });
   await page.selectOption('#scene', 'cityscape');
@@ -133,6 +137,7 @@ test('mappings change real parameters, disable cleanly, and survive scene change
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
   await page.click('#clear-mappings');
   await page.click('#add-mapping');
+  await page.getByLabel('Visual parameter', { exact: true }).selectOption('layer.0.fontSize');
   await page.getByLabel('Input signal', { exact: true }).selectOption('bass');
   await page.getByLabel('Resting value', { exact: true }).fill('10');
   await page.getByLabel('Resting value', { exact: true }).press('Tab');
@@ -172,6 +177,7 @@ test('mappings change real parameters, disable cleanly, and survive scene change
   await page.waitForFunction(() => window.asciiIfyHost.current?.rx.routes.length === 1);
   assert.equal(await page.getByLabel('Amount', { exact: true }).inputValue(), '-0.1');
   await page.locator('#import-mappings').setInputFiles({ name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from('{"version":999}') });
+  await page.waitForFunction(() => document.querySelector('#mapping-note').textContent.includes('Not an ASCII'));
   assert.match(await page.locator('#mapping-note').textContent(), /Not an ASCII/);
   assert.equal(await page.locator('.route').count(), 1);
   await page.getByLabel('Remove mapping', { exact: true }).click();
@@ -202,7 +208,8 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
   await page.click('#clear-mappings');
   const bases = await page.evaluate(() => window.asciiIfyHost.current.app.ascii.layers.map(l => l.get('fontSize')));
   await page.click('#add-mapping');
-  await page.getByLabel('Visual parameter', { exact: true }).selectOption('layer.all.fontSize');
+  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).inputValue(), 'layer.all.fontSize');
+  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).locator('option[value="fontSize"]').count(), 0);
   assert.equal(await page.getByLabel('Resting value', { exact: true }).inputValue(), '');
   assert.equal(await page.getByLabel('Resting value', { exact: true }).getAttribute('placeholder'), 'Mixed');
   await page.waitForFunction(bases => window.asciiIfyHost.current.app.ascii.layers.every((l, i) => l.get('fontSize') > bases[i] + 1), bases);
@@ -214,6 +221,8 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
   assert.deepEqual(bases.map((_, i) => patch.bases[`layer.${i}.fontSize`]), bases);
   await page.click('#add-mapping');
   // The new individual mapping uses the same input as the All layers mapping.
+  await page.getByLabel('Visual parameter', { exact: true }).last().selectOption('layer.0.fontSize');
+  await page.getByLabel('Input signal', { exact: true }).last().selectOption('rms');
   await page.waitForFunction(() => window.asciiIfyHost.current.app.ascii.layers[0].getAutomation('fontSize').routes.length === 2);
   await page.getByLabel('Remove mapping', { exact: true }).first().click();
   await page.waitForFunction(bases => {
@@ -233,6 +242,17 @@ test('all-layer mappings preserve mixed bases, export/import, and coexist with i
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
   assert.equal(await page.getByLabel('Visual parameter', { exact: true }).inputValue(), 'layer.all.fontSize');
   assert.equal(await page.getByLabel('Resting value', { exact: true }).inputValue(), '12');
+  const oldSetup = { version: 1, scene: 'galaxy', patches: { galaxy: {
+    routes: [{ target: 'fontSize', source: 'rms', depth: 0.1, smooth: 0, curve: 'linear', enabled: true, bipolar: false }],
+    bases: { fontSize: 10 }, intensity: 1, enabled: true,
+  } } };
+  await page.locator('#import-mappings').setInputFiles({ name: 'old-mapping.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(oldSetup)) });
+  await page.waitForFunction(() => {
+    const session = window.asciiIfyHost.current;
+    return session?.rx.routes[0]?.target === 'layer.all.fontSize' && session.app.ascii.layers.every(l => l.getAutomation('fontSize')?.base === 10 && l.get('fontSize') > 11);
+  });
+  assert.equal(await page.getByLabel('Visual parameter', { exact: true }).inputValue(), 'layer.all.fontSize');
+  assert.doesNotMatch(await page.locator('#routes').textContent(), /This scene uses layers/);
   assert.deepEqual(errors, []);
 });
 

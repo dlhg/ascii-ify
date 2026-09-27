@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #include "Plugin.h"
+#include "Version.h"
 #include "public.sdk/source/common/pluginview.h"
 
 // Unique Objective-C class name: several VST bundles share the host runtime.
@@ -48,6 +49,7 @@ public:
         panel.layer.backgroundColor = [NSColor colorWithWhite:0.055 alpha:1].CGColor;
         panel.visualsURL = [NSString stringWithUTF8String:bridge->url().c_str()];
         label(panel, @"ASCII VISUALS", NSMakeRect(24, 20, 412, 32), 24, NSColor.whiteColor);
+        label(panel, @"v" ASCII_VISUALS_VERSION, NSMakeRect(360, 27, 80, 24), 12, NSColor.lightGrayColor);
         label(panel, @"Put this on your main track, open the visuals, and press play.",
             NSMakeRect(24, 62, 412, 44), 14, NSColor.lightGrayColor);
         auto* button = [NSButton buttonWithTitle:@"Open Visuals" target:panel action:@selector(openVisuals:)];

@@ -30,6 +30,9 @@ Each scene starts with an editable mapping preset. Open **Audio mappings** to:
   All-layer and individual mappings add together, even with the same input signal.
   Layer destinations include size, size smoothing, spacing, fade, pattern mix,
   edge threshold, opacity, horizontal/vertical offset, and stack order.
+  Layered scenes hide global size/spacing/pattern-mix/edge-threshold destinations
+  that their layers override. Older mappings to those globals automatically move
+  to All layers. New mappings in layered scenes start with All layers · Glyph size.
 - Adjust the amount (negative reverses it), smoothing, response curve, and resting
   value. Enable **Swing both sides** to move below and above that value.
 - Add, disable, or remove mappings; combine several signals on one parameter.
@@ -53,6 +56,18 @@ not disconnect it. Removing the device or closing the Live Set disconnects it;
 after reopening the Set, click Open Visuals again to get the new instance link.
 Each device instance has its own connection. The plugin passes audio through at
 unity gain with zero added latency. Bypass stops analysis without altering audio.
+
+The web page shows **Web v… · Plugin v…** beneath the title. Hover over this line
+to see the web build timestamp. The plugin window in Ableton also shows its
+version. Different versions are highlighted; older plugins that cannot report
+their version show **plugin version unavailable**. Version numbers come from
+`plugin/version.json` for both builds.
+
+After installing an update, fully quit Live, reopen it, and click **Open Visuals**
+to open the current device's page. An already-open browser tab keeps its old page
+until refreshed or replaced. Removing the device is normally unnecessary. If
+the plugin window still shows an older version, check for another plugin copy
+in Live's custom VST3 folder and rescan.
 
 ## Build
 

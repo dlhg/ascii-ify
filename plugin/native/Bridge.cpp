@@ -1,4 +1,5 @@
 #include "Bridge.h"
+#include "Version.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <poll.h>
@@ -146,6 +147,7 @@ void Bridge::serve(int client) {
     auto key = path.substr(prefix.size());
     if (key.empty()) key = "plugin/web/index.html";
     if (key == "levels") reply(client, 200, "application/json", levels());
+    else if (key == "info") reply(client, 200, "application/json", "{\"pluginVersion\":\"" ASCII_VISUALS_VERSION "\"}");
     else if (const auto found = assets.find(key); found != assets.end())
         reply(client, 200, found->second.mime, found->second.body);
     else reply(client, 404, "text/plain", "Not found.");

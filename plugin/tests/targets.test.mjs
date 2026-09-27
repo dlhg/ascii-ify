@@ -4,7 +4,31 @@ import { Layer } from '../../src/layer.js';
 import { registerSignal } from '../../src/automation.js';
 import { Reactivity } from '../../examples/audio-reactivity.js';
 import { listTargets, baseTargets, routingEngine } from '../web/targets.js';
-import { cleanPatch } from '../web/mappings.js';
+import { cleanPatch, patchForScene } from '../web/mappings.js';
+
+test('layered scenes hide overridden globals and migrate old mappings without duplicates', () => {
+  const ascii = { get: key => ({ fontSize: 16, density: 1, patternMix: 0, edgeThreshold: 0.15, fade: 0 })[key] };
+  ascii.layers = [4, 10].map(fontSize => new Layer(ascii, { fontSize }));
+  const choices = listTargets(ascii, null);
+  for (const key of ['fontSize', 'density', 'patternMix', 'edgeThreshold']) {
+    assert.ok(!choices.includes(key));
+    assert.ok(choices.includes(`layer.all.${key}`));
+  }
+  assert.ok(choices.includes('fade'), 'global inherited fade remains available');
+  const route = { target: 'fontSize', source: 'bass', depth: 0.1, smooth: 0, enabled: true, curve: 'linear', bipolar: false };
+  const patch = { routes: [route], bases: { fontSize: 12, 'layer.1.fontSize': 9 }, enabled: true, intensity: 1 };
+  const migrated = patchForScene(patch, ascii);
+  assert.equal(migrated.routes[0].target, 'layer.all.fontSize');
+  assert.deepEqual(migrated.bases, { 'layer.0.fontSize': 12, 'layer.1.fontSize': 9 });
+  assert.deepEqual(cleanPatch(migrated), migrated);
+  const explicit = { ...route, target: 'layer.all.fontSize', depth: 0.3 };
+  const merged = patchForScene({ ...patch, routes: [route, explicit] }, ascii);
+  assert.deepEqual(merged.routes, [explicit]);
+  assert.deepEqual(patchForScene(migrated, ascii), migrated, 'migration is idempotent');
+  ascii.layers = [];
+  assert.ok(listTargets(ascii, null).includes('fontSize'));
+  assert.deepEqual(patchForScene(patch, ascii), patch);
+});
 
 test('all-layer and individual routes sum independently and restore distinct resting values', () => {
   const ascii = { get: key => key === 'fade' ? 0 : undefined };

@@ -1,0 +1,2 @@
+#pragma once
+#define ASCII_VISUALS_VERSION "@ASCII_VERSION@"

@@ -4,6 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+const buildInfo = { ...JSON.parse(readFileSync(resolve(root, 'plugin/version.json'), 'utf8')), builtAt: new Date().toISOString() };
 const scenes = readdirSync(resolve(root, 'examples'))
   .filter(name => name.endsWith('.html') && !name.startsWith('_') && !['index.html', 'webcam.html'].includes(name))
   .sort().map(file => {
@@ -17,8 +18,14 @@ export default defineConfig({
   base: './',
   plugins: [{
     name: 'plugin-scene-catalog',
-    resolveId(id) { if (id === 'virtual:plugin-scenes') return '\0plugin-scenes'; },
-    load(id) { if (id === '\0plugin-scenes') return `export default ${JSON.stringify(scenes)}`; },
+    resolveId(id) {
+      if (id === 'virtual:plugin-scenes') return '\0plugin-scenes';
+      if (id === 'virtual:plugin-build') return '\0plugin-build';
+    },
+    load(id) {
+      if (id === '\0plugin-scenes') return `export default ${JSON.stringify(scenes)}`;
+      if (id === '\0plugin-build') return `export default ${JSON.stringify(buildInfo)}`;
+    },
   }],
   build: {
     outDir: 'plugin/build/web', emptyOutDir: true,

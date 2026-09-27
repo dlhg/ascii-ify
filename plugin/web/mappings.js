@@ -1,4 +1,21 @@
-import { knownTarget } from './targets.js';
+import { knownTarget, sceneTarget, baseTargets } from './targets.js';
+
+// Older presets offered globals which are overridden in layered scenes. Move
+// those mappings to the visible layers; an existing explicit All layers route wins.
+export function patchForScene(patch, ascii) {
+  const explicit = new Set(patch.routes.filter(r => sceneTarget(ascii, r.target) === r.target).map(r => `${r.source}:${r.target}`));
+  const routes = patch.routes.filter(r => sceneTarget(ascii, r.target) === r.target || !explicit.has(`${r.source}:${sceneTarget(ascii, r.target)}`))
+    .map(r => ({ ...r, target: sceneTarget(ascii, r.target) }));
+  const bases = {};
+  for (const [target, value] of Object.entries(patch.bases || {})) {
+    const mapped = sceneTarget(ascii, target);
+    if (mapped !== target) for (const key of baseTargets(ascii, mapped)) bases[key] = value;
+  }
+  // Explicit layer resting values take priority over migrated global values.
+  for (const [target, value] of Object.entries(patch.bases || {}))
+    if (sceneTarget(ascii, target) === target) bases[target] = value;
+  return { ...patch, routes, bases };
+}
 
 export const INPUTS = [
   { id: 'rms', name: 'Loudness' }, { id: 'bass', name: 'Bass' },

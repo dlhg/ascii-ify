@@ -1,4 +1,5 @@
 #include "Plugin.h"
+#include "Version.h"
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "public.sdk/source/main/pluginfactory.h"
@@ -100,5 +101,5 @@ bool DeinitModule() { return true; }
 BEGIN_FACTORY_DEF("ascii-ify", "https://github.com/dlhg/ascii-ify", "")
 DEF_CLASS2(INLINE_UID(0xA548E728, 0xD1AD4F2C, 0xBD808BC3, 0x9EF79D11),
     PClassInfo::kManyInstances, kVstAudioEffectClass, "ASCII Visuals", 0,
-    "Fx|Analyzer", "0.2.1", kVstVersionString, ascii_plugin::Plugin::createInstance)
+    "Fx|Analyzer", ASCII_VISUALS_VERSION, kVstVersionString, ascii_plugin::Plugin::createInstance)
 END_FACTORY

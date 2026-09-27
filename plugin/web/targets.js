@@ -6,6 +6,11 @@ const layerProperties = {
   opacity: 'Opacity', offsetX: 'Horizontal offset', offsetY: 'Vertical offset', zIndex: 'Stack order',
 };
 const layerKeys = Object.keys(layerProperties);
+// These globals are replaced by each layer's own value when layers are present.
+const overriddenGlobals = new Set(['fontSize', 'density', 'patternMix', 'edgeThreshold']);
+export function sceneTarget(ascii, id) {
+  return ascii.layers.length && overriddenGlobals.has(id) ? `layer.all.${id}` : id;
+}
 export function layerTarget(id) {
   const match = /^layer\.(all|\d{1,2})\.([a-zA-Z]+)$/.exec(id);
   return match && Object.hasOwn(layerProperties, match[2])
@@ -35,7 +40,7 @@ export function destination(ascii, id) {
 }
 export function listTargets(ascii, scene) {
   const all = layerKeys.map(key => `layer.all.${key}`).filter(id => baseTargets(ascii, id).length);
-  return [...globalTargets(ascii, scene), ...all, ...ascii.layers.flatMap((layer, index) =>
+  return [...globalTargets(ascii, scene).filter(id => sceneTarget(ascii, id) === id), ...all, ...ascii.layers.flatMap((layer, index) =>
     layerKeys.filter(key => typeof numericValue(ascii, layer, key) === 'number').map(key => `layer.${index}.${key}`))];
 }
 export function targetHint(id, ascii) {
@@ -43,7 +48,6 @@ export function targetHint(id, ascii) {
   const inactive = list.filter(({ owner, key }) => !globalActive(key, owner)).length;
   if (inactive) return `Enable ${globalInfo(list[0].key).needs} in Appearance${layer?.index === 'all' ? ` on ${inactive} layer(s)` : ''} to use this parameter.`;
   if (layer?.index === 'all') return 'Moves every layer from its own resting value. Enter a resting value to set them all alike. Individual mappings add to this.';
-  if (!layer && ascii.layers.length && layerKeys.includes(id)) return 'This scene uses layers. Choose All layers or a Layer destination to change its glyphs directly.';
   return '';
 }
 // Keep logical mappings separate even when All layers and Layer 1 use the same

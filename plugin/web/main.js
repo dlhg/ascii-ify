@@ -1,6 +1,7 @@
 import scenes from 'virtual:plugin-scenes';
+import buildInfo from 'virtual:plugin-build';
 import { PluginConnection } from './connection.js';
-import { INPUTS, cleanSetup, defaultRoutes } from './mappings.js';
+import { INPUTS, cleanSetup, defaultRoutes, patchForScene } from './mappings.js';
 import { Reactivity } from '../../examples/audio-reactivity.js';
 import { listTargets, targetInfo, targetHint, destination, destinations, baseTargets, numericValue, routingEngine } from './targets.js';
 import { profileFor, sceneKind } from '../../examples/audio-profiles.js';
@@ -29,6 +30,19 @@ for (const [kind, name] of Object.entries(groups)) {
   if (group.children.length) picker.append(group);
 }
 $('#scene-count').textContent = `${scenes.length} library scenes`;
+const versionLabel = $('#build-version');
+versionLabel.textContent = `Web v${buildInfo.version} · checking plugin version…`;
+versionLabel.title = `Web build: ${buildInfo.builtAt}`;
+fetch(new URL('../../info', location.href), { cache: 'no-store', signal: AbortSignal.timeout(3000) })
+  .then(response => { if (!response.ok) throw new Error('Unavailable'); return response.json(); })
+  .then(info => {
+    if (typeof info.pluginVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(info.pluginVersion)) throw new Error('Invalid version');
+    const mismatch = info.pluginVersion !== buildInfo.version;
+    versionLabel.textContent = `Web v${buildInfo.version} · Plugin v${info.pluginVersion}${mismatch ? ' · versions differ' : ''}`;
+    versionLabel.dataset.mismatch = String(mismatch);
+    if (mismatch) versionLabel.title += '\nQuit and reopen Ableton, then click Open Visuals for a fresh connection.';
+  })
+  .catch(() => { versionLabel.textContent = `Web v${buildInfo.version} · plugin version unavailable`; });
 
 function note(text) { $('#mapping-note').textContent = text; }
 function getRest(target) {
@@ -79,11 +93,11 @@ window.asciiIfyHost = {
     const engine = routingEngine(app.ascii);
     const rx = new Reactivity({ ascii: engine, scene: app.scene, audio });
     session = { id: setup.scene, app, rx, engine, unsubscribe: () => {} };
-    const patch = setup.patches[setup.scene];
+    const patch = patchForScene(setup.patches[setup.scene] ?? { routes: defaultRoutes(profileFor(setup.scene, app.ascii)), bases: {} }, app.ascii);
     intensity.value = patch?.intensity ?? 1;
     enabled.checked = patch?.enabled ?? true;
     if (patch) for (const [target, value] of Object.entries(patch.bases)) setRest(target, value);
-    rx.load(patch?.routes ?? defaultRoutes(profileFor(setup.scene, app.ascii)), {
+    rx.load(patch.routes, {
       intensity: enabled.checked ? Number(intensity.value) : 0,
     });
     session.unsubscribe = rx.onChange((_, kind) => { if (kind === 'structure') renderRoutes(); save(); });
@@ -176,7 +190,7 @@ function renderRoutes() {
 picker.onchange = () => selectScene(picker.value);
 $('#add-mapping').onclick = () => {
   if (!session || session.rx.routes.length >= 64) return;
-  for (const target of [session.app.ascii.layers.length ? 'layer.0.fontSize' : 'fontSize', ...listTargets(session.app.ascii, session.app.scene)])
+  for (const target of [session.app.ascii.layers.length ? 'layer.all.fontSize' : 'fontSize', ...listTargets(session.app.ascii, session.app.scene)])
     for (const source of INPUTS)
       if (!session.rx.routes.some(r => r.target === target && r.source === source.id)) {
         session.rx.addRoute({ source: source.id, target, depth: 0.1, smooth: 0.15 }); return;

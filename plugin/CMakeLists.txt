@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS")
-project(AsciiVisuals VERSION 0.2.1 LANGUAGES CXX OBJCXX)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.json" VERSION_JSON)
+string(JSON ASCII_VERSION GET "${VERSION_JSON}" version)
+project(AsciiVisuals VERSION ${ASCII_VERSION} LANGUAGES CXX OBJCXX)
+configure_file(native/Version.h.in generated/Version.h @ONLY)
 if(NOT APPLE)
     message(FATAL_ERROR "This first prototype uses a macOS editor and sockets.")
 endif()
@@ -34,7 +37,7 @@ endif()
 smtg_add_vst3plugin(AsciiVisuals PACKAGE_NAME "ASCII Visuals" SOURCES_LIST
     native/Plugin.cpp native/Plugin.h native/Analysis.h native/Bridge.cpp native/Bridge.h native/Editor.mm
     "${VST3_SDK_ROOT}/public.sdk/source/vst/vstsinglecomponenteffect.cpp")
-target_include_directories(AsciiVisuals PRIVATE "${VST3_SDK_ROOT}")
+target_include_directories(AsciiVisuals PRIVATE "${VST3_SDK_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(AsciiVisuals PRIVATE sdk "-framework Cocoa")
 set_source_files_properties(native/Editor.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 smtg_target_set_bundle(AsciiVisuals
@@ -57,7 +60,7 @@ add_custom_command(TARGET AsciiVisuals POST_BUILD
 
 enable_testing()
 add_executable(ascii-native-tests tests/native.cpp native/Bridge.cpp)
-target_include_directories(ascii-native-tests PRIVATE native)
+target_include_directories(ascii-native-tests PRIVATE native "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_test(NAME ascii-native-tests COMMAND ascii-native-tests)
 add_executable(ascii-bridge-fixture tests/fixture.mm
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_mac.mm")

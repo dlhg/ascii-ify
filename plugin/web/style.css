@@ -6,6 +6,8 @@ header { top: 22px; pointer-events: none; text-shadow: 0 1px 8px #000; }
 .brand { letter-spacing: 0.13em; font-weight: 700; }
 .brand span { margin-left: 12px; color: #94ffcf; font-size: 10px; }
 .brand small { display: block; margin-top: 8px; letter-spacing: 0; color: #a7bdb5; font-size: 11px; font-weight: 400; }
+#build-version { pointer-events: auto; }
+#build-version[data-mismatch="true"] { color: #f1c887; }
 #status { color: #b1c3bf; text-align: right; max-width: 55%; }
 #status[data-state="live"] { color: #94ffcf; }
 footer { bottom: 24px; margin: auto; width: fit-content; max-width: calc(100% - 48px); flex-wrap: wrap; padding: 14px 18px; background: #0e181de8; border: 1px solid #294239; border-radius: 12px; backdrop-filter: blur(14px); }
