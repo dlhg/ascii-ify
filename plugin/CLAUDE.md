@@ -7,3 +7,6 @@
 - The plugin is GPL-2.0-or-later because it links Ableton Link; the rest of the repo is MIT.
 - Audio-thread code (`native/Analysis.h`, `Plugin::process`) must stay allocation-, lock-
   and syscall-free.
+- To try changes in Live, `npm run install:plugin` builds and installs the plugin into
+  `~/Library/Audio/Plug-Ins/VST3`; Live must be restarted to load it. A local Stop hook
+  runs it with `--hook` after each turn, rebuilding only when bundled sources changed.
