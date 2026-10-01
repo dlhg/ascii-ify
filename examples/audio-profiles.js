@@ -105,6 +105,44 @@ const SCENES = {
   snake: { kind: 'gentle' }, flappy: { kind: 'gentle' }, life: { kind: 'gentle' }, chess: { kind: 'gentle' },
   pendulum: { kind: 'gentle' }, 'art-studio': { kind: 'gentle' }, 'particle-painter': { kind: 'gentle' },
   playground: { kind: 'gentle' },
+  // musical scenes: their own controls carry the music (scene.<key> targets)
+  'blossom-storm': { kind: 'ambient', routes: () => [
+    r(S + 'fall', 'rms', 0.8, { smooth: 0.1 }),
+    r(S + 'gust', 'kick', 1, { smooth: 0 }),
+    r(S + 'bloom', 'high', 0.9, { smooth: 0.08 }),
+    r(S + 'sway', 'mid', 0.7, { smooth: 0.15 }),
+  ] },
+  cymatics: { kind: 'geometry', routes: () => [
+    r(S + 'swell', 'bass', 0.7, { smooth: 0.06 }),
+    r(S + 'ripple', 'kick', 1, { smooth: 0 }),
+    r(S + 'pattern', 'mid', 0.7, { smooth: 0.1 }),
+    r(S + 'mode', 'snare', 1, { smooth: 0 }),
+    r(S + 'shimmer', 'high', 0.6, { smooth: 0.04 }),
+    r('crtGlow', 'kick', 0.25, { smooth: 0.08 }),
+  ] },
+  'neural-choir': { kind: 'ambient', routes: () => [
+    r(S + 'root', 'kick', 1, { smooth: 0 }),
+    r(S + 'branch', 'snare', 1, { smooth: 0 }),
+    r(S + 'tips', 'hat', 1, { smooth: 0 }),
+    r(S + 'chatter', 'rms', 0.6, { smooth: 0.2 }),
+    r(S + 'conduct', 'mid', 0.5, { smooth: 0.3 }),
+  ] },
+  'galaxy-waltz': { kind: 'ambient', routes: () => [
+    r(S + 'spin', 'bass', 0.6, { smooth: 0.2 }),
+    r(S + 'pulse', 'kick', 1, { smooth: 0 }),
+    r(S + 'nova', 'snare', 1, { smooth: 0 }),
+    r(S + 'spread', 'mid', 0.6, { smooth: 0.2 }),
+    r(S + 'twinkle', 'high', 0.8, { smooth: 0.05 }),
+    r(S + 'approach', 'rms', 0.8, { smooth: 0.5 }),
+  ] },
+  'skyline-eq': { kind: 'geometry', routes: () => [
+    r(S + 'low', 'bass', 0.85, { smooth: 0.04 }),
+    r(S + 'mid', 'mid', 0.85, { smooth: 0.04 }),
+    r(S + 'high', 'high', 0.85, { smooth: 0.03 }),
+    r(S + 'strobe', 'kick', 1, { smooth: 0 }),
+    r(S + 'beams', 'snare', 1, { smooth: 0 }),
+    r(S + 'traffic', 'rms', 0.8, { smooth: 0.3 }),
+  ] },
 };
 
 /** Current name of the running scene, from its file name (e.g. 'fireworks'). */

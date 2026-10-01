@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Neural Choir</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #010a01; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { lerp, clamp, dist, mulberry32 } from './utils.js';
+      import { envelope, hits } from './music.js';
+
+      // ── Neural choir ─────────────────────────────────────────────
+      // A nerve net where every drum is a different kind of thought. A kick
+      // fires the root and a wave of action potentials races out to every
+      // dendrite; a snare lights a branch mid-way and spreads both ways until
+      // it fades; hats spark the outer tips. Neurons rest for a moment after
+      // firing, so overlapping waves collide and cancel like real ones.
+      // Loudness raises background chatter; mids change how fast signals travel.
+      const PARAMS = [
+        { key: 'root', label: 'Root fire (hits)', min: 0, max: 1, def: 0 },
+        { key: 'branch', label: 'Branch fire (hits)', min: 0, max: 1, def: 0 },
+        { key: 'tips', label: 'Tip sparks (hits)', min: 0, max: 1, def: 0 },
+        { key: 'chatter', label: 'Chatter', min: 0, max: 1, def: 0.12 },
+        { key: 'conduct', label: 'Conduction', min: 0, max: 1, def: 0.3 },
+      ];
+
+      const TWO_PI = Math.PI * 2;
+      const MAX_NODES = 600, MAX_DEPTH = 16, BRANCH_MIN = 25, BRANCH_MAX = 60, MIN_DIST = 15;
+      const REST = 0.3;            // refractory seconds after a neuron fires
+
+      let nodes = [], edges = [], leaves = [], mids = [];
+      let W = 0, H = 0, now = 0;
+      const signals = [];          // travelling action potentials { a, b, t0, t1, strength, decay, hops }
+      const sparks = new ParticlePool({ maxParticles: 500, gravity: 0, drag: 0.94 });
+      const chatterEnv = envelope(0.1, 0.4), conductEnv = envelope(0.1, 0.4);
+      const rootHits = hits(), branchHits = hits(), tipHits = hits({ threshold: 0.25 });
+
+      function generate(cx, cy, w, h) {
+        const rng = mulberry32(7919);
+        nodes = [{ x: cx, y: cy, depth: 0, links: [], last: -9, energy: 0 }];
+        edges = [];
+        const queue = [0], margin = 30;
+        while (queue.length && nodes.length < MAX_NODES) {
+          const idx = queue.shift(), node = nodes[idx];
+          if (node.depth >= MAX_DEPTH) continue;
+          const bc = node.depth === 0 ? 6 + Math.floor(rng() * 3) : node.depth < 3 ? 2 + Math.floor(rng() * 2)
+            : node.depth < 7 ? (rng() < 0.65 ? 2 : 1) : (rng() < 0.35 ? 2 : 1);
+          const base = node.depth === 0 ? 0 : Math.atan2(node.y - cy, node.x - cx);
+          for (let b = 0; b < bc && nodes.length < MAX_NODES; b++) {
+            const angle = node.depth === 0 ? (b / bc) * TWO_PI + (rng() - 0.5) * 0.3 : base + (rng() - 0.5) * 1.4;
+            const len = lerp(BRANCH_MAX, BRANCH_MIN, node.depth / MAX_DEPTH) + (rng() - 0.5) * 20;
+            const nx = node.x + Math.cos(angle) * len, ny = node.y + Math.sin(angle) * len;
+            if (nx < margin || nx > w - margin || ny < margin || ny > h - margin) continue;
+            if (nodes.some(o => dist(nx, ny, o.x, o.y) < MIN_DIST)) continue;
+            const j = nodes.length;
+            const e = { a: idx, b: j, len: dist(node.x, node.y, nx, ny), glow: 0 };
+            edges.push(e);
+            nodes.push({ x: nx, y: ny, depth: node.depth + 1, links: [], last: -9, energy: 0 });
+            node.links.push({ to: j, edge: e });
+            nodes[j].links.push({ to: idx, edge: e });
+            queue.push(j);
+          }
+        }
+        leaves = nodes.map((n, i) => i).filter(i => nodes[i].links.length === 1 && nodes[i].depth > 4);
+        mids = nodes.map((n, i) => i).filter(i => nodes[i].depth >= 3 && nodes[i].depth <= 9);
+        signals.length = 0;
+      }
+
+      // A neuron fires unless it is resting, and passes the signal on to its
+      // neighbours, weaker by `decay` per hop.
+      function fire(i, strength, decay, hops, speed) {
+        const n = nodes[i];
+        if (now - n.last < REST || strength < 0.06) return;
+        n.last = now;
+        n.energy = Math.max(n.energy, strength);
+        if (strength > 0.35 && Math.random() < strength) {
+          sparks.emit(2 + (strength * 4) | 0, () => ({
+            x: n.x, y: n.y, vx: (Math.random() - 0.5) * 90 * strength, vy: (Math.random() - 0.5) * 90 * strength,
+            life: 0.25 + Math.random() * 0.35, size: 0.8 + Math.random() * 1.2,
+          }));
+        }
+        if (hops <= 0) return;
+        for (const { to, edge } of n.links) {
+          if (now - nodes[to].last < REST) continue;
+          signals.push({ a: i, b: to, edge, t0: now, t1: now + edge.len / speed, strength: strength * decay, decay, hops: hops - 1, speed });
+        }
+      }
+
+      const pick = list => list[(Math.random() * list.length) | 0];
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Neurons',
+        asciiConfig: { fontSize: 8, charset: 'density', colorScheme: 'acid', background: '#010a01', sourceOpacity: 0 },
+        layers: [
+          { fontSize: 18, charset: 'blocks', blendMode: 'replace', opacity: 0.2 },
+          { fontSize: 6, charset: 'density', blendMode: 'add', opacity: 1 },
+        ],
+        onResize(ctx, w, h) {
+          W = w; H = h;
+          generate(w / 2, h / 2, w, h);
+          sparks.clear();
+        },
+        draw(ctx, { dt, param }) {
+          now += dt;
+          const chatter = chatterEnv(param('chatter'), dt);
+          const speed = 140 + conductEnv(param('conduct'), dt) * 520;
+
+          const root = rootHits(param('root'), dt);
+          if (root) fire(0, 0.6 + root * 0.5, 0.97, 99, speed);
+          const branch = branchHits(param('branch'), dt);
+          if (branch && mids.length) fire(pick(mids), 0.5 + branch * 0.5, 0.86, 12, speed);
+          const tip = tipHits(param('tips'), dt);
+          if (tip && leaves.length) for (let k = 0; k < 3; k++) fire(pick(leaves), 0.3 + tip * 0.4, 0.6, 2, speed);
+          if (Math.random() < chatter * chatter * 30 * dt && nodes.length) fire((Math.random() * nodes.length) | 0, 0.25 + chatter * 0.3, 0.7, 3, speed);
+
+          // Deliver signals that have arrived; arrivals can fire new ones.
+          for (let i = signals.length - 1; i >= 0; i--) {
+            const s = signals[i];
+            if (now < s.t1) continue;
+            signals[i] = signals[signals.length - 1];
+            signals.pop();
+            s.edge.glow = Math.max(s.edge.glow, s.strength);
+            fire(s.b, s.strength, s.decay, s.hops, s.speed);
+          }
+
+          ctx.fillStyle = 'rgba(1, 10, 1, 0.16)';
+          ctx.fillRect(0, 0, W, H);
+
+          const fade = Math.exp(-dt / 0.45);
+          ctx.lineWidth = 1;
+          for (const e of edges) {
+            e.glow *= fade;
+            const a = nodes[e.a], b = nodes[e.b];
+            ctx.strokeStyle = `rgba(${30 + e.glow * 120 | 0}, ${150 + e.glow * 105 | 0}, ${70 + e.glow * 120 | 0}, ${0.16 + e.glow * 0.7})`;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+
+          // Action potentials: a bright head with a short tail behind it.
+          for (const s of signals) {
+            const a = nodes[s.a], b = nodes[s.b];
+            const p = clamp((now - s.t0) / (s.t1 - s.t0), 0, 1);
+            const q = Math.max(0, p - 0.45);
+            ctx.strokeStyle = `rgba(150, 255, 200, ${0.4 + s.strength * 0.5})`;
+            ctx.lineWidth = 1 + s.strength * 2;
+            ctx.beginPath();
+            ctx.moveTo(lerp(a.x, b.x, q), lerp(a.y, b.y, q));
+            ctx.lineTo(lerp(a.x, b.x, p), lerp(a.y, b.y, p));
+            ctx.stroke();
+            ctx.fillStyle = `rgba(220, 255, 235, ${0.6 + s.strength * 0.4})`;
+            ctx.beginPath();
+            ctx.arc(lerp(a.x, b.x, p), lerp(a.y, b.y, p), 2 + s.strength * 3, 0, TWO_PI);
+            ctx.fill();
+          }
+
+          const nodeFade = Math.exp(-dt / 0.35);
+          for (const n of nodes) {
+            n.energy *= nodeFade;
+            const e = n.energy;
+            const size = (n.depth === 0 ? 5 : lerp(3.5, 1.5, n.depth / MAX_DEPTH)) + e * 5;
+            ctx.fillStyle = `rgba(${70 + e * 150 | 0}, ${140 + e * 115 | 0}, ${70 + e * 160 | 0}, ${0.4 + e * 0.6})`;
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, size, 0, TWO_PI);
+            ctx.fill();
+          }
+          const core = nodes[0]?.energy ?? 0;
+          if (core > 0.05) {
+            const r = 30 + core * 60;
+            const g = ctx.createRadialGradient(nodes[0].x, nodes[0].y, 0, nodes[0].x, nodes[0].y, r);
+            g.addColorStop(0, `rgba(255,255,255,${core * 0.8})`);
+            g.addColorStop(0.3, `rgba(100,255,160,${core * 0.4})`);
+            g.addColorStop(1, 'rgba(0,40,20,0)');
+            ctx.fillStyle = g;
+            ctx.fillRect(nodes[0].x - r, nodes[0].y - r, r * 2, r * 2);
+          }
+
+          sparks.update(dt);
+          sparks.forEach(p => {
+            ctx.fillStyle = `rgba(160, 255, 200, ${clamp(p.life * 2.5, 0, 1)})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, TWO_PI);
+            ctx.fill();
+          });
+        },
+      });
+    </script>
+  </body>
+</html>

@@ -8,6 +8,7 @@ import { AudioPanel } from './audio-panel.js';
 import { profileFor, sceneName } from './audio-profiles.js';
 import { registerSignal } from '../src/automation.js';
 import { embeddedHost, idleAudio } from './embedded-host.js';
+import { demoGroove } from './demo-groove.js';
 export { AsciiIfy };
 
 export function createApp({
@@ -20,7 +21,7 @@ export function createApp({
   sceneControls = true,
   sceneParams = [],    // scene-specific controls, mappable to audio (see ScenePopup)
   sceneTitle = 'Scene',
-  audio = null,        // true/false, or omit to follow the ?audio URL flag
+  audio = null,        // true/false, or omit: on with ?audio or ?demo, or for scenes with sceneParams
   audioRecipe = true,  // apply this scene's audio profile (see audio-profiles.js)
 } = {}) {
   const host = embeddedHost();
@@ -50,7 +51,8 @@ export function createApp({
   if (showPanel && !host) ascii.showPanel();
 
   // Audio: one analyzer + dock, and (optionally) generic routes so any scene reacts.
-  const useAudio = !host && (audio ?? new URLSearchParams(location.search).has('audio'));
+  const query = new URLSearchParams(location.search);
+  const useAudio = !host && (audio ?? (query.has('audio') || query.has('demo') || sceneParams.length > 0));
   let reactivity = null;
   let audioPanel = null;
   const audioDock = useAudio
@@ -78,12 +80,16 @@ export function createApp({
     if (onKeydown) onKeydown(e);
   });
 
+  // ?demo: a built-in synthetic song plays until a mic or file is connected.
+  const demo = audioDock && query.has('demo') ? demoGroove({ live: audioDock.audio }) : null;
+  if (demo) audioDock.el.querySelector('.status').textContent = 'demo song · use mic or load a file';
+
   if (audioDock && audioRecipe) {
     // A saved patch for this scene wins over the scene's default profile.
     const name = sceneName();
     const defaults = () => profileFor(name, ascii);
     const saved = loadPatch(name);
-    reactivity = new Reactivity({ ascii, scene, audio: audioDock.audio });
+    reactivity = new Reactivity({ ascii, scene, audio: demo ?? audioDock.audio });
     reactivity.load(saved ? saved.routes : defaults());
     audioDock.setIntensity(reactivity.intensity);
     audioPanel = new AudioPanel({ reactivity, dock: audioDock, sceneName: name, defaults, ascii, custom: !!saved });
@@ -151,7 +157,7 @@ export function createApp({
     // Undo last frame's filter so the scene draws onto its own unaltered pixels.
     if (filtered) restorePristine();
 
-    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, param, audio: host ? idleAudio : audioDock?.audio ?? null });
+    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, param, audio: host ? idleAudio : demo ?? audioDock?.audio ?? null });
     applySceneFilter();
     ascii.render();
     requestAnimationFrame(loop);
@@ -163,7 +169,7 @@ export function createApp({
     ctx,
     ascii,
     scene,
-    audio: host ? idleAudio : audioDock?.audio ?? null,
+    audio: host ? idleAudio : demo ?? audioDock?.audio ?? null,
     reactivity,
     get audioPanel() { return audioPanel; },
     get width() { return canvas.width; },

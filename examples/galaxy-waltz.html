@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Galaxy Waltz</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #04040a; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { ParticlePool } from './particles.js';
+      import { clamp, lerp } from './utils.js';
+      import { envelope, hits } from './music.js';
+
+      // ── Galaxy waltz ─────────────────────────────────────────────
+      // Two galaxies dancing to the song. Bass spins them up; every kick
+      // flares the core and sends a density wave rolling out through the
+      // arms; snares detonate supernovae out in the spiral; mids loosen the
+      // arms and highs set the stars twinkling. Sustained energy pulls the
+      // companion galaxy in close, quiet passages let it drift away.
+      const PARAMS = [
+        { key: 'spin', label: 'Spin', min: 0, max: 1, def: 0.1 },
+        { key: 'pulse', label: 'Core pulse (hits)', min: 0, max: 1, def: 0 },
+        { key: 'nova', label: 'Supernova (hits)', min: 0, max: 1, def: 0 },
+        { key: 'spread', label: 'Arm spread', min: 0, max: 1, def: 0.25 },
+        { key: 'twinkle', label: 'Twinkle', min: 0, max: 1, def: 0.2 },
+        { key: 'approach', label: 'Approach', min: 0, max: 1, def: 0.2 },
+      ];
+
+      const ARM_SPREAD = 0.45, TIGHTNESS = 0.3, RADIUS = 0.36, CORE = 0.06, SECONDARY = 0.6;
+
+      function makeStars(count, arms, palette) {
+        const out = [];
+        for (let i = 0; i < count; i++) {
+          const arm = Math.floor(Math.random() * arms);
+          const d = Math.pow(Math.random(), 0.6);
+          const [hue, sat, light] = palette(d);
+          out.push({
+            base: (arm / arms) * Math.PI * 2 + Math.log(1 + d * 10) * TIGHTNESS * 6,
+            scatter: (Math.random() - 0.5) * ARM_SPREAD * (0.3 + d * 0.7),
+            d,
+            orbit: 1 / Math.max(Math.pow(d, 0.7), 0.08),
+            size: 0.5 + Math.random() * 2.3 * (1 - d * 0.5),
+            bright: 0.3 + Math.random() * 0.7 * (1 - d * 0.3),
+            tw: Math.random() * 100,
+            hue, sat, light,
+          });
+        }
+        return out;
+      }
+      const warm = d => d < 0.2 ? [30 + Math.random() * 40, 50, 80] : d < 0.5 ? [40 + Math.random() * 60 + d * 200, 60, 62] : [200 + Math.random() * 80, 65, 52];
+      const cool = d => d < 0.2 ? [210, 45, 85] : d < 0.5 ? [215 + Math.random() * 50, 60, 62] : [240 + Math.random() * 60, 60, 50];
+      const primary = makeStars(1800, 3, warm);
+      const secondary = makeStars(1000, 2, cool);
+      const background = Array.from({ length: 300 }, () => ({ x: Math.random(), y: Math.random(), r: 0.3 + Math.random() * 0.8, b: 0.15 + Math.random() * 0.35, ph: Math.random() * 6.28 }));
+
+      let rot = 0, orbit = 0, time = 0;
+      const waves = [];       // density waves from the core { r, strength }
+      const novae = [];       // { star, age, strength }
+      const debris = new ParticlePool({ maxParticles: 900, gravity: 0, drag: 0.985 });
+      const spinEnv = envelope(0.15, 0.8), spreadEnv = envelope(0.2, 0.8), twinkleEnv = envelope(0.03, 0.2);
+      const approachEnv = envelope(2.5, 5), coreEnv = envelope(0.01, 0.35);
+      const pulseHits = hits(), novaHits = hits();
+
+      // Screen position of a star in a galaxy at (cx, cy), including density-wave push.
+      function place(s, g, out) {
+        const a = s.base + s.scatter * g.spread + rot * s.orbit * g.dir;
+        let r = s.d * g.radius;
+        for (const w of waves) {
+          if (g.dir < 0) break;
+          const k = (r - w.r) / (g.radius * 0.08);
+          if (k > -3 && k < 3) r += w.strength * g.radius * 0.07 * Math.exp(-k * k);
+        }
+        out.x = g.cx + Math.cos(a) * r;
+        out.y = g.cy + Math.sin(a) * r * 0.55;
+        return out;
+      }
+
+      function glow(ctx, x, y, r, stops) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        stops.forEach(([o, c]) => g.addColorStop(o, c));
+        ctx.fillStyle = g;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      }
+
+      const pos = { x: 0, y: 0 };
+      function draw(ctx, { dt, width: w, height: h, param }) {
+        time += dt;
+        const spin = spinEnv(param('spin'), dt);
+        const spread = 0.6 + spreadEnv(param('spread'), dt) * 1.3;
+        const twinkle = twinkleEnv(param('twinkle'), dt);
+        const approach = approachEnv(param('approach'), dt);
+        rot += dt * 0.015 * (1 + spin * 9);
+        orbit += dt * 0.008 * (1 + spin * 3);
+
+        const pulse = pulseHits(param('pulse'), dt);
+        if (pulse) waves.push({ r: 0, strength: 0.5 + pulse });
+        const core = coreEnv(pulse ? 0.5 + pulse : 0, dt);
+        const nova = novaHits(param('nova'), dt);
+        if (nova) {
+          const star = primary[(Math.random() * primary.length) | 0];
+          if (star.d > 0.3) novae.push({ star, age: 0, strength: 0.5 + nova });
+        }
+
+        const minDim = Math.min(w, h);
+        const pr = minDim * RADIUS;
+        const orbitR = minDim * lerp(0.62, 0.3, approach);
+        const P = { cx: w / 2, cy: h / 2, radius: pr, spread, dir: 1 };
+        const S = {
+          cx: w / 2 + Math.cos(orbit) * orbitR,
+          cy: h / 2 + Math.sin(orbit) * orbitR * 0.5 - minDim * 0.08,
+          radius: pr * SECONDARY, spread, dir: -1.2,
+        };
+        for (let i = waves.length - 1; i >= 0; i--) {
+          waves[i].r += pr * 0.9 * dt;
+          waves[i].strength *= Math.exp(-dt * 0.8);
+          if (waves[i].r > pr * 1.3) waves.splice(i, 1);
+        }
+
+        ctx.fillStyle = '#04040a';
+        ctx.fillRect(0, 0, w, h);
+        for (const s of background) {
+          ctx.fillStyle = `rgba(200,210,255,${s.b * (0.6 + 0.4 * Math.sin(time * (1 + twinkle * 6) + s.ph))})`;
+          ctx.fillRect(s.x * w, s.y * h, s.r * 2, s.r * 2);
+        }
+
+        // Cores; the primary flares on each pulse.
+        const cr = minDim * CORE * (1 + core * 0.5);
+        glow(ctx, P.cx, P.cy, cr * 2.6, [[0, `rgba(255,240,200,${0.4 + core * 0.4})`], [0.2, `rgba(255,210,140,${0.18 + core * 0.2})`], [0.5, 'rgba(255,180,100,0.05)'], [1, 'rgba(255,150,80,0)']]);
+        glow(ctx, P.cx, P.cy, cr, [[0, 'rgba(255,255,245,0.95)'], [0.4, 'rgba(255,235,190,0.5)'], [1, 'rgba(200,150,100,0)']]);
+        glow(ctx, S.cx, S.cy, cr * 0.6 * 3, [[0, 'rgba(200,220,255,0.4)'], [0.3, 'rgba(150,180,255,0.15)'], [1, 'rgba(100,140,255,0)']]);
+        glow(ctx, S.cx, S.cy, cr * 0.6, [[0, 'rgba(240,245,255,0.9)'], [1, 'rgba(120,150,220,0)']]);
+
+        // Tidal bridge, brighter as the companion comes close.
+        const near = clamp(1 - Math.hypot(S.cx - P.cx, S.cy - P.cy) / (minDim * 0.7), 0, 1);
+        if (near > 0.05) {
+          for (let i = 0; i < 160; i++) {
+            const t = i / 160, bow = Math.sin(t * Math.PI) * pr * 0.25;
+            const x = lerp(P.cx, S.cx, t) - (S.cy - P.cy) / minDim * bow + Math.sin(time + i) * 8;
+            const y = lerp(P.cy, S.cy, t) + (S.cx - P.cx) / minDim * bow + Math.cos(time * 0.8 + i * 1.7) * 8;
+            ctx.fillStyle = `hsla(${200 + i % 80}, 50%, 70%, ${near * 0.5})`;
+            ctx.fillRect(x, y, 1.6, 1.6);
+          }
+        }
+
+        const tw = 3 + twinkle * 14;
+        for (const [stars, g] of [[secondary, S], [primary, P]]) {
+          for (const s of stars) {
+            place(s, g, pos);
+            const a = s.bright * (0.7 + 0.3 * Math.sin(time * tw + s.tw)) * (0.85 + twinkle * 0.4);
+            if (s.size > 1.6 && s.bright > 0.6) {
+              glow(ctx, pos.x, pos.y, s.size * 3, [[0, `hsla(${s.hue},${s.sat}%,${s.light}%,${a * 0.3})`], [1, `hsla(${s.hue},${s.sat}%,${s.light}%,0)`]]);
+            }
+            ctx.fillStyle = `hsla(${s.hue},${s.sat}%,${s.light}%,${a})`;
+            ctx.fillRect(pos.x - s.size * 0.6, pos.y - s.size * 0.6, s.size * 1.2, s.size * 1.2);
+          }
+        }
+
+        // Supernovae: a flash, a growing shell and debris thrown along the arm.
+        for (let i = novae.length - 1; i >= 0; i--) {
+          const n = novae[i];
+          place(n.star, P, pos);
+          if (n.age === 0) {
+            debris.emit(40 + (n.strength * 40) | 0, () => {
+              const a = Math.random() * Math.PI * 2, v = 30 + Math.random() * 90 * n.strength;
+              return { x: pos.x, y: pos.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.7, life: 0.8 + Math.random() * 1.4, hue: 20 + Math.random() * 40 };
+            });
+          }
+          n.age += dt;
+          const f = Math.exp(-n.age * 2.2) * n.strength;
+          glow(ctx, pos.x, pos.y, 14 + n.age * 60, [[0, `rgba(255,255,255,${f})`], [0.2, `rgba(255,220,160,${f * 0.6})`], [1, 'rgba(255,120,60,0)']]);
+          ctx.strokeStyle = `rgba(255,190,140,${f * 0.6})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.ellipse(pos.x, pos.y, n.age * 110, n.age * 80, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          if (n.age > 2) novae.splice(i, 1);
+        }
+        debris.update(dt);
+        debris.forEach(p => {
+          ctx.fillStyle = `hsla(${p.hue}, 90%, 70%, ${clamp(p.life, 0, 1)})`;
+          ctx.fillRect(p.x, p.y, 2, 2);
+        });
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Galaxies',
+        asciiConfig: { fontSize: 16, colorScheme: 'rainbow', background: '#04040a', sourceOpacity: 0 },
+        layers: [
+          { fontSize: 4, charset: 'density', colorScheme: 'vapor', offsetX: -107, offsetY: -2, zIndex: 15 },
+          { fontSize: 4, charset: 'blocks', colorScheme: 'ocean', offsetX: -72 },
+          { fontSize: 14.5, charset: 'minimal', colorScheme: 'vapor', patternMix: 0.58, opacity: 0.6, blendMode: 'add' },
+          { fontSize: 5.5, charset: 'braille', colorScheme: 'ocean', pattern: 'moiré', patternMix: 0.5, fade: 1, blendMode: 'add', offsetX: -72, offsetY: 33, edgeDetect: true },
+        ],
+        draw,
+      });
+    </script>
+  </body>
+</html>

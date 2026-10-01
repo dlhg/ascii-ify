@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - 3D Cymatics</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #050507; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp, valueNoise } from './utils.js';
+      import { envelope, hits } from './music.js';
+
+      // ── Cymatics ─────────────────────────────────────────────────
+      // A vibrating plate seen in 3D. Mids drive a standing-wave (Chladni)
+      // pattern, and its nodal lines gather glowing sand; every snare snaps
+      // the plate to its next mode. Kicks strike the plate and send rings
+      // across it, bass inflates the whole surface and highs make it hiss.
+      const PARAMS = [
+        { key: 'swell', label: 'Swell', min: 0, max: 1, def: 0.15 },
+        { key: 'ripple', label: 'Strike (hits)', min: 0, max: 1, def: 0 },
+        { key: 'pattern', label: 'Standing wave', min: 0, max: 1, def: 0.3 },
+        { key: 'mode', label: 'Next mode (hits)', min: 0, max: 1, def: 0 },
+        { key: 'shimmer', label: 'Shimmer', min: 0, max: 1, def: 0.08 },
+      ];
+
+      // Plate modes (n, m), simplest first.
+      const MODES = [[1, 2], [2, 3], [1, 4], [3, 4], [2, 5], [1, 6], [3, 5], [4, 5], [2, 7], [5, 6], [3, 7], [4, 7]];
+      const GW = 150, GH = 92;                  // simulation grid
+      const tile = document.createElement('canvas');
+      tile.width = GW; tile.height = GH;
+      const tileCtx = tile.getContext('2d');
+      const pixels = tileCtx.createImageData(GW, GH);
+
+      let mode = 0, prevMode = 0, morph = 1;    // morph 0→1 crossfades prevMode → mode
+      let phase = 0;
+      const strikes = [];                       // { x, y, age, strength }
+      const swellEnv = envelope(0.05, 0.3);
+      const patternEnv = envelope(0.08, 0.4);
+      const shimmerEnv = envelope(0.02, 0.15);
+      const strikeHits = hits(), modeHits = hits();
+
+      const chladni = ([n, m], x, y) =>
+        Math.cos(n * Math.PI * x) * Math.cos(m * Math.PI * y) - Math.cos(m * Math.PI * x) * Math.cos(n * Math.PI * y);
+
+      function draw(ctx, { time, dt, width: w, height: h, param }) {
+        const t = time / 1000;
+        const swell = swellEnv(param('swell'), dt);
+        const pattern = patternEnv(param('pattern'), dt);
+        const shimmer = shimmerEnv(param('shimmer'), dt);
+        phase += dt * (1.2 + pattern * 3);
+
+        const strike = strikeHits(param('ripple'), dt);
+        if (strike) {
+          // Strike the centre on strong hits, elsewhere on the plate otherwise.
+          const centre = strike > 0.7 || strikes.length === 0;
+          strikes.push({ x: centre ? 0.5 : 0.2 + Math.random() * 0.6, y: centre ? 0.5 : 0.2 + Math.random() * 0.6, age: 0, strength: strike });
+        }
+        if (modeHits(param('mode'), dt)) {
+          prevMode = mode;
+          mode = (mode + 1) % MODES.length;
+          morph = 0;
+        }
+        morph = Math.min(1, morph + dt / 0.35);
+        for (let i = strikes.length - 1; i >= 0; i--) {
+          strikes[i].age += dt;
+          if (strikes[i].age > 2.5) strikes.splice(i, 1);
+        }
+
+        const vib = Math.sin(phase);
+        const amp = 0.08 + pattern * 0.32;
+        const data = pixels.data;
+        for (let gy = 0; gy < GH; gy++) {
+          const y = gy / (GH - 1);
+          for (let gx = 0; gx < GW; gx++) {
+            const x = gx / (GW - 1);
+            let z = chladni(MODES[mode], x, y);
+            if (morph < 1) z = z * morph + chladni(MODES[prevMode], x, y) * (1 - morph);
+            z *= 0.5;   // ~-1..1
+            // Plate height: dome from bass, standing wave, strike rings, hiss.
+            const r2 = (x - 0.5) ** 2 + (y - 0.5) ** 2;
+            let height = 0.38 + swell * 0.32 * (1 - r2 * 2.2) + amp * z * vib;
+            for (const s of strikes) {
+              const r = Math.hypot((x - s.x) * 1.6, y - s.y);
+              const front = s.age * 0.55;
+              height += s.strength * 0.35 * Math.exp(-s.age * 1.6) * Math.exp(-(((r - front) / 0.045) ** 2));
+            }
+            if (shimmer > 0.01) height += shimmer * 0.16 * (valueNoise(gx * 0.6, gy * 0.6 + t * 9) - 0.5);
+            // Sand settles on the nodal lines, where the plate stays still.
+            const sand = Math.exp(-((z / 0.07) ** 2)) * (0.15 + pattern * 0.4);
+            const v = clamp(height + sand, 0, 1) * 255;
+            const o = (gy * GW + gx) * 4;
+            data[o] = data[o + 1] = data[o + 2] = v;
+            data[o + 3] = 255;
+          }
+        }
+        tileCtx.putImageData(pixels, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(tile, 0, 0, w, h);
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Plate',
+        asciiConfig: {
+          fontSize: 11,
+          density: 1.1,
+          charset: 'density',
+          colorScheme: 'neon',
+          background: '#050507',
+          sourceOpacity: 0,
+          renderMode: '3d',
+          depthScale: 260,
+          perspective: 620,
+          rotationX: 0.7,
+          rotationY: 0,
+          rotationZ: 0.12,
+          cameraZ: 700,
+          depthOpacity: 0.3,
+          depthSmoothing: 0.2,
+          fade: 0.15,
+          colorCycle: true,
+          colorCycleRate: 0.2,
+          crtEnabled: true,
+          crtScanlines: 0.15,
+          crtGlow: 0.25,
+          automations: {
+            rotationZ: { type: 'sine', amount: 0.25, rate: 0.02 },
+          },
+        },
+        draw,
+      });
+    </script>
+  </body>
+</html>
