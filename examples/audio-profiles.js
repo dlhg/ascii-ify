@@ -68,6 +68,7 @@ const EDGE_ROUTE = r('edgeThreshold', 'rms', -0.1, { smooth: 0.2, when: 'edge' }
 // scene file name → kind (+ tweaks)
 //   add:    extra routes         drop: targets to remove (all routes to them)
 //   scale:  { target: factor } multiplies depths for that target
+//   routes: replaces the kind's routes (scenes with their own controls)
 const SCENES = {
   // ambient
   galaxy: { kind: 'ambient' }, 'galaxy-2': { kind: 'ambient' }, 'galaxy-3': { kind: 'ambient' }, 'galaxy-4': { kind: 'ambient' },
@@ -79,7 +80,15 @@ const SCENES = {
   // flow
   'plasma-vortex': { kind: 'flow' }, 'plasma-bloom': { kind: 'flow' }, fluid: { kind: 'flow' },
   'reaction-diffusion': { kind: 'flow' }, tidal: { kind: 'flow' }, 'ripple-tank': { kind: 'flow' },
-  ridgeline: { kind: 'flow' }, spotlight: { kind: 'flow' }, 'text-reveal': { kind: 'flow' },
+  ridgeline: { kind: 'flow' },
+  'spectral-terrain': { kind: 'flow', routes: () => [
+    r(S + 'bass', 'bass', 0.8, { smooth: 0.08 }),
+    r(S + 'mids', 'mid', 0.7, { smooth: 0.06 }),
+    r(S + 'highs', 'high', 0.8, { smooth: 0.05 }),
+    r(S + 'sea', 'rms', -0.15, { smooth: 0.8 }),
+    r(S + 'flow', 'kick', 0.1, { smooth: 0.35 }),
+    r('crtGlow', 'kick', 0.2, { smooth: 0.08 }),
+  ] }, spotlight: { kind: 'flow' }, 'text-reveal': { kind: 'flow' },
   'text-portal': { kind: 'flow' }, idle2: { kind: 'flow' }, 'audio-reactive': null,
   // geometry
   'cube-rain': { kind: 'geometry' }, 'cube-trace': { kind: 'geometry' }, hypercube: { kind: 'geometry' },
@@ -120,7 +129,7 @@ export function profileFor(name, ascii) {
   const spec = entry || { kind: 'ambient' };           // unknown scenes: a safe, pretty default
   const has = traits(ascii);
 
-  let routes = KINDS[spec.kind]();
+  let routes = spec.routes ? spec.routes() : KINDS[spec.kind]();
   if (has.edge) routes.push(EDGE_ROUTE);
   if (spec.add) routes.push(...spec.add);
   if (spec.drop) routes = routes.filter((x) => !spec.drop.includes(x.target));

@@ -58,13 +58,13 @@ fetch(new URL('../../info', location.href), { cache: 'no-store', signal: AbortSi
 
 function note(text) { $('#mapping-note').textContent = text; }
 function getRest(target) {
-  const info = targetInfo(target);
+  const info = targetInfo(target, session.app.scene);
   if (info.kind === 'scene') return session.app.scene.values[info.key];
   const values = destinations(session.app.ascii, target).map(({ owner, key }) => owner.getAutomation(key)?.base ?? numericValue(session.app.ascii, owner, key));
   return values.every(value => value === values[0]) ? values[0] : undefined;
 }
 function setRest(target, value) {
-  const info = targetInfo(target);
+  const info = targetInfo(target, session.app.scene);
   if (info.kind === 'scene') session.app.scene.setBase(info.key, value);
   else for (const { owner, key } of destinations(session.app.ascii, target)) owner.set(key, value);
 }
@@ -190,17 +190,17 @@ function linkNote(packet) {
   if (packet.link.peers) return 'Connected over Link, but no tracks are shared. Turn on Link Audio in Live’s Settings → Link.';
   return 'Only this device’s track is available. To use any Live track, turn on Link and Link Audio in Live’s Settings → Link.';
 }
-const sectionFor = group => (group === 'Scene look' ? 'Scene' : group === 'All layers' || group.startsWith('Layer ') ? 'Layers' : 'Rendering');
+const sectionFor = info => (info.kind === 'scene' ? 'Scene' : info.group === 'All layers' || info.group.startsWith('Layer ') ? 'Layers' : 'Rendering');
 function parameterGroups(app) {
   const byGroup = new Map();
   for (const id of listTargets(app.ascii, app.scene)) {
-    const info = targetInfo(id);
-    if (!byGroup.has(info.group)) byGroup.set(info.group, []);
+    const info = targetInfo(id, app.scene);
+    if (!byGroup.has(info.group)) byGroup.set(info.group, { section: sectionFor(info), items: [] });
     const hint = targetHint(id, app.ascii);
-    byGroup.get(info.group).push({ key: id, name: info.label, detail: hint.startsWith('Enable') ? hint.replace(' to use this parameter.', ' first') : '' });
+    byGroup.get(info.group).items.push({ key: id, name: info.label, detail: hint.startsWith('Enable') ? hint.replace(' to use this parameter.', ' first') : '' });
   }
   const order = ['Scene', 'Rendering', 'Layers'];
-  return [...byGroup].map(([name, items]) => ({ id: name, name, section: sectionFor(name), items }))
+  return [...byGroup].map(([name, { section, items }]) => ({ id: name, name, section, items }))
     .sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
 }
 function pickButton(label, text, onClick) {
@@ -213,7 +213,7 @@ function pickButton(label, text, onClick) {
 }
 const groupLabel = {
   input: route => sourceLabel(route.source, connection.packet).split(' · ')[0],
-  parameter: route => targetInfo(route.target).group,
+  parameter: route => targetInfo(route.target, session.app.scene).group,
 };
 function renderRoutes() {
   routes.replaceChildren();
@@ -247,7 +247,7 @@ function renderRoutes() {
         onPick: key => changePair({ source: pickedSource(key, route.source) }) });
     });
     source.dataset.source = route.source;
-    const target = pickButton('Visual parameter', `${targetInfo(route.target).group} · ${targetInfo(route.target).label}`, () => {
+    const target = pickButton('Visual parameter', `${targetInfo(route.target, app.scene).group} · ${targetInfo(route.target, app.scene).label}`, () => {
       openPicker({ title: 'Choose a parameter', searchLabel: 'Search parameters', groups: parameterGroups(app),
         selected: route.target, onPick: key => changePair({ target: key }) });
     });
@@ -262,7 +262,7 @@ function renderRoutes() {
     const curve = select([{ id: 'linear', name: 'Linear' }, { id: 'exp', name: 'Stronger peaks' }, { id: 'log', name: 'Lift quiet sounds' }], route.curve, 'Response curve');
     curve.onchange = () => rx.updateRoute(route.id, { curve: curve.value });
     const rest = element('input'); rest.type = 'number'; rest.setAttribute('aria-label', 'Resting value');
-    const range = targetInfo(route.target).kind === 'scene' ? app.scene.range(targetInfo(route.target).key) : PARAM_RANGES[destination(app.ascii, route.target).key];
+    const range = targetInfo(route.target, app.scene).kind === 'scene' ? app.scene.range(targetInfo(route.target, app.scene).key) : PARAM_RANGES[destination(app.ascii, route.target).key];
     Object.assign(rest, { value: getRest(route.target) ?? '', placeholder: 'Mixed', min: range.min, max: range.max, step: range.step });
     rest.onchange = () => {
       if (rest.value === '') return;
@@ -362,7 +362,7 @@ function tick() {
   if (session && !$('#mapping-panel').hidden && !document.body.classList.contains('hidden')) {
     routes.querySelectorAll('meter').forEach(el => { el.value = audio.value(el.dataset.source); });
     routes.querySelectorAll('output[data-target]').forEach(el => {
-      const target = el.dataset.target, info = targetInfo(target);
+      const target = el.dataset.target, info = targetInfo(target, session.app.scene);
       const values = info.kind === 'scene' ? [session.app.scene.effective(info.key)]
         : destinations(session.app.ascii, target).map(({ owner, key }) => numericValue(session.app.ascii, owner, key));
       const min = Math.min(...values), max = Math.max(...values);

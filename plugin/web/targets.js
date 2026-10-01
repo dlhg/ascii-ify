@@ -16,10 +16,13 @@ export function layerTarget(id) {
   return match && Object.hasOwn(layerProperties, match[2])
     ? { index: match[1] === 'all' ? 'all' : Number(match[1]), key: match[2] } : null;
 }
-export const knownTarget = id => typeof id === 'string' && (Object.hasOwn(TARGETS, id) || !!layerTarget(id));
-export function targetInfo(id) {
+// Scene-specific controls (`scene.<key>`) are declared by each scene, so saved
+// patches only check their shape; a scene without that control skips the route.
+const sceneControl = id => /^scene\.[a-zA-Z]\w{0,31}$/.test(id);
+export const knownTarget = id => typeof id === 'string' && (Object.hasOwn(TARGETS, id) || !!layerTarget(id) || sceneControl(id));
+export function targetInfo(id, scene) {
   const layer = layerTarget(id);
-  return layer ? { ...globalInfo(layer.key), label: layerProperties[layer.key], group: layer.index === 'all' ? 'All layers' : `Layer ${layer.index + 1}`, key: layer.key } : globalInfo(id);
+  return layer ? { ...globalInfo(layer.key), label: layerProperties[layer.key], group: layer.index === 'all' ? 'All layers' : `Layer ${layer.index + 1}`, key: layer.key } : globalInfo(id, scene);
 }
 export function numericValue(ascii, owner, key) {
   return owner?.get(key) ?? (key === 'fade' && owner ? ascii.get(key) : undefined);

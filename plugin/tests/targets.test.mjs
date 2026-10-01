@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Layer } from '../../src/layer.js';
 import { registerSignal } from '../../src/automation.js';
 import { Reactivity } from '../../examples/audio-reactivity.js';
-import { listTargets, baseTargets, routingEngine } from '../web/targets.js';
+import { listTargets, baseTargets, routingEngine, targetInfo } from '../web/targets.js';
 import { cleanPatch, patchForScene } from '../web/mappings.js';
 
 test('layered scenes hide overridden globals and migrate old mappings without duplicates', () => {
@@ -91,4 +91,23 @@ test('all-layer mappings follow layers added or removed in Appearance', () => {
     assert.equal(added.get('fontSize'), 12);
     assert.equal(engine.syncLayers(), false);
   } finally { stop(); }
+});
+
+test('scene-declared controls are listed, labelled, validated and driven through the scene', () => {
+  const control = { key: 'bass', label: 'Low mountains', min: 0, max: 1.5, step: 0.01, def: 0.2, custom: true };
+  const mods = {};
+  const scene = { title: 'Terrain', custom: [control], range: key => (key === 'bass' ? control : { key, min: 0, max: 2 }),
+    setMod: (key, fn) => { if (fn) mods[key] = fn; else delete mods[key]; } };
+  const ascii = { get: () => undefined, layers: [] };
+  assert.equal(listTargets(ascii, scene)[0], 'scene.bass');
+  assert.deepEqual(targetInfo('scene.bass', scene), { label: 'Low mountains', group: 'Terrain', kind: 'scene', key: 'bass', span: 1.5 });
+  assert.equal(targetInfo('scene.bass', null).kind, 'ascii', 'unknown without the scene that declares it');
+  const route = { target: 'scene.bass', source: 'plugin/*/bass', depth: 0.5, smooth: 0, curve: 'linear', bipolar: false, enabled: true };
+  assert.deepEqual(cleanPatch({ intensity: 1, enabled: true, bases: { 'scene.bass': 0.4 }, routes: [route] }).routes, [route]);
+  assert.throws(() => cleanPatch({ intensity: 1, enabled: true, bases: {}, routes: [{ ...route, target: 'scene.no-such!' }] }));
+  const rx = new Reactivity({ ascii: routingEngine(ascii), scene, audio: { value: () => 1 } });
+  rx.load([route]);
+  assert.ok(Math.abs(mods.bass() - 0.75) < 1e-9, 'depth is a fraction of the control range');
+  const bare = new Reactivity({ ascii: routingEngine(ascii), audio: { value: () => 1 } }).load([route]);
+  assert.equal(bare.routes.length, 0, 'scenes without the control skip the route');
 });

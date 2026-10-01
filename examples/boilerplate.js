@@ -18,6 +18,8 @@ export function createApp({
   onKeydown = null,
   showPanel = false,
   sceneControls = true,
+  sceneParams = [],    // scene-specific controls, mappable to audio (see ScenePopup)
+  sceneTitle = 'Scene',
   audio = null,        // true/false, or omit to follow the ?audio URL flag
   audioRecipe = true,  // apply this scene's audio profile (see audio-profiles.js)
 } = {}) {
@@ -61,7 +63,9 @@ export function createApp({
 
   // Global scene controls (brightness/contrast/etc + speed) applied to the
   // source canvas each frame — see scene-controls.js.
-  const scene = sceneControls ? new ScenePopup(document.body) : null;
+  const scene = sceneControls ? new ScenePopup(document.body, { controls: sceneParams, title: sceneTitle }) : null;
+  const paramDefaults = Object.fromEntries(sceneParams.map(c => [c.key, c.def]));
+  const param = scene ? key => scene.effective(key) : key => paramDefaults[key];
   if (host && scene) scene.setLauncherHidden(true);
   let scratch = null; // lazily-created buffer for the filter post-process
 
@@ -147,7 +151,7 @@ export function createApp({
     // Undo last frame's filter so the scene draws onto its own unaltered pixels.
     if (filtered) restorePristine();
 
-    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, audio: host ? idleAudio : audioDock?.audio ?? null });
+    draw(ctx, { time: sceneTime, dt, width: canvas.width, height: canvas.height, param, audio: host ? idleAudio : audioDock?.audio ?? null });
     applySceneFilter();
     ascii.render();
     requestAnimationFrame(loop);

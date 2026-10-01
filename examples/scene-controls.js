@@ -116,7 +116,7 @@ const CSS = `
 .hbtn:hover { color: #d0d0e0; border-color: rgba(255, 255, 255, 0.16); background: rgba(20, 20, 42, 0.9); }
 .reset-btn { font: 700 8px/1 inherit; letter-spacing: 0.06em; width: auto; padding: 0 7px; }
 
-.body { padding: 11px 12px; }
+.body { padding: 11px 12px; max-height: calc(100vh - 120px); overflow-y: auto; }
 .ctrl { margin-bottom: 9px; }
 .ctrl:last-child { margin-bottom: 0; }
 .ctrl-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
@@ -209,6 +209,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .divider { height: 1px; background: rgba(255, 255, 255, 0.06); margin: 11px 0; }
+.section { font: 700 8px/1 inherit; text-transform: uppercase; letter-spacing: 0.18em; color: #ff6b35; margin: 12px 0 9px; }
 `;
 
 export class ScenePopup {
@@ -216,17 +217,25 @@ export class ScenePopup {
    * @param {HTMLElement} parent - element to mount into (usually document.body)
    * @param {object} [opts]
    * @param {() => void} [opts.onChange] - called whenever a value changes
+   * @param {object[]} [opts.controls] - scene-specific controls, e.g.
+   *   { key: 'bass', label: 'Low mountains', min: 0, max: 1, step: 0.01, def: 0.3 }.
+   *   They sit under `opts.title`, never filter the image, and are mappable
+   *   targets (`scene.<key>`) like the built-in controls. Read them with effective().
+   * @param {string} [opts.title] - heading for the scene-specific controls
    */
-  constructor(parent, { onChange = null } = {}) {
+  constructor(parent, { onChange = null, controls = [], title = 'Scene' } = {}) {
     this._onChange = onChange;
+    this.title = title;
+    this.custom = controls.map(c => ({ step: 0.01, unit: '', ...c, css: null, custom: true }));
+    this._controls = [...CONTROLS, ...this.custom];
     this.values = {};
-    for (const c of CONTROLS) this.values[c.key] = c.def;
+    for (const c of this._controls) this.values[c.key] = c.def;
 
     // Shared LFO / input-driven automation engine. The setter writes automated
     // values back into `this.values` (clamped to the slider range) and reflects
     // them in the UI. Keyed by namespaced scene keys — see AUTO_PREFIX.
     this._cfgByKey = {};
-    for (const c of CONTROLS) this._cfgByKey[c.key] = c;
+    for (const c of this._controls) this._cfgByKey[c.key] = c;
     this._time = 0;
     this._automations = new AutomationSet((autoKey, value, automated) => {
       this._applyAutomatedValue(autoKey, value, automated);
@@ -269,12 +278,13 @@ export class ScenePopup {
     this._body = this._popup.querySelector('.body');
     this._rows = {};
 
-    CONTROLS.forEach((c, i) => {
+    this._controls.forEach((c) => {
       if (c.key === 'speed') {
         const div = document.createElement('div');
         div.className = 'divider';
         this._body.appendChild(div);
       }
+      if (c === this.custom[0]) this._body.appendChild(h('div', 'section', this.title));
       const ctrl = document.createElement('div');
       ctrl.className = 'ctrl';
       ctrl.innerHTML = `
@@ -523,7 +533,7 @@ export class ScenePopup {
 
   reset() {
     this._automations.clear(false); // don't restore bases — we're forcing defaults
-    for (const c of CONTROLS) {
+    for (const c of this._controls) {
       this.values[c.key] = c.def;
       this._rows[c.key].input.value = c.def;
       this._updateRow(c);

@@ -305,7 +305,7 @@ export class AudioPanel {
     tgt.className = 'tgt';
     const groups = new Map();
     for (const id of listTargets(this.ascii, this.rx.scene)) {
-      const info = targetInfo(id);
+      const info = targetInfo(id, this.rx.scene);
       if (!groups.has(info.group)) groups.set(info.group, el('optgroup'));
       const g = groups.get(info.group);
       g.label = info.group;
@@ -387,7 +387,7 @@ export class AudioPanel {
   }
 
   _updateHint(route, refs) {
-    const info = targetInfo(route.target);
+    const info = targetInfo(route.target, this.rx.scene);
     const msgs = [];
     if (!targetActive(route.target, this.ascii)) msgs.push(`${info.label} does nothing here: ${info.needs === '3d' ? '3D mode' : info.needs} is off in this scene.`);
     if (info.jagged && route.smooth < 0.3) msgs.push('Glyph grid rebuilds on every change: use 300 ms+ smoothing or it will look jagged.');

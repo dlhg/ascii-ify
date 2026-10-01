@@ -16,7 +16,7 @@ local testing; it is not notarized for public distribution.
 4. To use other tracks, turn on **Link** and **Link Audio** in Live's Settings → Link.
    Live then shares every track by name; nothing else needs to be routed.
 5. Open the plugin window and click **Open Visuals**. Press play in Live.
-6. Choose from **54 library scenes**, edit **Audio mappings**, and use Fullscreen.
+6. Choose from **55 library scenes**, edit **Audio mappings**, and use Fullscreen.
    Press **H** to hide/show the controls.
 
 ## Control what the audio changes
@@ -31,7 +31,9 @@ Each scene starts with an editable mapping preset. Open **Audio mappings** to:
   starts on. Type to search
   (e.g. "drums kick"); opening a track group previews its live meters.
 - Choose a destination: scene brightness/hue/speed, glyph size, glow, 3D rotation,
-  and other numeric parameters. **Layer 1**, **Layer 2**, etc. destinations control
+  and other numeric parameters. Some scenes add controls that change the animation
+  itself: in **Spectral Terrain**, bass, mids and highs raise its mountains, ridges
+  and crags, and the land flows away so the horizon shows what you just heard. **Layer 1**, **Layer 2**, etc. destinations control
   individual layers in layered scenes; their glyph sizes override the global size.
 - Choose **All layers · Glyph size** (or another layer property) to control every
   layer together. Each layer keeps its own resting value; the field shows **Mixed**
@@ -123,7 +125,7 @@ same role for the browser tests. A small
 test host loads the actual VST3 bundle, attaches and closes its native editor, and
 feeds synthetic audio through the VST3 processor while checking unchanged output.
 The tests check instance isolation,
-stale data, bypass and request restrictions, then exercise all 54 scenes and
+stale data, bypass and request restrictions, then exercise all 55 scenes and
 mapping edits, toggles, layer destinations, persistence and export/import in
 headless Chrome. A screenshot is written to `plugin/build/preview.png`.
 

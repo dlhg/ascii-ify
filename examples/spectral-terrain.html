@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Spectral Terrain</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #04060b; }
+      .container { position: relative; width: 100%; height: 100%; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp, valueNoise } from './utils.js';
+
+      // ── Spectral terrain ─────────────────────────────────────────
+      // The front edge of the land is extruded live from three band controls
+      // and flows away to the horizon. What the bands raised sinks back to the
+      // plains within `Memory` seconds, so each hit reads as its own swell.
+      // Bass heaves the central massif, mids raise the ridges beside it, highs
+      // sharpen the outer crags. Brightness is height: the 3D pass lifts it, the
+      // 'topo' charset and colors turn it into water, grass, rock and snow.
+      // Every control below is a mapping destination (scene.bass, …).
+      const PARAMS = [
+        { key: 'bass', label: 'Low mountains', min: 0, max: 1.5, def: 0.2 },
+        { key: 'mids', label: 'Mid ridges', min: 0, max: 1.5, def: 0.15 },
+        { key: 'highs', label: 'High crags', min: 0, max: 1.5, def: 0.1 },
+        { key: 'sea', label: 'Sea level', min: 0, max: 0.8, def: 0.2 },
+        { key: 'flow', label: 'Flow', min: 0, max: 60, step: 0.5, def: 14, unit: ' rows/s' },
+        { key: 'memory', label: 'Memory', min: 0.1, max: 8, step: 0.05, def: 0.8, unit: ' s' },
+      ];
+
+      const CELL = 8;          // source pixels per terrain cell
+      const STEP = 0.045;      // world units per cell, both across and along the flow
+      const WATER = [0.08, 0.22];  // brightness span for water ('~', '≈')
+      const LAND = 0.235;          // brightness where land starts ('.')
+
+      let cols = 0, rows = 0;
+      let plains = null;   // ring buffers, rows × cols, newest row at `head`:
+      let relief = null;   //   resting land, and what the bands raised on top of it
+      let head = 0;
+      let z = 0;           // world row index of the newest row
+      let acc = 0;         // fraction of a row the land has flowed since the newest row began
+      let lanes = null;    // per-column band weights
+      // One pixel per terrain cell, upscaled with smoothing: the land glides between
+      // cells as it flows instead of stepping a whole cell under the sampler.
+      const tile = document.createElement('canvas');
+      const tileCtx = tile.getContext('2d');
+      let pixels = null;
+      // Bands rise fast and fall slowly, so peaks punch without frame-to-frame chatter.
+      const bands = { bass: null, mids: null, highs: null };
+      function follow(key, target, dt) {
+        const cur = bands[key] ?? target;
+        const tau = target > cur ? 0.05 : 0.15;
+        return (bands[key] = cur + (target - cur) * (1 - Math.exp(-dt / tau)));
+      }
+
+      function resize(w, h) {
+        cols = Math.ceil(w / CELL);
+        rows = Math.ceil(h / CELL) + 2;
+        plains = new Float32Array(rows * cols);
+        relief = new Float32Array(rows * cols);
+        tile.width = cols;
+        tile.height = rows + 1;   // the front row again underneath, covering the near edge
+        pixels = tileCtx.createImageData(cols, rows + 1);
+        lanes = Array.from({ length: cols }, (_, c) => {
+          const u = Math.abs(c / (cols - 1) - 0.5);   // 0 centre → 0.5 edge
+          const g = (mu, sigma) => Math.exp(-(((u - mu) / sigma) ** 2));
+          return [0.3 + 0.7 * g(0, 0.2), 0.3 + 0.7 * g(0.24, 0.12), 0.3 + 0.7 * g(0.42, 0.1)];
+        });
+        head = 0;
+        for (let i = 0; i < rows; i++) fillRow((head + i) % rows, z - i, PARAMS[0].def, PARAMS[1].def, PARAMS[2].def);
+      }
+
+      function fillRow(slot, wz, bass, mids, highs) {
+        const y = wz * STEP;
+        const out = slot * cols;
+        for (let c = 0; c < cols; c++) {
+          const x = (c - cols / 2) * STEP;
+          const [wb, wm, wh] = lanes[c];
+          const rest = 0.1 + 0.16 * valueNoise(x * 0.7 + 31, y * 0.7);
+          const massif = 0.55 * valueNoise(x * 0.45, y * 0.45) + 0.45 * valueNoise(x * 0.9 + 5, y * 0.9);
+          const ridge = 1 - Math.abs(2 * valueNoise(x * 1.8 + 11, y * 1.8) - 1);
+          const crag = valueNoise(x * 4.5 + 3, y * 4.5) ** 2;
+          plains[out + c] = rest;
+          relief[out + c] = bass * wb * massif ** 1.6 * 1.1
+            + mids * wm * ridge * ridge * 0.5
+            + highs * wh * crag * 0.4;
+        }
+      }
+
+      function heightToBrightness(h, sea) {
+        if (h < sea) return WATER[0] + (WATER[1] - WATER[0]) * (sea > 0 ? h / sea : 0);
+        return LAND + (1 - LAND) * clamp((h - sea) / (0.95 - sea), 0, 1);
+      }
+
+      function draw(ctx, { dt, width: w, height: h, param }) {
+        if (!plains) return;
+        const bass = follow('bass', param('bass'), dt);
+        const mids = follow('mids', param('mids'), dt);
+        const highs = follow('highs', param('highs'), dt);
+
+        acc += dt * param('flow');
+        while (acc >= 1) {
+          acc -= 1;
+          head = (head + rows - 1) % rows;
+          z += 1;
+        }
+        // Older rows let go of what they heard; the front row tracks the bands live.
+        const keep = Math.exp(-dt / param('memory'));
+        for (let i = 0; i < relief.length; i++) relief[i] *= keep;
+        fillRow(head, z, bass, mids, highs);
+
+        // Oldest row at the top of the tile, front row at the bottom (the near edge).
+        const sea = param('sea');
+        const data = pixels.data;
+        for (let age = 0; age < rows; age++) {
+          const src = ((head + age) % rows) * cols;
+          let o = (rows - 1 - age) * cols * 4;
+          for (let c = 0; c < cols; c++, o += 4) {
+            const v = heightToBrightness(plains[src + c] + relief[src + c], sea) * 255;
+            data[o] = data[o + 1] = data[o + 2] = v;
+            data[o + 3] = 255;
+          }
+        }
+        data.copyWithin(rows * cols * 4, (rows - 1) * cols * 4, rows * cols * 4);
+        tileCtx.putImageData(pixels, 0, 0);
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(tile, 0, h - (rows + acc) * CELL, cols * CELL, (rows + 1) * CELL);
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Terrain',
+        asciiConfig: {
+          fontSize: 10,
+          density: 1,
+          charset: 'topo',
+          colorScheme: 'topo',
+          background: '#04060b',
+          sourceOpacity: 0,
+          renderMode: '3d',
+          depthScale: 440,
+          perspective: 700,
+          rotationX: 0.72,
+          rotationY: 0,
+          rotationZ: 0,
+          cameraZ: 700,
+          depthOpacity: 0.3,
+          fade: 0.1,
+          automations: {
+            rotationY: { type: 'sine', amount: 0.12, rate: 0.025 },
+          },
+        },
+        onResize: (ctx, w, h) => resize(w, h),
+        draw,
+      });
+    </script>
+  </body>
+</html>

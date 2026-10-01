@@ -301,7 +301,7 @@ test('every bundled scene renders with live mapping controls', { timeout: 180000
   await page.goto(live.url);
   await page.waitForFunction(() => window.asciiIfyHost.current?.id === 'galaxy');
   const scenes = await page.locator('#scene option').evaluateAll(options => options.map(o => o.value));
-  assert.equal(scenes.length, 54);
+  assert.equal(scenes.length, 55);
   for (const id of scenes) {
     await page.selectOption('#scene', id);
     await page.waitForFunction(id => window.asciiIfyHost.current?.id === id && window.asciiIfyHost.current.app.ascii._time > 0.03, id).catch(error => {

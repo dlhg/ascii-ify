@@ -60,8 +60,16 @@ export const TARGETS = {
   depthOpacity: { label: 'Depth shading', group: '3D', kind: 'ascii', needs: '3d' },
 };
 
-export function targetInfo(id) {
-  return TARGETS[id] || { label: id, group: 'Other', kind: 'ascii' };
+/**
+ * A target's label, group and kind. Scene-specific controls (`scene.<key>` for a
+ * control the scene declared, see ScenePopup's `controls`) need that scene.
+ */
+export function targetInfo(id, scene) {
+  if (Object.hasOwn(TARGETS, id)) return TARGETS[id];
+  const key = id.startsWith('scene.') && id.slice(6);
+  const c = key && scene?.range(key);
+  if (c?.custom) return { label: c.label, group: scene.title, kind: 'scene', key, span: c.max - c.min };
+  return { label: id, group: 'Other', kind: 'ascii' };
 }
 
 /** Whether a target's prerequisite is on in this scene (e.g. edges for edgeThreshold). */
@@ -73,8 +81,8 @@ export function targetActive(id, ascii) {
 }
 
 /** What depth 1.0 means for a target, in its own units. */
-export function targetSpan(id) {
-  const t = targetInfo(id);
+export function targetSpan(id, scene) {
+  const t = targetInfo(id, scene);
   if (t.kind === 'scene') return t.span;
   const r = PARAM_RANGES[id];
   return r ? r.max - r.min : 1;
@@ -82,10 +90,11 @@ export function targetSpan(id) {
 
 /** Target ids usable in this scene, in display order. */
 export function listTargets(ascii, scene) {
-  return Object.keys(TARGETS).filter((id) => {
+  const custom = (scene?.custom ?? []).map((c) => `scene.${c.key}`);
+  return [...custom, ...Object.keys(TARGETS).filter((id) => {
     const t = TARGETS[id];
     return t.kind === 'scene' ? !!scene : typeof ascii.get(id) === 'number';
-  });
+  })];
 }
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -144,7 +153,7 @@ export class Reactivity {
     if (structural) this._rebuild();
     else {
       // depth / smooth / curve / bipolar: scene routes read them live; ASCII routes re-register
-      if (targetInfo(r.target).kind === 'ascii' && r.enabled) this._applyAscii(r);
+      if (targetInfo(r.target, this.scene).kind === 'ascii' && r.enabled) this._applyAscii(r);
       this._listeners.forEach((fn) => fn(this, 'tweak'));
     }
     return r;
@@ -179,7 +188,7 @@ export class Reactivity {
    */
   readout(route) {
     const input = clamp01(this.audio.value(route.source));
-    const info = targetInfo(route.target);
+    const info = targetInfo(route.target, this.scene);
     let value = null;
     if (info.kind === 'ascii') value = this.ascii.get(route.target);
     else if (this.scene) value = this.scene._effective?.({ key: info.key, min: 0, max: 1e9 }) ?? null;
@@ -189,7 +198,7 @@ export class Reactivity {
   // ─── internals ───────────────────────────────────────────────────────
 
   _supports(target) {
-    const info = targetInfo(target);
+    const info = targetInfo(target, this.scene);
     if (info.kind === 'scene') return !!this.scene;
     return typeof this.ascii.get(target) === 'number';
   }
@@ -205,7 +214,7 @@ export class Reactivity {
       this.ascii.set(crt.every((r) => r.target === 'crtGlow') ? { crtEnabled: true, crtScanlines: 0 } : { crtEnabled: true });
     }
     for (const r of this.routes) {
-      if (targetInfo(r.target).kind === 'ascii' && r.enabled) this._applyAscii(r);
+      if (targetInfo(r.target, this.scene).kind === 'ascii' && r.enabled) this._applyAscii(r);
     }
 
     // Scene targets: one summing function per control.
@@ -214,7 +223,7 @@ export class Reactivity {
       this._sceneKeys.clear();
       const byKey = new Map();
       for (const r of this.routes) {
-        const info = targetInfo(r.target);
+        const info = targetInfo(r.target, this.scene);
         if (info.kind !== 'scene' || !r.enabled) continue;
         r._ease = slew(() => r.smooth);
         if (!byKey.has(info.key)) byKey.set(info.key, []);

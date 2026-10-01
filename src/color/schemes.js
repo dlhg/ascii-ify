@@ -1,3 +1,20 @@
+import { lerp, lerpHue } from '../utils.js';
+
+// Hypsometric tint: deep water, shallows, sand, grass, forest, ochre, rock, snow
+const TOPO = [
+  [0.00, 224, 75, 30], [0.08, 214, 80, 42], [0.17, 190, 80, 56], [0.23, 45, 70, 72],
+  [0.31, 84, 55, 52], [0.42, 120, 50, 44], [0.54, 76, 48, 50], [0.63, 40, 62, 54],
+  [0.72, 24, 58, 50], [0.80, 16, 30, 56], [0.88, 30, 10, 70], [1.00, 200, 40, 97],
+];
+
+function topo(v) {
+  let i = 1;
+  while (i < TOPO.length - 1 && TOPO[i][0] < v) i++;
+  const [v0, h0, s0, l0] = TOPO[i - 1], [v1, h1, s1, l1] = TOPO[i];
+  const t = Math.max(0, Math.min(1, (v - v0) / (v1 - v0)));
+  return [lerpHue(h0, h1, t), lerp(s0, s1, t), lerp(l0, l1, t)];
+}
+
 // Each fn returns [h, s, l] for blending
 export const COLOR_SCHEMES = [
   {
@@ -34,5 +51,9 @@ export const COLOR_SCHEMES = [
   {
     name: 'sakura',
     fn: (v, t) => [340 + v * 30 + Math.sin(t * 0.6) * 10, 60 + v * 30, 40 + v * 45],
+  },
+  {
+    name: 'topo',
+    fn: (v) => topo(v),
   },
 ];
