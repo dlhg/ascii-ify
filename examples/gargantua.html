@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Gargantua</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      .container { position: relative; width: 100%; height: 100%; cursor: grab; }
+      .container.dragging { cursor: grabbing; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { smoothstep } from './utils.js';
+      import { envelope, hits } from './music.js';
+      import { shaderScene, orbitControls, orbitCamera, SHADER_ASCII } from './shader-scene.js';
+
+      // ── Gargantua ────────────────────────────────────────────────
+      // A spinning black hole and its accretion disk. Every ray is bent
+      // through the hole's gravity step by step, so the far side of the disk
+      // arches over the shadow, a thin photon ring hugs it, and the stars
+      // behind smear into lensed arcs. The approaching side of the disk burns
+      // brighter and bluer (Doppler beaming), and the far side dims to ember.
+      //
+      // Bass feeds the disk, kicks send a bright wave rolling outward through
+      // it, mids spin it faster, snares fire the polar jets, highs make the
+      // lensed stars glitter. Drag to orbit, scroll to zoom.
+      const PARAMS = [
+        { key: 'feed', label: 'Accretion', min: 0, max: 1, def: 0.25 },
+        { key: 'wave', label: 'Shock wave (hits)', min: 0, max: 1, def: 0 },
+        { key: 'spin', label: 'Spin', min: 0, max: 1, def: 0.3 },
+        { key: 'jets', label: 'Jets (hits)', min: 0, max: 1, def: 0 },
+        { key: 'twinkle', label: 'Starlight', min: 0, max: 1, def: 0.2 },
+        { key: 'approach', label: 'Approach', min: 0, max: 1, def: 0.2 },
+      ];
+
+      const FRAG = `
+        uniform vec3 uCamPos;
+        uniform float uFeed;
+        uniform float uSpinT;      // accumulated rotation time
+        uniform float uJet;
+        uniform float uTwinkle;
+        uniform vec4 uWaves;       // ages of up to 4 outward waves (<0 = none)
+        uniform vec4 uWaveAmp;
+        uniform float uFade;
+
+        const float R_IN = 2.6, R_OUT = 11.0;   // disk, in Schwarzschild radii
+
+        vec3 stars(vec3 d) {
+          vec3 col = vec3(0.0);
+          // A galaxy band behind the hole: lensing pulls it into a halo.
+          float band = exp(-pow(dot(d, normalize(vec3(0.2, 1.0, -0.35))) * 3.2, 2.0));
+          float n = fbm(d * 3.0 + 4.0);
+          col += band * mix(vec3(0.20, 0.12, 0.30), vec3(0.45, 0.30, 0.20), n) * smoothstep(0.45, 0.85, n) * 0.35;
+          for (int k = 0; k < 2; k++) {
+            float sc = k == 0 ? 70.0 : 150.0;
+            vec3 q = d * sc;
+            vec3 id = floor(q), f = fract(q) - 0.5;
+            float h = hash(id + float(k) * 17.0);
+            if (h > 0.965 - band * 0.05) {
+              vec3 off = vec3(hash(id + 3.1), hash(id + 7.7), hash(id + 1.3)) - 0.5;
+              float dd = length(f - off * 0.6);
+              float tw = 0.6 + 0.4 * sin(uTime * (1.5 + h * 7.0) * (1.0 + 2.0 * uTwinkle) + h * 60.0);
+              vec3 tint = mix(vec3(0.65, 0.78, 1.0), vec3(1.0, 0.82, 0.62), hash(id + 9.0));
+              col += tint * smoothstep(0.34, 0.0, dd) * (k == 0 ? 1.4 : 0.7) * tw * (0.8 + 1.4 * uTwinkle);
+            }
+          }
+          return col;
+        }
+
+        // Emission and opacity of the disk where a ray crosses its plane.
+        vec4 disk(vec3 p, vec3 rd) {
+          float r = length(p.xz);
+          if (r < R_IN * 0.92 || r > R_OUT) return vec4(0.0);
+          float a = atan(p.z, p.x);
+          // Keplerian shear: inner orbits run faster. Noise is read through
+          // cos/sin of the swept angle, so it wraps seamlessly.
+          float a2 = a + uSpinT * 2.2 * pow(r / R_IN, -1.5);
+          vec3 nq = vec3(r * 1.3, cos(a2) * 2.2, sin(a2) * 2.2);
+          float turb = fbm(nq);
+          float streaks = fbm(vec3(r * 6.0, cos(a2) * 0.8, sin(a2) * 0.8) + 11.0);
+          float dens = smoothstep(R_IN * 0.92, R_IN * 1.15, r) * smoothstep(R_OUT, R_OUT * 0.55, r);
+          dens *= 0.35 + 0.9 * turb * turb + 0.5 * streaks;
+
+          // Temperature falls off outward: white-gold inside, deep ember outside.
+          float heat = pow(R_IN / r, 1.25) * (0.9 + 0.5 * uFeed);
+          for (int i = 0; i < 4; i++) {
+            if (uWaves[i] < 0.0) continue;
+            float front = R_IN + uWaves[i] * 5.5;
+            heat += uWaveAmp[i] * exp(-pow((r - front) * 1.4, 2.0)) * exp(-uWaves[i] * 0.6) * 1.6;
+          }
+          // Doppler beaming: the side swinging toward us is far brighter.
+          vec3 vel = normalize(vec3(-p.z, 0.0, p.x));
+          float dop = 1.0 + 0.75 * dot(vel, -rd) * sqrt(R_IN / r);
+          float beam = pow(max(dop, 0.05), 3.5);
+
+          vec3 ember = vec3(0.85, 0.18, 0.04), gold = vec3(1.0, 0.62, 0.22), white = vec3(1.0, 0.92, 0.8);
+          vec3 c = mix(ember, gold, smoothstep(0.15, 0.55, heat));
+          c = mix(c, white, smoothstep(0.6, 1.2, heat));
+          c = mix(c, c * vec3(0.75, 0.9, 1.3), smoothstep(1.0, 1.8, dop));   // blue shift
+          float em = dens * heat * beam * 2.6;
+          return vec4(c * em, clamp(dens * 0.9, 0.0, 0.92));
+        }
+
+        void main() {
+          vec3 ro = uCamPos;
+          vec3 rd = cameraRay(ro, vec3(0.0), 1.6);
+
+          // Photon paths in Schwarzschild geometry (r_s = 1): a = -1.5 h² p / r⁵.
+          vec3 p = ro, v = rd;
+          vec3 hv = cross(p, v);
+          float h2 = dot(hv, hv);
+          vec3 col = vec3(0.0);
+          float trans = 1.0;
+          float captured = 0.0;
+          float jet = 0.0;
+          float ring = 0.0;
+          for (int i = 0; i < 260; i++) {
+            float r = length(p);
+            float dt = clamp(0.08 * r, 0.03, 1.2);
+            vec3 prev = p;
+            v += -1.5 * h2 * p / pow(r, 5.0) * dt;
+            p += v * dt;
+            if (prev.y * p.y < 0.0) {
+              vec3 c = mix(prev, p, prev.y / (prev.y - p.y));
+              vec4 d = disk(c, normalize(v));
+              col += trans * d.rgb;
+              trans *= 1.0 - d.a;
+            }
+            // Thin glow hugging the photon sphere.
+            ring += exp(-abs(r - 1.55) * 9.0) * dt * 0.08;
+            // Relativistic jets along the spin axis.
+            float ax = length(p.xz);
+            float ay = abs(p.y);
+            jet += uJet * exp(-ax * ax * (6.0 / (1.0 + ay * 0.25))) * smoothstep(1.2, 2.5, ay) * exp(-ay * 0.09)
+                   * (0.6 + 0.8 * noise(vec3(ax * 4.0, ay * 0.8 - uTime * 6.0, 0.0))) * dt;
+            if (r < 1.0) { captured = 1.0; break; }
+            if (r > 40.0 || trans < 0.01) break;
+          }
+          if (captured < 0.5) col += trans * stars(normalize(v));
+          col += trans * vec3(1.0, 0.75, 0.5) * ring * (0.8 + uFeed);
+          col += vec3(0.55, 0.7, 1.0) * jet * 1.4;
+          gl_FragColor = vec4(finish(col, 2.6, 0.8) * uFade, 1.0);
+        }
+      `;
+
+      const scene = shaderScene(FRAG, { scale: 0.5 });
+      const orbit = orbitControls({ pitch: [-0.5, 0.9], zoom: [-8, 14], zoomRate: 0.01 });
+
+      const feedEnv = envelope(0.08, 0.5);
+      const spinEnv = envelope(0.4, 1.0);
+      const twinkleEnv = envelope(0.02, 0.2);
+      const approachEnv = envelope(1.5, 3);
+      const waveHits = hits(), jetHits = hits();
+      const waves = new Float32Array([-1, -1, -1, -1]);
+      const waveAmp = new Float32Array(4);
+      let waveNext = 0, jet = 0, spinT = 0;
+
+      function draw(ctx, { time, dt, width: w, height: h, param }) {
+        const t = time / 1000;
+        const feed = feedEnv(param('feed'), dt);
+        const spin = spinEnv(param('spin'), dt);
+        const twinkle = twinkleEnv(param('twinkle'), dt);
+        const approach = approachEnv(param('approach'), dt);
+        spinT += dt * (0.15 + spin * 0.9);
+
+        const wave = waveHits(param('wave'), dt);
+        if (wave) {
+          waves[waveNext % 4] = 0;
+          waveAmp[waveNext % 4] = 0.4 + wave;
+          waveNext++;
+        }
+        for (let i = 0; i < 4; i++) {
+          if (waves[i] < 0) continue;
+          waves[i] += dt;
+          if (waves[i] > 6) waves[i] = -1;
+        }
+        jet = Math.max(jet * Math.exp(-dt * 1.6), jetHits(param('jets'), dt));
+
+        // A slow fall inward to a grazing view just above the disk.
+        const intro = 1 - smoothstep(0, 10, t);
+        const yaw = t * 0.025 + orbit.yaw + 0.4;
+        const pitch = 0.1 + 0.05 * Math.sin(t * 0.05) + orbit.pitch + intro * 0.35;
+        const dist = Math.max(6, 15 - approach * 4.5 + orbit.zoom + intro * intro * 25);
+        const cam = orbitCamera([0, 0, 0], yaw, pitch, dist);
+
+        scene.draw(ctx, w, h, t, (u) => {
+          u.v3('uCamPos', cam);
+          u.f('uFeed', feed);
+          u.f('uSpinT', spinT);
+          u.f('uJet', 0.025 + jet);
+          u.f('uTwinkle', twinkle);
+          u.v4('uWaves', waves);
+          u.v4('uWaveAmp', waveAmp);
+          u.f('uFade', smoothstep(0, 3, t));
+        });
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Black hole',
+        asciiConfig: { ...SHADER_ASCII, background: '#000000' },
+        draw,
+      });
+    </script>
+  </body>
+</html>

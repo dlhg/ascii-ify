@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Eclipse Dunes</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #040208; }
+      .container { position: relative; width: 100%; height: 100%; cursor: grab; }
+      .container.dragging { cursor: grabbing; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { smoothstep } from './utils.js';
+      import { envelope, hits } from './music.js';
+      import { shaderScene, orbitControls, SHADER_ASCII } from './shader-scene.js';
+
+      // ── Eclipse Dunes ────────────────────────────────────────────
+      // An alien desert at the moment of eclipse. A ringed giant fills a
+      // quarter of the sky and its sun slides slowly behind the limb, so the
+      // light swings between a blazing diamond ring and the cold glow of the
+      // corona. The rings catch the sunlight from behind and the planet's
+      // shadow falls across them. Below, wind-carved dunes run to the horizon,
+      // their crests rim-lit, while sand streams off the ridges.
+      //
+      // Bass swells the corona, kicks flash the diamond ring, snares raise
+      // gusts of sand, mids set the glide speed, highs bring out the stars.
+      // Drag to look around.
+      const PARAMS = [
+        { key: 'corona', label: 'Corona', min: 0, max: 1, def: 0.3 },
+        { key: 'flare', label: 'Diamond flare (hits)', min: 0, max: 1, def: 0 },
+        { key: 'gust', label: 'Sand gust (hits)', min: 0, max: 1, def: 0 },
+        { key: 'glide', label: 'Glide', min: 0, max: 1, def: 0.3 },
+        { key: 'stars', label: 'Stars', min: 0, max: 1, def: 0.25 },
+      ];
+
+      const FRAG = `
+        uniform vec3 uCamPos;
+        uniform vec3 uCamTarget;
+        uniform float uSep;        // sun–planet separation, in planet radii
+        uniform float uCorona;
+        uniform float uFlare;
+        uniform float uGust;
+        uniform float uWindT;
+        uniform float uStars;
+        uniform float uFade;
+
+        const vec3 P = vec3(0.30, 0.42, 0.857);   // towards the planet (normalised below)
+        const float D = 100.0;                     // planet distance
+        const float RP = 30.0;                     // planet radius
+        const float SUN_R = 0.022;                 // sun's angular radius
+        const vec3 NR = vec3(0.18, 0.95, -0.25);   // ring-plane normal
+
+        vec3 planetDir() { return normalize(P); }
+        vec3 sunDir() {
+          // The sun sits uSep planet-radii from the planet's centre, toward the lower right.
+          vec3 pd = planetDir();
+          vec3 side = normalize(cross(pd, vec3(0.0, 1.0, 0.0)));
+          vec3 up = cross(side, pd);
+          float ang = asin(RP / D) * uSep;
+          return normalize(pd * cos(ang) + normalize(side * 0.8 - up * 0.6) * sin(ang));
+        }
+
+        float n2(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+        }
+
+        // Dunes: warped ridged noise, steeper on the lee side.
+        float terrain(vec2 p) {
+          p += 3.0 * vec2(n2(p * 0.04), n2(p * 0.04 + 7.3));
+          float h = 0.0, a = 1.0;
+          vec2 q = p * vec2(0.09, 0.05);
+          for (int i = 0; i < 4; i++) {
+            float n = n2(q);
+            float r = 1.0 - abs(n * 2.0 - 1.0);
+            h += a * r * r;
+            a *= 0.42;
+            q = q * 2.1 + vec2(3.1, 1.7);
+          }
+          return h * 2.4 + n2(p * 0.015) * 3.0;
+        }
+
+        vec3 terrainNormal(vec2 p, float e) {
+          float h = terrain(p);
+          vec3 n = normalize(vec3(h - terrain(p + vec2(e, 0.0)), e, h - terrain(p + vec2(0.0, e))));
+          // Fine wind ripples, only in the shading.
+          float rip = sin(dot(p, vec2(0.8, 0.6)) * 9.0 + n2(p * 1.5) * 4.0);
+          return normalize(n + vec3(0.6, 0.0, 0.8) * rip * 0.05);
+        }
+
+        // Sky, planet, rings, sun and corona, seen along rd.
+        vec3 sky(vec3 rd) {
+          vec3 S = sunDir(), pd = planetDir();
+          float y = rd.y;
+          vec3 col = mix(vec3(0.20, 0.06, 0.05), vec3(0.03, 0.015, 0.06), smoothstep(-0.02, 0.35, y));
+          col = mix(col, vec3(0.004, 0.003, 0.012), smoothstep(0.3, 0.9, y));
+          // Stars.
+          vec3 q = rd * 120.0;
+          vec3 id = floor(q), f = fract(q) - 0.5;
+          float h = hash(id);
+          if (h > 0.982) {
+            float tw = 0.6 + 0.4 * sin(uTime * (2.0 + h * 6.0) + h * 50.0);
+            col += vec3(0.9, 0.9, 1.0) * smoothstep(0.3, 0.0, length(f)) * smoothstep(0.05, 0.3, y) * (0.4 + uStars * 1.4) * tw;
+          }
+          // Corona and halo around the sun (the planet hides what's behind it).
+          float sa = acos(clamp(dot(rd, S), -1.0, 1.0));
+          float vis = smoothstep(1.0 - SUN_R / asin(RP / D), 1.0 + SUN_R / asin(RP / D), uSep);
+          float streak = fbm3(normalize(rd - S * dot(rd, S)) * 3.0 + vec3(0.0, 0.0, uTime * 0.05));
+          col += vec3(1.0, 0.75, 0.55) * exp(-sa * 9.0) * (0.35 + uCorona * 0.8) * (0.6 + 0.8 * streak);
+          col += vec3(1.0, 0.55, 0.35) * exp(-sa * 2.5) * (0.06 + vis * 0.25);
+          col += vec3(1.0, 0.95, 0.9) * smoothstep(SUN_R, SUN_R * 0.7, sa) * 30.0;
+
+          // Planet as a real sphere far away.
+          vec3 C = pd * D;
+          float b = dot(rd, C);
+          float disc = b * b - (dot(C, C) - RP * RP);
+          float tP = disc > 0.0 && b > 0.0 ? b - sqrt(disc) : 1e9;
+          if (tP < 1e8) {
+            vec3 n = normalize(rd * tP - C);
+            float lit = dot(n, S);
+            float bands = fbm3(vec3(n.y * 9.0, n.y * 3.0 + n.x, n.z) * 1.5);
+            vec3 surf = mix(vec3(0.5, 0.32, 0.22), vec3(0.85, 0.65, 0.45), bands);
+            col = surf * max(lit, 0.0) * 1.2;
+            col += surf * vec3(0.18, 0.2, 0.3) * 0.12 * (0.5 + 0.5 * n.y);        // ring-shine on the night side
+            float rim = pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
+            col += vec3(1.0, 0.6, 0.4) * rim * smoothstep(-0.25, 0.3, lit) * (1.2 + uCorona);
+          }
+
+          // Rings: a tilted disc through the planet's centre.
+          vec3 nr = normalize(NR);
+          float tR = dot(C, nr) / dot(rd, nr);
+          if (tR > 0.0 && tR < tP) {
+            vec3 pr = rd * tR - C;
+            float rr = length(pr) / RP;
+            if (rr > 1.35 && rr < 2.35) {
+              float dens = (0.55 + 0.45 * sin(rr * 40.0)) * (0.6 + 0.4 * sin(rr * 9.0 + 1.0));
+              dens *= smoothstep(1.35, 1.45, rr) * smoothstep(2.35, 2.2, rr) * (1.0 - 0.85 * smoothstep(1.8, 1.82, rr) * smoothstep(1.9, 1.88, rr));
+              // Shadowed where the planet sits between the ring and the sun.
+              vec3 wp = rd * tR;
+              vec3 oc = wp - C;
+              float sb = dot(oc, S), sc = dot(oc, oc) - RP * RP;
+              float shadow = sb < 0.0 ? 1.0 - 0.92 * smoothstep(-RP * 1.5, RP * 1.5, sb * sb - sc) : 1.0;
+              float fwd = pow(max(dot(rd, S), 0.0), 10.0);
+              vec3 rc = vec3(0.95, 0.8, 0.65) * (0.25 + 2.5 * fwd) * shadow;
+              col = mix(col, rc, clamp(dens * 0.8, 0.0, 0.9));
+            }
+          }
+
+          // The diamond: a flash with spikes where the sun clears the limb.
+          vec3 dd = rd - S;
+          vec3 sx = normalize(cross(S, vec3(0.0, 1.0, 0.0)));
+          vec3 sy = cross(sx, S);
+          float spikes = exp(-abs(dot(dd, sy)) * 220.0) * exp(-abs(dot(dd, sx)) * 5.0)
+                       + exp(-abs(dot(dd, sx)) * 220.0) * exp(-abs(dot(dd, sy)) * 9.0) * 0.5;
+          col += vec3(1.0, 0.85, 0.7) * (spikes * 1.5 + exp(-sa * 40.0) * 2.0) * (vis * 0.7 + uFlare * 2.0);
+          return col;
+        }
+
+        vec3 haze(vec3 col, vec3 rd, float t) {
+          vec3 S = sunDir();
+          float toSun = pow(max(dot(rd, S), 0.0), 4.0);
+          vec3 hc = mix(vec3(0.09, 0.035, 0.04), vec3(0.45, 0.26, 0.17), toSun);
+          return mix(col, hc, 1.0 - exp(-t * 0.009));
+        }
+
+        void main() {
+          vec3 ro = uCamPos;
+          vec3 rd = cameraRay(ro, uCamTarget, 1.45);
+          vec3 S = sunDir();
+          float vis = smoothstep(1.0 - SUN_R / asin(RP / D), 1.0 + SUN_R / asin(RP / D), uSep);
+
+          // March the heightfield.
+          float t = 0.2, hit = -1.0;
+          for (int i = 0; i < 170; i++) {
+            vec3 p = ro + rd * t;
+            float d = p.y - terrain(p.xz);
+            if (d < 0.002 * t) { hit = t; break; }
+            t += max(0.03, d * 0.45);
+            if (t > 160.0) break;
+          }
+
+          vec3 col;
+          if (hit > 0.0) {
+            vec3 p = ro + rd * hit;
+            vec3 n = terrainNormal(p.xz, 0.04 + hit * 0.002);
+            vec3 sand = vec3(0.78, 0.5, 0.32);
+            // Light: sun (when it shows), corona, a cold ring-shine fill.
+            float sunAmt = 0.18 + 0.82 * vis + uFlare * 0.6;
+            float dif = pow(max(dot(n, S) * 0.85 + 0.15, 0.0), 1.6);
+            col = sand * dif * vec3(1.0, 0.72, 0.5) * 1.8 * sunAmt;
+            col += sand * vec3(0.35, 0.3, 0.5) * 0.07 * (0.5 + 0.5 * n.y);
+            // Crests catch the light at grazing angles.
+            float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.0) * max(dot(n, S) + 0.2, 0.0);
+            col += vec3(1.0, 0.65, 0.4) * rim * (0.8 + uCorona) * (0.4 + 0.6 * sunAmt);
+            col = haze(col, rd, hit);
+          } else {
+            col = sky(rd);
+            col = haze(col, rd, 160.0 * smoothstep(0.25, 0.0, max(rd.y, 0.0)));
+          }
+
+          // Sand streaming off the ridges: a few samples above the ground ahead.
+          float tEnd = hit > 0.0 ? hit : 60.0;
+          float drift = 0.0;
+          for (int k = 0; k < 6; k++) {
+            float ts = tEnd * (0.25 + 0.15 * float(k));
+            vec3 p = ro + rd * ts;
+            float above = p.y - terrain(p.xz);
+            float dens = fbm3(vec3(p.x * 0.35 - uWindT * 3.0, p.y * 1.4, p.z * 0.12 - uWindT * 0.8));
+            drift += smoothstep(0.45, 0.85, dens) * exp(-max(above, 0.0) * 1.3) * step(-0.05, above);
+          }
+          col += vec3(1.0, 0.72, 0.5) * drift * (0.04 + uGust * 0.4) * (0.4 + 0.6 * vis);
+
+          gl_FragColor = vec4(finish(col, 2.6, 0.78) * uFade, 1.0);
+        }
+      `;
+
+      const scene = shaderScene(FRAG, { scale: 0.5 });
+      const look = orbitControls({ pitch: [-0.4, 0.6] });
+
+      const coronaEnv = envelope(0.08, 0.6);
+      const glideEnv = envelope(0.6, 1.5);
+      const starsEnv = envelope(0.05, 0.4);
+      const flareHits = hits(), gustHits = hits();
+      let flare = 0, gust = 0, travel = 0, windT = 0;
+
+      function draw(ctx, { time, dt, width: w, height: h, param }) {
+        const t = time / 1000;
+        const corona = coronaEnv(param('corona'), dt);
+        const glide = glideEnv(param('glide'), dt);
+        const stars = starsEnv(param('stars'), dt);
+        flare = Math.max(flare * Math.exp(-dt * 3), flareHits(param('flare'), dt));
+        gust = Math.max(gust * Math.exp(-dt * 0.8), gustHits(param('gust'), dt));
+        travel += dt * (1.2 + glide * 5);
+        windT += dt * (0.3 + gust * 1.5);
+
+        // The sun slides behind the limb and back out: corona, then diamond.
+        const sep = 1.0 + 0.045 * Math.sin(t * 0.06 - 1.2);
+
+        const yaw = 0.33 + Math.sin(t * 0.04) * 0.06 + look.yaw;
+        const pitch = 0.16 + look.pitch;
+        const cam = [Math.sin(t * 0.05) * 6, 6.2 + Math.sin(t * 0.09) * 0.4, travel];
+        const target = [cam[0] + Math.cos(pitch) * Math.sin(yaw), cam[1] + Math.sin(pitch), cam[2] + Math.cos(pitch) * Math.cos(yaw)];
+
+        scene.draw(ctx, w, h, t, (u) => {
+          u.v3('uCamPos', cam);
+          u.v3('uCamTarget', target);
+          u.f('uSep', sep);
+          u.f('uCorona', corona);
+          u.f('uFlare', flare);
+          u.f('uGust', gust);
+          u.f('uWindT', windT);
+          u.f('uStars', stars);
+          u.f('uFade', smoothstep(0, 3, t));
+        });
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Eclipse',
+        asciiConfig: { ...SHADER_ASCII, background: '#040208' },
+        draw,
+      });
+    </script>
+  </body>
+</html>

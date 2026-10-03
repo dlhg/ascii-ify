@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Abyss</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000308; }
+      .container { position: relative; width: 100%; height: 100%; cursor: grab; }
+      .container.dragging { cursor: grabbing; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { smoothstep } from './utils.js';
+      import { envelope, hits } from './music.js';
+      import { shaderScene, orbitControls, orbitCamera, SHADER_ASCII } from './shader-scene.js';
+
+      // ── Abyss ────────────────────────────────────────────────────
+      // Jellyfish rising through deep water. Everything is rendered as glowing
+      // volume rather than surfaces, which is how jellyfish really look: a
+      // translucent bell with radial canals, a beaded margin of light,
+      // frilled oral arms and long tentacles that trail and sway. Shafts of
+      // light fall from a surface far above; marine snow drifts through them.
+      //
+      // Kicks make every bell contract (and swim), bass deepens their glow,
+      // snares send a pulse of light running down the tentacles, mids open
+      // the light shafts, highs make the marine snow sparkle.
+      // Drag to orbit, scroll to zoom.
+      const PARAMS = [
+        { key: 'pulse', label: 'Pulse (hits)', min: 0, max: 1, def: 0 },
+        { key: 'glow', label: 'Glow', min: 0, max: 1, def: 0.3 },
+        { key: 'ripple', label: 'Light ripple (hits)', min: 0, max: 1, def: 0 },
+        { key: 'rays', label: 'Light shafts', min: 0, max: 1, def: 0.35 },
+        { key: 'snow', label: 'Marine snow', min: 0, max: 1, def: 0.2 },
+      ];
+
+      const JELLIES = 3;
+
+      const FRAG = `
+        uniform vec3 uCamPos;
+        uniform vec3 uCamTarget;
+        uniform vec4 uJelly[${JELLIES}];    // xyz, size
+        uniform vec4 uState[${JELLIES}];    // contraction 0..1, hue, ripple age (<0 none), flash
+        uniform float uGlow;
+        uniform float uRays;
+        uniform float uSnow;
+        uniform float uFade;
+
+        vec3 hue(float h) {
+          return 0.5 + 0.5 * cos(TAU * (h + vec3(0.0, 0.33, 0.67)));
+        }
+
+        // Emission of one jellyfish at point q (local, in units of its size).
+        vec3 jelly(vec3 q, vec4 st) {
+          float con = st.x;
+          vec3 tint = hue(st.y);
+          vec3 tint2 = hue(st.y + 0.18);
+          float a = atan(q.z, q.x);
+          vec3 e = vec3(0.0);
+
+          // Bell: a squashed dome that narrows and lengthens as it contracts.
+          vec3 qb = q;
+          qb.xz *= 1.0 + 0.22 * con;
+          qb.y *= 1.35 - 0.2 * con;
+          float rim = smoothstep(0.15, -0.35, q.y);
+          float r = length(qb) + 0.035 * sin(a * 16.0 + uTime * 2.0) * rim;
+          float mask = smoothstep(-0.42, -0.2, qb.y);
+          float shell = exp(-pow((r - 1.0) / 0.07, 2.0)) * mask;
+          float canals = 0.55 + 0.45 * pow(abs(cos(a * 4.0)), 12.0);
+          e += tint * shell * canals * 0.9;
+          // Inner glow of the bell and its four gonads.
+          e += tint * exp(-pow(r / 0.85, 2.0) * 2.0) * mask * 0.12;
+          float g = length(vec2(length(q.xz) - 0.38, (q.y - 0.15) * 1.6));
+          e += tint2 * exp(-g * g / 0.012) * (0.5 + 0.5 * cos(a * 4.0)) * 1.4;
+          // A beaded margin of light around the rim.
+          float m = length(vec2(length(qb.xz) - 0.93, qb.y + 0.32));
+          e += mix(tint, vec3(1.0), 0.4) * exp(-m * m / 0.004) * pow(0.5 + 0.5 * cos(a * 24.0), 6.0) * 2.5;
+
+          // Below the bell: frilled oral arms and long tentacles.
+          float s = -0.3 - q.y;
+          if (s > 0.0) {
+            float sway = s * s * 0.06;
+            vec2 drift = vec2(sin(s * 1.6 - uTime * 1.1), cos(s * 1.3 - uTime * 0.9)) * sway;
+            float lead = st.z >= 0.0 ? exp(-pow((s - st.z * 3.5) * 2.0, 2.0)) * 3.0 : 0.0;
+            // Tentacles: 12 around the rim, one sector at a time.
+            float k = floor(a / (TAU / 12.0) + 0.5);
+            float ang = k * TAU / 12.0 + sin(s * 0.9 - uTime * 0.7 + k) * 0.15;
+            vec2 c = vec2(cos(ang), sin(ang)) * (0.85 - 0.12 * min(s, 2.0)) + drift;
+            float d = length(q.xz - c);
+            float fall = exp(-s * 0.32) * smoothstep(5.5, 3.5, s);
+            e += mix(tint, vec3(1.0), 0.3) * exp(-d * d / 0.005) * fall * (0.8 + lead);
+            // Oral arms: four wide frilled ribbons near the centre.
+            float k4 = floor(a / (TAU / 4.0) + 0.5);
+            float ang4 = k4 * TAU / 4.0 + 0.4 + sin(s * 1.4 - uTime) * 0.3;
+            vec2 c4 = vec2(cos(ang4), sin(ang4)) * (0.15 + 0.06 * s) + drift * 0.6;
+            float d4 = length(q.xz - c4);
+            float frill = 0.6 + 0.4 * sin(s * 18.0 + a * 3.0 - uTime * 2.0);
+            e += tint2 * exp(-d4 * d4 / 0.02) * frill * exp(-s * 0.9) * smoothstep(2.6, 1.5, s) * 0.8;
+          }
+          return e * (2.0 + uGlow * 2.5 + st.w * 4.0);
+        }
+
+        vec3 water(vec3 rd) {
+          vec3 col = mix(vec3(0.0, 0.001, 0.004), vec3(0.003, 0.02, 0.035), smoothstep(-0.4, 0.8, rd.y));
+          // Snell's window: the bright, rippling disc of the surface overhead.
+          float win = smoothstep(0.72, 0.8, rd.y);
+          float rip = fbm3(vec3(rd.xz / max(rd.y, 0.1) * 3.0, uTime * 0.3));
+          col += vec3(0.25, 0.55, 0.6) * win * (0.4 + 0.8 * rip) * (0.4 + uRays);
+          return col;
+        }
+
+        void main() {
+          vec3 ro = uCamPos;
+          vec3 rd = cameraRay(ro, uCamTarget, 1.5);
+          vec3 col = vec3(0.0);
+          float stepLen = 0.2;
+          float t = 0.4 + stepLen * hash(vec3(gl_FragCoord.xy, uTime));
+          for (int i = 0; i < 110; i++) {
+            vec3 p = ro + rd * t;
+            vec3 e = vec3(0.0);
+            for (int j = 0; j < ${JELLIES}; j++) {
+              vec4 J = uJelly[j];
+              vec3 q = (p - J.xyz) / J.w;
+              // Cheap bound: a capsule from the bell down the tentacles.
+              vec3 qc = q;
+              qc.y -= clamp(qc.y, -5.5, 0.0);
+              if (dot(qc, qc) > 2.2) continue;
+              e += jelly(q, uState[j]);
+            }
+            // Light shafts slanting down from the surface.
+            vec2 sh = p.xz + p.y * vec2(0.25, 0.12);
+            float shaft = pow(noise(vec3(sh * 0.55, uTime * 0.04)), 7.0) * 6.0;
+            shaft *= smoothstep(-12.0, 6.0, p.y) * (0.15 + uRays * 0.9);
+            e += vec3(0.25, 0.6, 0.65) * shaft * 0.035;
+            // Marine snow, drifting slowly down.
+            vec3 sq = (p + vec3(0.0, uTime * 0.12, 0.0)) / 0.8;
+            vec3 id = floor(sq);
+            vec3 f = fract(sq) - 0.5 - (vec3(hash(id + 1.7), hash(id + 4.1), hash(id + 8.3)) - 0.5) * 0.6;
+            if (hash(id) > 0.88) {
+              float tw = 0.6 + 0.4 * sin(uTime * 3.0 + hash(id + 2.0) * 40.0);
+              e += vec3(0.7, 0.85, 0.9) * smoothstep(0.1, 0.0, length(f)) * (0.25 + uSnow * 1.5) * tw;
+            }
+            col += e * stepLen * exp(-t * 0.07);
+            t += stepLen;
+            if (t > 24.0) break;
+          }
+          col += water(rd);
+          gl_FragColor = vec4(finish(col, 2.4, 0.8) * uFade, 1.0);
+        }
+      `;
+
+      const scene = shaderScene(FRAG, { scale: 0.42, maxWidth: 640 });
+      const orbit = orbitControls({ pitch: [-0.9, 0.5], zoom: [-4, 8] });
+
+      const glowEnv = envelope(0.06, 0.5);
+      const raysEnv = envelope(0.3, 1.0);
+      const snowEnv = envelope(0.02, 0.2);
+      const pulseHits = hits(), rippleHits = hits();
+
+      // Each jelly: position, size, hue, its own pulse clock, upward speed.
+      const jellies = [
+        { x: -0.6, y: 0.4, z: 0.2, size: 1.5, hue: 0.5, phase: 0.0, rate: 0.42 },
+        { x: 3.0, y: -2.5, z: -2.0, size: 1.0, hue: 0.17, phase: 1.7, rate: 0.55 },
+        { x: -3.4, y: 3.2, z: -3.5, size: 1.15, hue: 0.36, phase: 3.1, rate: 0.5 },
+      ].map(j => ({ ...j, vy: 0, ripple: -1, flash: 0 }));
+      const jellyBuf = new Float32Array(JELLIES * 4);
+      const stateBuf = new Float32Array(JELLIES * 4);
+
+      function draw(ctx, { time, dt, width: w, height: h, param }) {
+        const t = time / 1000;
+        const glow = glowEnv(param('glow'), dt);
+        const rays = raysEnv(param('rays'), dt);
+        const snow = snowEnv(param('snow'), dt);
+        const pulse = pulseHits(param('pulse'), dt);
+        const ripple = rippleHits(param('ripple'), dt);
+
+        jellies.forEach((j, i) => {
+          // A kick restarts every bell's stroke together.
+          if (pulse) { j.phase = 0; j.flash = Math.max(j.flash, pulse); }
+          if (ripple) j.ripple = 0;
+          const prev = j.phase % 1;
+          j.phase += dt * j.rate;
+          const ph = j.phase % 1;
+          // Fast contraction, slow relaxation; each stroke pushes it upward.
+          const con = ph < 0.3 ? smoothstep(0, 0.3, ph) : 1 - smoothstep(0.3, 1, ph);
+          if (ph < prev || pulse) j.vy += 0.45 * j.size;
+          j.vy *= Math.exp(-dt * 1.4);
+          j.y += (j.vy + 0.04) * dt;
+          j.x += Math.sin(t * 0.1 + i * 2) * 0.04 * dt;
+          if (j.y > 9) j.y = -9;
+          if (j.ripple >= 0) { j.ripple += dt; if (j.ripple > 1.8) j.ripple = -1; }
+          j.flash *= Math.exp(-dt * 3);
+          jellyBuf.set([j.x, j.y, j.z, j.size], i * 4);
+          stateBuf.set([con, j.hue + Math.sin(t * 0.05 + i) * 0.04, j.ripple, j.flash], i * 4);
+        });
+
+        // Follow the largest jelly loosely as it climbs.
+        const lead = jellies[0];
+        const target = [lead.x * 0.5, lead.y * 0.6 - 0.5, 0];
+        const intro = 1 - smoothstep(0, 8, t);
+        const cam = orbitCamera(target, t * 0.03 + orbit.yaw, -0.18 + orbit.pitch - intro * 0.3, 8 + orbit.zoom + intro * 6);
+
+        scene.draw(ctx, w, h, t, (u) => {
+          u.v3('uCamPos', cam);
+          u.v3('uCamTarget', target);
+          u.v4('uJelly', jellyBuf);
+          u.v4('uState', stateBuf);
+          u.f('uGlow', glow);
+          u.f('uRays', rays);
+          u.f('uSnow', snow);
+          u.f('uFade', smoothstep(0, 3, t));
+        });
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Abyss',
+        asciiConfig: { ...SHADER_ASCII, background: '#000308' },
+        draw,
+      });
+    </script>
+  </body>
+</html>

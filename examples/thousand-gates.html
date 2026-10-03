@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Thousand Gates</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #03020a; }
+      .container { position: relative; width: 100%; height: 100%; cursor: grab; }
+      .container.dragging { cursor: grabbing; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { smoothstep } from './utils.js';
+      import { ParticlePool } from './particles.js';
+      import { envelope, hits } from './music.js';
+      import { shaderScene, orbitControls } from './shader-scene.js';
+
+      // ── Thousand Gates ───────────────────────────────────────────
+      // An endless procession of vermilion torii standing in still water,
+      // walked at night toward an enormous rising moon. Stone lanterns burn
+      // between the gates, mist lies on the water, and the whole corridor
+      // hangs upside down in the reflection. Cherry petals drift through it.
+      //
+      // Kicks light the lanterns in a wave that runs ahead of you down the
+      // corridor, snares blow gusts of petals, bass swells the moon's halo,
+      // mids set the walking pace, highs make the water shimmer.
+      // Drag to look around.
+      const PARAMS = [
+        { key: 'kindle', label: 'Kindle (hits)', min: 0, max: 1, def: 0 },
+        { key: 'gust', label: 'Petal gust (hits)', min: 0, max: 1, def: 0 },
+        { key: 'moon', label: 'Moon halo', min: 0, max: 1, def: 0.25 },
+        { key: 'pace', label: 'Pace', min: 0, max: 1, def: 0.3 },
+        { key: 'shimmer', label: 'Shimmer', min: 0, max: 1, def: 0.2 },
+      ];
+
+      const FOCAL = 1.5;
+      const SPACING = 3.2;      // gate spacing along the walk
+
+      const FRAG = `
+        uniform vec3 uCamPos;
+        uniform vec3 uCamTarget;
+        uniform float uMoonGlow;
+        uniform float uShimmer;
+        uniform float uFade;
+        uniform vec4 uWaveZ;      // z of each lantern wave front
+        uniform vec4 uWaveAmp;
+
+        const float SP = ${SPACING.toFixed(2)};
+        const vec3 MOON = vec3(0.0, 0.259, 0.966);
+
+        float sdBox(vec3 p, vec3 b) {
+          vec3 q = abs(p) - b;
+          return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+        }
+        vec2 opU(vec2 a, vec2 b) { return a.x < b.x ? a : b; }
+
+        // Materials: 1 lacquer gate, 2 stone, 3 lantern paper
+        vec2 map(vec3 p) {
+          vec3 q = p;
+          q.z -= floor(p.z / SP + 0.5) * SP;
+          vec3 pq = vec3(abs(q.x) - 1.25, q.y, q.z);
+          float rP = 0.14 - 0.025 * clamp(q.y / 3.6, 0.0, 1.0);
+          float pillar = max(length(pq.xz) - rP, q.y - 3.75);
+          vec3 kq = q - vec3(0.0, 3.84, 0.0);
+          kq.y -= 0.055 * kq.x * kq.x;                       // upswept ends
+          float kasagi = sdBox(kq, vec3(2.1, 0.085, 0.17)) * 0.85;
+          float shimaki = sdBox(q - vec3(0.0, 3.68, 0.0), vec3(1.85, 0.065, 0.14));
+          float nuki = sdBox(q - vec3(0.0, 3.1, 0.0), vec3(1.7, 0.06, 0.08));
+          float gaku = sdBox(q - vec3(0.0, 3.38, 0.0), vec3(0.08, 0.22, 0.05));
+          vec2 r = vec2(min(min(pillar, kasagi), min(min(shimaki, nuki), gaku)), 1.0);
+
+          vec3 lq = p;
+          lq.z -= floor(p.z / SP) * SP + SP * 0.5;
+          lq.x = abs(lq.x) - 2.55;
+          float post = sdBox(lq - vec3(0.0, 0.45, 0.0), vec3(0.07, 0.45, 0.07));
+          float roof = sdBox(lq - vec3(0.0, 1.2, 0.0), vec3(0.27, 0.035, 0.27));
+          float cap = sdBox(lq - vec3(0.0, 1.28, 0.0), vec3(0.05, 0.05, 0.05));
+          r = opU(r, vec2(min(post, min(roof, cap)), 2.0));
+          r = opU(r, vec2(sdBox(lq - vec3(0.0, 1.0, 0.0), vec3(0.16, 0.15, 0.16)), 3.0));
+          return r;
+        }
+
+        // Lantern brightness for the lantern pair centred at z.
+        float lanternI(float z) {
+          float id = floor(z / SP);
+          float flick = 0.85 + 0.15 * sin(uTime * (7.0 + hash(vec2(id, 1.0)) * 5.0) + id);
+          float b = 0.75 * flick;
+          for (int i = 0; i < 4; i++) {
+            b += uWaveAmp[i] * exp(-pow((z - uWaveZ[i]) * 0.45, 2.0)) * 2.2;
+          }
+          return b;
+        }
+
+        vec2 march(vec3 ro, vec3 rd, float tmax) {
+          float t = 0.02;
+          for (int i = 0; i < 150; i++) {
+            vec2 h = map(ro + rd * t);
+            if (h.x < 0.0015 * t) return vec2(t, h.y);
+            t += h.x;
+            if (t > tmax) break;
+          }
+          return vec2(tmax, 0.0);
+        }
+
+        vec3 calcNormal(vec3 p) {
+          vec2 e = vec2(1.0, -1.0) * 0.002;
+          return normalize(e.xyy * map(p + e.xyy).x + e.yyx * map(p + e.yyx).x +
+                           e.yxy * map(p + e.yxy).x + e.xxx * map(p + e.xxx).x);
+        }
+
+        vec3 sky(vec3 rd) {
+          float y = max(rd.y, 0.0);
+          vec3 col = mix(vec3(0.11, 0.035, 0.09), vec3(0.008, 0.006, 0.03), smoothstep(0.0, 0.3, y));
+          col = mix(col, vec3(0.002, 0.002, 0.01), smoothstep(0.3, 0.9, y));
+          float md = dot(rd, MOON);
+          float ang = acos(clamp(md, -1.0, 1.0));
+          // Halo, then the moon itself with maria and a soft limb.
+          col += vec3(1.0, 0.55, 0.4) * exp(-ang * 6.0) * (0.12 + uMoonGlow * 0.5);
+          col += vec3(1.0, 0.8, 0.65) * exp(-ang * 22.0) * (0.3 + uMoonGlow * 0.5);
+          float R = 0.15;
+          if (ang < R) {
+            vec3 mp = (rd - MOON) / R;
+            float maria = fbm(mp * 2.5 + 3.0);
+            float limb = sqrt(1.0 - (ang / R) * (ang / R));
+            vec3 mc = mix(vec3(1.0, 0.93, 0.82), vec3(0.75, 0.62, 0.55), smoothstep(0.45, 0.7, maria));
+            col = mix(col, mc * (0.75 + 0.35 * limb) * 2.2, smoothstep(R, R * 0.96, ang));
+          }
+          vec3 q = rd * 110.0;
+          vec3 id = floor(q), f = fract(q) - 0.5;
+          float h = hash(id);
+          if (h > 0.985) col += vec3(0.9, 0.9, 1.0) * smoothstep(0.3, 0.0, length(f)) * smoothstep(0.08, 0.35, y) * 0.9;
+          return col;
+        }
+
+        vec3 shade(vec3 p, vec3 rd, float mat) {
+          vec3 n = calcNormal(p);
+          if (mat > 2.5) {
+            // Paper lantern: lit from inside, ribbed by its frame.
+            float lz = floor(p.z / SP) * SP + SP * 0.5;
+            float I = lanternI(lz);
+            float rib = 0.75 + 0.25 * step(0.2, abs(fract((p.y - 0.85) * 10.0) - 0.5));
+            return vec3(1.0, 0.55, 0.2) * I * rib * 2.2;
+          }
+          vec3 alb = mat < 1.5 ? vec3(0.85, 0.12, 0.05) : vec3(0.28, 0.27, 0.26);
+          if (mat < 1.5 && (p.y > 3.76 || p.y < 0.35)) alb = vec3(0.04, 0.03, 0.03);   // black cap and foot
+          // Moonlight from far ahead, sky fill, and the nearest lanterns.
+          vec3 col = alb * max(dot(n, MOON), 0.0) * vec3(0.9, 0.75, 0.7) * 0.9;
+          col += alb * vec3(0.10, 0.06, 0.14) * (0.6 + 0.4 * n.y);
+          col += alb * vec3(0.55, 0.4, 0.45) * max(dot(n, -rd), 0.0) * 0.45;   // soft fill from behind us
+          float base = floor(p.z / SP) * SP + SP * 0.5;
+          for (int k = -1; k <= 1; k++) {
+            float lz = base + float(k) * SP;
+            float I = lanternI(lz);
+            for (int s = 0; s < 2; s++) {
+              vec3 lp = vec3(s == 0 ? -2.55 : 2.55, 1.0, lz);
+              vec3 L = lp - p;
+              float d2 = dot(L, L);
+              L *= inversesqrt(d2);
+              col += alb * vec3(1.0, 0.55, 0.22) * I * max(dot(n, L), 0.0) * 4.0 / (1.0 + d2 * 0.7);
+            }
+          }
+          // Lacquer sheen catching the moon.
+          vec3 H = normalize(MOON - rd);
+          col += vec3(1.0, 0.8, 0.7) * pow(max(dot(n, H), 0.0), 30.0) * (mat < 1.5 ? 0.6 : 0.1);
+          return col;
+        }
+
+        vec3 mist(vec3 col, vec3 rd, float t) {
+          float toMoon = pow(max(dot(rd, MOON), 0.0), 6.0);
+          vec3 mc = mix(vec3(0.07, 0.025, 0.06), vec3(0.4, 0.22, 0.2), toMoon);
+          return mix(col, mc, 1.0 - exp(-t * 0.03));
+        }
+
+        void main() {
+          vec3 ro = uCamPos;
+          vec3 rd = cameraRay(ro, uCamTarget, ${FOCAL.toFixed(2)});
+          float tSea = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
+          vec2 hit = march(ro, rd, min(tSea, 90.0));
+          vec3 col;
+          if (hit.y > 0.0) {
+            col = mist(shade(ro + rd * hit.x, rd, hit.y), rd, hit.x);
+          } else if (tSea < 1e8) {
+            vec3 sp = ro + rd * tSea;
+            // Still water: faint long swells plus fine shimmer.
+            float a = sin(sp.x * 1.7 + uTime * 0.6) * 0.5 + sin(sp.z * 0.9 - uTime * 0.8 + sp.x * 0.4);
+            float sh = noise(vec3(sp.xz * vec2(6.0, 2.5), uTime * 1.5)) - 0.5;
+            vec3 n = normalize(vec3(a * 0.012 + sh * 0.04 * (0.4 + uShimmer * 1.6), 1.0, sh * 0.03 * (0.4 + uShimmer * 1.6)));
+            vec3 rr = reflect(rd, n);
+            float fres = 0.08 + 0.92 * pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
+            vec2 h2 = march(sp + vec3(0.0, 0.01, 0.0), rr, 70.0);
+            vec3 refl = h2.y > 0.0 ? mist(shade(sp + rr * h2.x, rr, h2.y), rr, h2.x) : sky(rr);
+            col = vec3(0.005, 0.004, 0.012) + refl * (0.45 + 0.55 * fres);
+            col = mist(col, rd, tSea);
+          } else {
+            col = sky(rd);
+          }
+          gl_FragColor = vec4(finish(col, 2.6, 0.78) * uFade, 1.0);
+        }
+      `;
+
+      const scene = shaderScene(FRAG, { scale: 0.5 });
+      const look = orbitControls({ pitch: [-0.35, 0.5] });
+
+      const moonEnv = envelope(0.08, 0.6);
+      const paceEnv = envelope(0.6, 1.2);
+      const shimmerEnv = envelope(0.03, 0.25);
+      const kindleHits = hits(), gustHits = hits();
+      const waveZ = new Float32Array([-1e4, -1e4, -1e4, -1e4]);
+      const waveAmp = new Float32Array(4);
+      let waveNext = 0, walk = 0, wind = 0, petalTimer = 0;
+
+      // Petals live in world space and are projected with the shader's camera.
+      const petals = new ParticlePool({ maxParticles: 260, gravity: -0.22 });
+      function spawnPetal(camZ, burst) {
+        petals.emit(1, () => ({
+          x: (Math.random() - 0.5) * 7,
+          y: 1 + Math.random() * 3.6,
+          z: camZ + 1.5 + Math.random() * (burst ? 8 : 16),
+          vx: (Math.random() - 0.5) * 0.4 + (burst ? 1.4 : 0),
+          vy: -0.1 - Math.random() * 0.2,
+          vz: -0.2 - Math.random() * 0.3,
+          life: 6 + Math.random() * 6,
+          spin: Math.random() * Math.PI * 2,
+          spinRate: (Math.random() - 0.5) * 6,
+          size: 0.045 + Math.random() * 0.03,
+        }));
+      }
+
+      function draw(ctx, { time, dt, width: w, height: h, param }) {
+        const t = time / 1000;
+        const moon = moonEnv(param('moon'), dt);
+        const pace = paceEnv(param('pace'), dt);
+        const shimmer = shimmerEnv(param('shimmer'), dt);
+        walk += dt * (0.5 + pace * 2.2);
+
+        const cam = [Math.sin(t * 0.13) * 0.18, 1.45 + Math.sin(t * 0.21) * 0.06, walk];
+        const yaw = Math.sin(t * 0.07) * 0.05 + look.yaw;
+        const pitch = 0.11 + look.pitch;
+        const fw = [Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw)];
+        const target = [cam[0] + fw[0], cam[1] + fw[1], cam[2] + fw[2]];
+
+        // Kicks launch a wave of light down the lanterns ahead.
+        const kindle = kindleHits(param('kindle'), dt);
+        if (kindle) {
+          waveZ[waveNext % 4] = cam[2] - 1;
+          waveAmp[waveNext % 4] = 0.5 + kindle;
+          waveNext++;
+        }
+        for (let i = 0; i < 4; i++) {
+          waveZ[i] += dt * 14;
+          waveAmp[i] *= Math.exp(-dt * 0.5);
+        }
+
+        // Petals: a steady drift, gusts on snares.
+        const gust = gustHits(param('gust'), dt);
+        if (gust) {
+          wind = Math.max(wind, 0.6 + gust * 1.5);
+          for (let i = 0; i < 25 + gust * 40; i++) spawnPetal(cam[2], true);
+        }
+        wind *= Math.exp(-dt * 1.2);
+        petalTimer -= dt;
+        while (petalTimer < 0) {
+          spawnPetal(cam[2], false);
+          petalTimer += 0.12;
+        }
+
+        scene.draw(ctx, w, h, t, (u) => {
+          u.v3('uCamPos', cam);
+          u.v3('uCamTarget', target);
+          u.f('uMoonGlow', moon);
+          u.f('uShimmer', shimmer);
+          u.f('uFade', smoothstep(0, 3, t));
+          u.v4('uWaveZ', waveZ);
+          u.v4('uWaveAmp', waveAmp);
+        });
+
+        // Project petals through the same camera basis as cameraRay():
+        // rt = normalize(cross(fw, Y)), up = cross(rt, fw).
+        const rl = Math.hypot(fw[0], fw[2]);
+        const rt = [-fw[2] / rl, 0, fw[0] / rl];
+        const up = [rt[1] * fw[2] - rt[2] * fw[1], rt[2] * fw[0] - rt[0] * fw[2], rt[0] * fw[1] - rt[1] * fw[0]];
+
+        petals.update(dt);
+        const k = FOCAL * h / 2;
+        ctx.save();
+        petals.forEach((p) => {
+          p.z += p.vz * dt;
+          p.x += (Math.sin(t * 1.3 + p.spin) * 0.25 + wind) * dt;
+          p.spin += p.spinRate * dt;
+          if (p.y < 0.02) p.life = 0;
+          const rx = p.x - cam[0], ry = p.y - cam[1], rz = p.z - cam[2];
+          const z = rx * fw[0] + ry * fw[1] + rz * fw[2];
+          if (z < 0.4) return;
+          const x = rx * rt[0] + ry * rt[1] + rz * rt[2];
+          const y = rx * up[0] + ry * up[1] + rz * up[2];
+          const sx = w / 2 + (x / z) * k, sy = h / 2 - (y / z) * k;
+          const s = Math.max(1, (p.size / z) * k);
+          const fadeIn = Math.min(1, (16 - (p.z - cam[2])) / 3);
+          ctx.globalAlpha = Math.max(0, Math.min(1, p.life, fadeIn)) * Math.min(1, 3 / z + 0.25);
+          ctx.fillStyle = '#ffb3c8';
+          ctx.beginPath();
+          ctx.ellipse(sx, sy, s * 1.4, s * (0.4 + 0.6 * Math.abs(Math.sin(p.spin))), p.spin, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Gates',
+        asciiConfig: {
+          enabled: true,
+          fontSize: 6,
+          fontSizeSmoothing: 0.3,
+          density: 1,
+          charset: 'blocks',
+          colorScheme: 'source',
+          background: '#03020a',
+          fade: 0,
+          speed: 1.1,
+          pattern: null,
+          patternMix: 0.18,
+          colorCycle: false,
+          colorCycleRate: 2.1,
+          sourceOpacity: 0.29,
+          opacity: 1,
+          blendMode: 'replace',
+          offsetX: 0,
+          offsetY: 0,
+          zIndex: 0,
+          renderMode: '3d',
+          depthScale: -400,
+          perspective: 1600,
+          rotationX: 0.04,
+          rotationY: -0.3724350901866849,
+          rotationZ: 0,
+          cameraZ: 1110,
+          depthOpacity: 0.38,
+          depthSmoothing: 0.44,
+          edgeDetect: false,
+          edgeThreshold: 0.15,
+          edgeCharset: 'box-light',
+          crtEnabled: false,
+          crtScanlines: 0.3,
+          crtGlow: 0.68,
+          crtDistortion: 0.5,
+          crtFlicker: 0,
+          automations: {
+            rotationY: {
+              type: 'sine',
+              base: 0.050000000000000044,
+              min: -0.45999999999999996,
+              max: 0.56,
+              amount: 0.51,
+              relative: true,
+              rate: 0.01,
+              phase: 0,
+              seed: 136993906,
+            },
+          },
+        },
+        draw,
+      });
+    </script>
+  </body>
+</html>

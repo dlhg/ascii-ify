@@ -19,8 +19,9 @@
 
     <script type="module">
       import { createApp } from './boilerplate.js';
-      import { clamp, lerp, smoothstep } from './utils.js';
+      import { lerp, smoothstep } from './utils.js';
       import { envelope, hits } from './music.js';
+      import { shaderScene, orbitControls, orbitCamera, rotX, rotY, rotZ, mul3 as mul, apply3 as apply, SHADER_ASCII } from './shader-scene.js';
 
       // ── Celestial Orrery ─────────────────────────────────────────
       // A clockwork armillary hangs over a mirror-black sea. A living sun sits
@@ -42,15 +43,7 @@
         { key: 'drift', label: 'Approach', min: 0, max: 1, def: 0.3 },
       ];
 
-      const VERT = `
-        attribute vec2 aPos;
-        void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
-      `;
-
       const FRAG = `
-        precision highp float;
-        uniform vec2 uRes;
-        uniform float uTime;
         uniform vec3 uCamPos;
         uniform vec3 uCamTarget;
         uniform vec3 uSun;
@@ -67,27 +60,7 @@
         uniform mat3 uSpinM;
         uniform vec4 uRipple[6];   // x, z, age, strength
 
-        const float TAU = 6.2831853;
         const float BOUND = 5.2;   // bounding sphere around the sun
-
-        float hash(vec3 p) {
-          p = fract(p * 0.3183099 + 0.1);
-          p *= 17.0;
-          return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-        }
-        float noise(vec3 x) {
-          vec3 i = floor(x), f = fract(x);
-          f = f * f * (3.0 - 2.0 * f);
-          return mix(mix(mix(hash(i), hash(i + vec3(1, 0, 0)), f.x),
-                         mix(hash(i + vec3(0, 1, 0)), hash(i + vec3(1, 1, 0)), f.x), f.y),
-                     mix(mix(hash(i + vec3(0, 0, 1)), hash(i + vec3(1, 0, 1)), f.x),
-                         mix(hash(i + vec3(0, 1, 1)), hash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
-        }
-        float fbm(vec3 p) {
-          float a = 0.5, s = 0.0;
-          for (int i = 0; i < 5; i++) { s += a * noise(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; }
-          return s;
-        }
 
         // A flat band in the local xz-plane with gear teeth around its rim.
         float sdBand(vec3 lp, float R, float w, float h, float teeth) {
@@ -287,12 +260,8 @@
         }
 
         void main() {
-          vec2 uv = (gl_FragCoord.xy * 2.0 - uRes) / uRes.y;
           vec3 ro = uCamPos;
-          vec3 fw = normalize(uCamTarget - ro);
-          vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
-          vec3 up = cross(rt, fw);
-          vec3 rd = normalize(fw * 1.75 + rt * uv.x + up * uv.y);
+          vec3 rd = cameraRay(ro, uCamTarget, 1.75);
 
           float tSea = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
           vec2 hit = march(ro, rd, min(tSea, 80.0));
@@ -337,57 +306,12 @@
           }
           col += sunGlow(ro, rd, tEnd);
 
-          // Filmic tone and a soft vignette.
-          col = vec3(1.0) - exp(-col * 3.2);
-          col = pow(col, vec3(0.75));
-          vec2 q = gl_FragCoord.xy / uRes;
-          col *= 0.35 + 0.65 * pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.2);
-          gl_FragColor = vec4(col * uFade, 1.0);
+          gl_FragColor = vec4(finish(col, 3.2, 0.75) * uFade, 1.0);
         }
       `;
 
-      // ── 3x3 rotations (column-major, as GLSL wants them) ─────────
-      const rotX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, s, 0, -s, c]; };
-      const rotY = a => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, -s, 0, 1, 0, s, 0, c]; };
-      const rotZ = a => { const c = Math.cos(a), s = Math.sin(a); return [c, s, 0, -s, c, 0, 0, 0, 1]; };
-      function mul(a, b) {
-        const out = new Array(9);
-        for (let c = 0; c < 3; c++) {
-          for (let r = 0; r < 3; r++) out[c * 3 + r] = a[r] * b[c * 3] + a[3 + r] * b[c * 3 + 1] + a[6 + r] * b[c * 3 + 2];
-        }
-        return out;
-      }
-      const apply = (m, v) => [0, 1, 2].map(r => m[r] * v[0] + m[3 + r] * v[1] + m[6 + r] * v[2]);
-
-      // ── WebGL setup ──────────────────────────────────────────────
-      const glCanvas = document.createElement('canvas');
-      const gl = glCanvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });
-
-      function compile(type, src) {
-        const sh = gl.createShader(type);
-        gl.shaderSource(sh, src);
-        gl.compileShader(sh);
-        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
-        return sh;
-      }
-      const prog = gl.createProgram();
-      gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
-      gl.linkProgram(prog);
-      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-      gl.useProgram(prog);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-      const aPos = gl.getAttribLocation(prog, 'aPos');
-      gl.enableVertexAttribArray(aPos);
-      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-      const U = {};
-      for (const name of ['uRes', 'uTime', 'uCamPos', 'uCamTarget', 'uSun', 'uSunR', 'uCorona', 'uFlare', 'uTwinkle',
-        'uFade', 'uRingM', 'uRingR', 'uPlanet', 'uPlanetR', 'uMoon', 'uSpinM', 'uRipple']) {
-        U[name] = gl.getUniformLocation(prog, name);
-      }
+      const scene = shaderScene(FRAG);
+      const orbit = orbitControls();
 
       // ── The machine ──────────────────────────────────────────────
       const SUN = [0, 3.4, 0];
@@ -416,33 +340,8 @@
         ripples[o] = x; ripples[o + 1] = z; ripples[o + 2] = 0; ripples[o + 3] = strength;
       }
 
-      // ── Camera: slow orbit, drag to steer, wheel to zoom ─────────
-      let yawOffset = 0, pitchOffset = 0, zoom = 0, dragging = null;
-      const container = document.querySelector('.container');
-      window.addEventListener('pointerdown', (e) => {
-        if (!(e.target instanceof HTMLCanvasElement)) return;
-        dragging = { x: e.clientX, y: e.clientY };
-        container.classList.add('dragging');
-      });
-      window.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
-        yawOffset -= (e.clientX - dragging.x) * 0.005;
-        pitchOffset = clamp(pitchOffset + (e.clientY - dragging.y) * 0.003, -0.2, 0.9);
-        dragging = { x: e.clientX, y: e.clientY };
-      });
-      window.addEventListener('pointerup', () => { dragging = null; container.classList.remove('dragging'); });
-      window.addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.004, -4, 8); }, { passive: true });
-
       function draw(ctx, { time, dt, width: w, height: h, param }) {
         const t = time / 1000;
-
-        // Render at a fraction of the screen; the ASCII grid is coarser still.
-        const scale = Math.min(0.5, 760 / w);
-        const rw = Math.max(64, Math.round(w * scale)), rh = Math.max(36, Math.round(h * scale));
-        if (glCanvas.width !== rw || glCanvas.height !== rh) {
-          glCanvas.width = rw;
-          glCanvas.height = rh;
-        }
 
         // Music.
         const swell = swellEnv(param('swell'), dt);
@@ -485,57 +384,36 @@
 
         // Camera: an opening dolly, then a slow drifting orbit.
         const intro = 1 - smoothstep(0, 9, t);
-        const yaw = t * 0.05 + yawOffset + 0.6;
-        const pitch = clamp(0.16 + 0.06 * Math.sin(t * 0.07) + pitchOffset + intro * 0.25, -0.12, 1.2);
-        const dist = Math.max(4.5, 9 - drift * 2.5 + 1.2 * Math.sin(t * 0.045) + zoom + intro * intro * 14);
+        const yaw = t * 0.05 + orbit.yaw + 0.6;
+        const pitch = Math.min(1.2, Math.max(-0.12, 0.16 + 0.06 * Math.sin(t * 0.07) + orbit.pitch + intro * 0.25));
+        const dist = Math.max(4.5, 9 - drift * 2.5 + 1.2 * Math.sin(t * 0.045) + orbit.zoom + intro * intro * 14);
         const target = [0, lerp(2.9, 3.4, drift), 0];
-        const cam = [
-          target[0] + dist * Math.cos(pitch) * Math.sin(yaw),
-          Math.max(0.25, target[1] + dist * Math.sin(pitch)),
-          target[2] + dist * Math.cos(pitch) * Math.cos(yaw),
-        ];
+        const cam = orbitCamera(target, yaw, pitch, dist);
+        cam[1] = Math.max(0.25, cam[1]);
 
-        gl.viewport(0, 0, rw, rh);
-        gl.uniform2f(U.uRes, rw, rh);
-        gl.uniform1f(U.uTime, t);
-        gl.uniform3fv(U.uCamPos, cam);
-        gl.uniform3fv(U.uCamTarget, target);
-        gl.uniform3fv(U.uSun, SUN);
-        gl.uniform1f(U.uSunR, 0.72 + swell * 0.28 + kickGlow * 0.05);
-        gl.uniform1f(U.uCorona, 0.85 + swell * 0.6 + flare * 1.2 + kickGlow * 0.4);
-        gl.uniform1f(U.uFlare, flare);
-        gl.uniform1f(U.uTwinkle, twinkle);
-        gl.uniform1f(U.uFade, smoothstep(0, 3.5, t));
-        gl.uniformMatrix3fv(U.uRingM, false, ringM);
-        gl.uniform3f(U.uRingR, RINGS[0].R, RINGS[1].R, RINGS[2].R);
-        gl.uniform3fv(U.uPlanet, planets);
-        gl.uniform3f(U.uPlanetR, ...PLANET_R);
-        gl.uniform3fv(U.uMoon, moon);
-        gl.uniformMatrix3fv(U.uSpinM, false, spinM);
-        gl.uniform4fv(U.uRipple, ripples);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(glCanvas, 0, 0, w, h);
+        scene.draw(ctx, w, h, t, (u) => {
+          u.v3('uCamPos', cam);
+          u.v3('uCamTarget', target);
+          u.v3('uSun', SUN);
+          u.f('uSunR', 0.72 + swell * 0.28 + kickGlow * 0.05);
+          u.f('uCorona', 0.85 + swell * 0.6 + flare * 1.2 + kickGlow * 0.4);
+          u.f('uFlare', flare);
+          u.f('uTwinkle', twinkle);
+          u.f('uFade', smoothstep(0, 3.5, t));
+          u.m3('uRingM', ringM);
+          u.v3('uRingR', RINGS.map(r => r.R));
+          u.v3('uPlanet', planets);
+          u.v3('uPlanetR', PLANET_R);
+          u.v3('uMoon', moon);
+          u.m3('uSpinM', spinM);
+          u.v4('uRipple', ripples);
+        });
       }
 
       createApp({
         sceneParams: PARAMS,
         sceneTitle: 'Orrery',
-        asciiConfig: {
-          fontSize: 8,
-          density: 1,
-          charset: ' .·:;+*oO%@█',
-          colorScheme: 'source',
-          background: '#020206',
-          sourceOpacity: 0,
-          fade: 0,
-          crtEnabled: false,
-          crtScanlines: 0,
-          crtGlow: 0.35,
-          crtDistortion: 0.04,
-        },
+        asciiConfig: { ...SHADER_ASCII, background: '#020206' },
         draw,
       });
     </script>
