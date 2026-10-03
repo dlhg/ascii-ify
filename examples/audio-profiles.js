@@ -135,6 +135,15 @@ const SCENES = {
     r(S + 'twinkle', 'high', 0.8, { smooth: 0.05 }),
     r(S + 'approach', 'rms', 0.8, { smooth: 0.5 }),
   ] },
+  orrery: { kind: 'ambient', routes: () => [
+    r(S + 'swell', 'bass', 0.7, { smooth: 0.08 }),
+    r(S + 'pulse', 'kick', 1, { smooth: 0 }),
+    r(S + 'spin', 'mid', 0.6, { smooth: 0.2 }),
+    r(S + 'flare', 'snare', 1, { smooth: 0 }),
+    r(S + 'twinkle', 'high', 0.8, { smooth: 0.05 }),
+    r(S + 'drift', 'rms', 0.6, { smooth: 0.6 }),
+    r('crtGlow', 'kick', 0.2, { smooth: 0.08 }),
+  ] },
   'skyline-eq': { kind: 'geometry', routes: () => [
     r(S + 'low', 'bass', 0.85, { smooth: 0.04 }),
     r(S + 'mid', 'mid', 0.85, { smooth: 0.04 }),

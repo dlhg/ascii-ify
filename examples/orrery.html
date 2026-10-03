@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ascii-ify - Celestial Orrery</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #020206; }
+      .container { position: relative; width: 100%; height: 100%; cursor: grab; }
+      .container.dragging { cursor: grabbing; }
+      #source { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="source"></canvas>
+    </div>
+
+    <script type="module">
+      import { createApp } from './boilerplate.js';
+      import { clamp, lerp, smoothstep } from './utils.js';
+      import { envelope, hits } from './music.js';
+
+      // ── Celestial Orrery ─────────────────────────────────────────
+      // A clockwork armillary hangs over a mirror-black sea. A living sun sits
+      // at its heart; three geared rings turn around it, each carrying a world
+      // (an ice planet, a banded giant with a ring and moon, a red rock), and a
+      // great meridian ring sinks into the water. The scene is raymarched on
+      // the GPU at low resolution (ASCII only needs a cell's worth of pixels)
+      // and drawn into the source canvas for ascii-ify to read, colours and all.
+      //
+      // Bass swells the sun, kicks drop ripples of light onto the sea under a
+      // planet, mids wind the clockwork, snares flare the corona and light the
+      // gear teeth, highs make the stars sing. Drag to orbit, scroll to zoom.
+      const PARAMS = [
+        { key: 'swell', label: 'Sun swell', min: 0, max: 1, def: 0.2 },
+        { key: 'pulse', label: 'Sea pulse (hits)', min: 0, max: 1, def: 0 },
+        { key: 'spin', label: 'Clockwork', min: 0, max: 1, def: 0.25 },
+        { key: 'flare', label: 'Solar flare (hits)', min: 0, max: 1, def: 0 },
+        { key: 'twinkle', label: 'Starlight', min: 0, max: 1, def: 0.2 },
+        { key: 'drift', label: 'Approach', min: 0, max: 1, def: 0.3 },
+      ];
+
+      const VERT = `
+        attribute vec2 aPos;
+        void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+      `;
+
+      const FRAG = `
+        precision highp float;
+        uniform vec2 uRes;
+        uniform float uTime;
+        uniform vec3 uCamPos;
+        uniform vec3 uCamTarget;
+        uniform vec3 uSun;
+        uniform float uSunR;
+        uniform float uCorona;
+        uniform float uFlare;
+        uniform float uTwinkle;
+        uniform float uFade;
+        uniform mat3 uRingM[3];
+        uniform vec3 uRingR;
+        uniform vec3 uPlanet[3];
+        uniform vec3 uPlanetR;
+        uniform vec3 uMoon;
+        uniform mat3 uSpinM;
+        uniform vec4 uRipple[6];   // x, z, age, strength
+
+        const float TAU = 6.2831853;
+        const float BOUND = 5.2;   // bounding sphere around the sun
+
+        float hash(vec3 p) {
+          p = fract(p * 0.3183099 + 0.1);
+          p *= 17.0;
+          return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+        }
+        float noise(vec3 x) {
+          vec3 i = floor(x), f = fract(x);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(hash(i), hash(i + vec3(1, 0, 0)), f.x),
+                         mix(hash(i + vec3(0, 1, 0)), hash(i + vec3(1, 1, 0)), f.x), f.y),
+                     mix(mix(hash(i + vec3(0, 0, 1)), hash(i + vec3(1, 0, 1)), f.x),
+                         mix(hash(i + vec3(0, 1, 1)), hash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+        }
+        float fbm(vec3 p) {
+          float a = 0.5, s = 0.0;
+          for (int i = 0; i < 5; i++) { s += a * noise(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; }
+          return s;
+        }
+
+        // A flat band in the local xz-plane with gear teeth around its rim.
+        float sdBand(vec3 lp, float R, float w, float h, float teeth) {
+          float a = atan(lp.z, lp.x);
+          float t = smoothstep(0.3, 0.7, abs(fract(a * teeth / TAU) * 2.0 - 1.0));
+          vec2 q = vec2(length(lp.xz) - R - t * 0.025, lp.y);
+          vec2 d = abs(q) - vec2(w + t * 0.025, h);
+          return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - 0.008;
+        }
+
+        vec2 opU(vec2 a, vec2 b) { return a.x < b.x ? a : b; }
+
+        // Materials: 1 sun, 2 gold, 3 ice, 4 giant, 5 rock, 6 moon, 7 giant's ring
+        vec2 map(vec3 p, bool withSun) {
+          vec3 s = p - uSun;
+          vec2 r = vec2(withSun ? length(s) - uSunR : 1e5, 1.0);
+          for (int i = 0; i < 3; i++) {
+            vec3 lp = s * uRingM[i];
+            r = opU(r, vec2(sdBand(lp, uRingR[i], 0.05, 0.11, floor(uRingR[i] * 14.0)), 2.0));
+          }
+          // Great meridian, standing in the world xy-plane and sinking into the sea.
+          r = opU(r, vec2(sdBand(vec3(s.x, s.z, s.y), 4.2, 0.07, 0.07, 72.0), 2.0));
+          // Axis rod from the sea up into the sun.
+          r = opU(r, vec2(max(length(p.xz) - 0.07, p.y - uSun.y), 2.0));
+          r = opU(r, vec2(length(p - uPlanet[0]) - uPlanetR.x, 3.0));
+          r = opU(r, vec2(length(p - uPlanet[1]) - uPlanetR.y, 4.0));
+          r = opU(r, vec2(length(p - uPlanet[2]) - uPlanetR.z, 5.0));
+          r = opU(r, vec2(length(p - uMoon) - 0.085, 6.0));
+          vec3 gp = (p - uPlanet[1]) * uSpinM;
+          r = opU(r, vec2(max(abs(gp.y) - 0.004, abs(length(gp.xz) - 0.74) - 0.17) * 0.8, 7.0));
+          return r;
+        }
+
+        vec2 march(vec3 ro, vec3 rd, float tmax) {
+          // Skip rays that never enter the orrery's bounding sphere.
+          vec3 oc = ro - uSun;
+          float b = dot(oc, rd), c = dot(oc, oc) - BOUND * BOUND;
+          float disc = b * b - c;
+          if (disc < 0.0) return vec2(tmax, 0.0);
+          float t = max(0.0, -b - sqrt(disc));
+          float tEnd = min(tmax, -b + sqrt(disc));
+          for (int i = 0; i < 110; i++) {
+            if (t > tEnd) break;
+            vec2 h = map(ro + rd * t, true);
+            if (h.x < 0.0015 * t + 0.001) return vec2(t, h.y);
+            t += h.x * 0.85;
+          }
+          return vec2(tmax, 0.0);
+        }
+
+        vec3 calcNormal(vec3 p) {
+          const vec2 e = vec2(1.0, -1.0) * 0.0015;
+          return normalize(e.xyy * map(p + e.xyy, true).x + e.yyx * map(p + e.yyx, true).x +
+                           e.yxy * map(p + e.yxy, true).x + e.xxx * map(p + e.xxx, true).x);
+        }
+
+        float softShadow(vec3 ro, vec3 rd, float maxt) {
+          float res = 1.0, t = 0.03;
+          for (int i = 0; i < 32; i++) {
+            if (t > maxt) break;
+            float h = map(ro + rd * t, false).x;
+            res = min(res, 10.0 * h / t);
+            if (res < 0.002) break;
+            t += clamp(h, 0.02, 0.35);
+          }
+          return clamp(res, 0.0, 1.0);
+        }
+
+        vec3 sky(vec3 rd) {
+          float y = rd.y;
+          vec3 col = mix(vec3(0.05, 0.025, 0.08), vec3(0.002, 0.003, 0.01), smoothstep(-0.05, 0.4, y));
+          col += vec3(0.12, 0.05, 0.08) * exp(-abs(y) * 22.0);   // horizon haze
+          // A tilted milky band of nebula and dense stars.
+          float band = exp(-pow(dot(rd, normalize(vec3(0.35, 0.85, 0.4))) * 2.6, 2.0));
+          float n = fbm(rd * 2.6 + vec3(0.0, 0.0, uTime * 0.008));
+          float n2 = fbm(rd * 5.5 + 7.0);
+          col += band * mix(vec3(0.30, 0.06, 0.32), vec3(0.04, 0.22, 0.34), n2) * smoothstep(0.4, 0.85, n) * 0.6;
+          col += vec3(0.05, 0.02, 0.08) * smoothstep(0.5, 0.9, fbm(rd * 1.4 - 3.0));
+          // Stars on a lattice; denser inside the band.
+          vec3 q = rd * 85.0;
+          vec3 id = floor(q), f = fract(q) - 0.5;
+          float h = hash(id);
+          float thresh = 0.975 - band * 0.03;
+          if (h > thresh) {
+            vec3 off = vec3(hash(id + 3.1), hash(id + 7.7), hash(id + 1.3)) - 0.5;
+            float d = length(f - off * 0.6);
+            float tw = 0.55 + 0.45 * sin(uTime * (2.0 + h * 9.0) * (1.0 + uTwinkle * 2.0) + h * 80.0);
+            vec3 tint = mix(vec3(0.7, 0.8, 1.0), vec3(1.0, 0.8, 0.6), hash(id + 9.0));
+            col += tint * smoothstep(0.32, 0.0, d) * (0.6 + 1.6 * uTwinkle) * tw * smoothstep(-0.02, 0.1, y);
+          }
+          return col;
+        }
+
+        // Analytic corona: closest approach of the ray segment to the sun, with
+        // streamers from noise around the sun.
+        vec3 sunGlow(vec3 ro, vec3 rd, float tmax) {
+          float t = clamp(dot(uSun - ro, rd), 0.0, tmax);
+          vec3 v = ro + rd * t - uSun;
+          float d = max(length(v), uSunR * 0.9);
+          float streak = fbm(normalize(v) * 3.0 + vec3(0.0, uTime * 0.12, uTime * 0.05));
+          float g = exp(-(d - uSunR) * (1.4 - uFlare * 0.6)) * (0.35 + 1.1 * streak * streak);
+          g += 0.22 * uSunR * uSunR / (d * d);
+          return vec3(1.0, 0.52, 0.18) * g * uCorona;
+        }
+
+        vec3 shade(vec3 p, vec3 rd, float mat) {
+          vec3 n = calcNormal(p);
+          if (mat < 1.5) {
+            vec3 sp = normalize(p - uSun);
+            float f = fbm(sp * 4.5 + vec3(0.0, uTime * 0.25, 0.0));
+            float cells = fbm(sp * 14.0 - vec3(uTime * 0.4));
+            vec3 c = mix(vec3(1.0, 0.30, 0.06), vec3(1.0, 0.78, 0.4), smoothstep(0.3, 0.75, f * 0.7 + cells * 0.45));
+            float limb = 0.55 + 0.45 * max(dot(n, -rd), 0.0);
+            return c * limb * (1.6 + uFlare * 1.2);
+          }
+          vec3 L = uSun - p;
+          float dl = length(L);
+          L /= dl;
+          float diff = max(dot(n, L), 0.0);
+          float sh = softShadow(p + n * 0.02, L, dl - uSunR - 0.05);
+          vec3 sunCol = vec3(1.0, 0.72, 0.42) * (7.0 / (1.0 + 0.09 * dl * dl)) * (0.8 + uCorona * 0.25);
+          vec3 amb = vec3(0.04, 0.05, 0.10) * (0.5 + 0.5 * n.y) + vec3(0.05, 0.03, 0.04) * max(-n.y, 0.0);
+          vec3 H = normalize(L - rd);
+          float fres = pow(1.0 - max(dot(n, -rd), 0.0), 4.0);
+
+          if (mat < 2.5) {   // gold clockwork
+            vec3 alb = vec3(1.0, 0.66, 0.28);
+            float spec = pow(max(dot(n, H), 0.0), 48.0) * sh;
+            vec3 env = sky(reflect(rd, n));
+            vec3 col = alb * (diff * sh * sunCol * 0.45 + amb) + alb * spec * sunCol * 1.6 + env * alb * 1.4;
+            col += alb * fres * 0.15;
+            // Snare flares run light around the teeth.
+            vec3 s = p - uSun;
+            float run = pow(0.5 + 0.5 * sin(atan(s.z, s.x) * 18.0 - uTime * 9.0 + s.y * 3.0), 6.0);
+            col += vec3(1.0, 0.55, 0.2) * uFlare * (0.4 + 1.6 * run);
+            return col;
+          }
+          if (mat < 3.5) {   // ice world
+            vec3 q = p - uPlanet[0];
+            float cracks = fbm(q * 9.0);
+            vec3 alb = mix(vec3(0.25, 0.55, 0.95), vec3(0.85, 0.95, 1.0), smoothstep(0.45, 0.65, cracks));
+            float wrap = max(dot(n, L) * 0.6 + 0.4, 0.0);
+            float spec = pow(max(dot(n, H), 0.0), 80.0) * sh;
+            return alb * (wrap * sh * sunCol * 0.35 + amb) + fres * vec3(0.4, 0.85, 1.0) * 1.3 + spec * sunCol;
+          }
+          if (mat < 4.5) {   // banded giant
+            vec3 q = (p - uPlanet[1]) * uSpinM / uPlanetR.y;
+            float swirl = fbm(vec3(q.x * 2.0, q.y * 3.0, q.z * 2.0) + uTime * 0.05);
+            float bands = 0.5 + 0.5 * sin(q.y * 15.0 + swirl * 5.0);
+            vec3 alb = mix(vec3(0.95, 0.80, 0.55), vec3(0.70, 0.32, 0.14), bands);
+            alb = mix(alb, vec3(0.9, 0.35, 0.2), smoothstep(0.08, 0.0, length(q - vec3(0.6, -0.3, 0.6)) - 0.12));
+            // Shadow of its own ring across the disc.
+            vec3 lq = L * uSpinM;
+            float tR = -q.y * uPlanetR.y / lq.y;
+            vec3 rp = q * uPlanetR.y + lq * tR;
+            float rr = length(rp.xz);
+            float ringSh = tR > 0.0 ? 1.0 - 0.7 * smoothstep(0.57, 0.6, rr) * smoothstep(0.91, 0.88, rr) : 1.0;
+            return alb * (diff * sh * ringSh * sunCol * 0.5 + amb) + fres * vec3(1.0, 0.7, 0.4) * 0.35;
+          }
+          if (mat < 5.5) {   // red rock
+            vec3 q = p - uPlanet[2];
+            float g = fbm(q * 7.0);
+            vec3 alb = mix(vec3(0.45, 0.12, 0.07), vec3(0.95, 0.45, 0.22), g);
+            alb *= 0.6 + 0.4 * smoothstep(0.3, 0.6, fbm(q * 18.0));
+            return alb * (diff * sh * sunCol * 0.5 + amb) + fres * vec3(1.0, 0.35, 0.2) * 0.3;
+          }
+          if (mat < 6.5) {   // moon
+            return vec3(0.6, 0.6, 0.65) * (diff * sh * sunCol * 0.5 + amb);
+          }
+          // The giant's ring: fine ringlets, lit from either face.
+          vec3 gp = (p - uPlanet[1]) * uSpinM;
+          float rl = length(gp.xz);
+          vec3 alb = vec3(0.9, 0.78, 0.6) * (0.55 + 0.45 * sin(rl * 110.0)) * smoothstep(0.57, 0.62, rl);
+          return alb * (abs(dot(n, L)) * sh * sunCol * 0.5 + amb);
+        }
+
+        float seaHeight(vec2 p, out float glow) {
+          float h = 0.0;
+          h += 0.018 * sin(dot(p, vec2(0.80, 0.60)) * 2.3 + uTime * 1.1);
+          h += 0.012 * sin(dot(p, vec2(-0.45, 0.89)) * 3.7 + uTime * 1.6);
+          h += 0.007 * sin(dot(p, vec2(0.95, -0.30)) * 6.1 + uTime * 2.3);
+          h += 0.004 * sin(dot(p, vec2(-0.2, -0.98)) * 11.0 + uTime * 3.1);
+          // Where the rod and meridian pierce the sea, constant little rings.
+          float r0 = length(p);
+          h += 0.012 * sin(r0 * 9.0 - uTime * 3.0) / (1.0 + r0 * 2.0);
+          glow = 0.0;
+          for (int i = 0; i < 6; i++) {
+            vec4 rp = uRipple[i];
+            if (rp.w <= 0.0) continue;
+            float d = length(p - rp.xy);
+            float front = rp.z * 2.4;
+            float env = rp.w * exp(-rp.z * 0.7) * exp(-pow((d - front) * 1.5, 2.0));
+            h += 0.10 * env * sin((d - front) * 10.0);
+            glow += env * (0.5 + 0.5 * sin((d - front) * 10.0)) / (1.0 + front * 0.25);
+          }
+          return h;
+        }
+
+        void main() {
+          vec2 uv = (gl_FragCoord.xy * 2.0 - uRes) / uRes.y;
+          vec3 ro = uCamPos;
+          vec3 fw = normalize(uCamTarget - ro);
+          vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+          vec3 up = cross(rt, fw);
+          vec3 rd = normalize(fw * 1.75 + rt * uv.x + up * uv.y);
+
+          float tSea = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
+          vec2 hit = march(ro, rd, min(tSea, 80.0));
+          vec3 col;
+          float tEnd = 1e3;
+
+          if (hit.y > 0.0) {
+            col = shade(ro + rd * hit.x, rd, hit.y);
+            tEnd = hit.x;
+          } else if (tSea < 1e8) {
+            tEnd = tSea;
+            vec3 sp = ro + rd * tSea;
+            float glow, g2;
+            const float E = 0.02;
+            float h0 = seaHeight(sp.xz, glow);
+            float hx = seaHeight(sp.xz + vec2(E, 0.0), g2);
+            float hz = seaHeight(sp.xz + vec2(0.0, E), g2);
+            // Flatten the waves with distance so the horizon doesn't alias.
+            float calm = 1.0 / (1.0 + tSea * 0.06);
+            vec3 n = normalize(vec3(-(hx - h0) / E * calm, 1.0, -(hz - h0) / E * calm));
+            vec3 rr = reflect(rd, n);
+            rr.y = abs(rr.y);
+            float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
+
+            vec2 h2 = march(sp + vec3(0.0, 0.01, 0.0), rr, 60.0);
+            vec3 refl = h2.y > 0.0 ? shade(sp + rr * h2.x, rr, h2.y) : sky(rr);
+            refl += sunGlow(sp, rr, h2.y > 0.0 ? h2.x : 1e3);
+
+            vec3 deep = vec3(0.004, 0.012, 0.025);
+            col = deep + refl * (0.35 + 0.65 * fres);
+            // Glitter: sun-path sparkles on wave crests.
+            vec3 L = normalize(uSun - sp);
+            float spark = pow(max(dot(rr, L), 0.0), 220.0);
+            float grain = hash(floor(vec3(sp.xz * 22.0, uTime * 6.0).xzy));
+            col += vec3(1.0, 0.7, 0.4) * spark * (1.5 + 6.0 * step(0.82 - uTwinkle * 0.15, grain)) * uCorona;
+            // Ripples of light from the kicks.
+            col += vec3(1.0, 0.62, 0.28) * glow * 1.6;
+            col += vec3(0.2, 0.55, 1.0) * glow * glow * 0.6;
+            col = mix(col, vec3(0.06, 0.03, 0.07), 1.0 - exp(-tSea * 0.018));
+          } else {
+            col = sky(rd);
+          }
+          col += sunGlow(ro, rd, tEnd);
+
+          // Filmic tone and a soft vignette.
+          col = vec3(1.0) - exp(-col * 3.2);
+          col = pow(col, vec3(0.75));
+          vec2 q = gl_FragCoord.xy / uRes;
+          col *= 0.35 + 0.65 * pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.2);
+          gl_FragColor = vec4(col * uFade, 1.0);
+        }
+      `;
+
+      // ── 3x3 rotations (column-major, as GLSL wants them) ─────────
+      const rotX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, s, 0, -s, c]; };
+      const rotY = a => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, -s, 0, 1, 0, s, 0, c]; };
+      const rotZ = a => { const c = Math.cos(a), s = Math.sin(a); return [c, s, 0, -s, c, 0, 0, 0, 1]; };
+      function mul(a, b) {
+        const out = new Array(9);
+        for (let c = 0; c < 3; c++) {
+          for (let r = 0; r < 3; r++) out[c * 3 + r] = a[r] * b[c * 3] + a[3 + r] * b[c * 3 + 1] + a[6 + r] * b[c * 3 + 2];
+        }
+        return out;
+      }
+      const apply = (m, v) => [0, 1, 2].map(r => m[r] * v[0] + m[3 + r] * v[1] + m[6 + r] * v[2]);
+
+      // ── WebGL setup ──────────────────────────────────────────────
+      const glCanvas = document.createElement('canvas');
+      const gl = glCanvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });
+
+      function compile(type, src) {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+        return sh;
+      }
+      const prog = gl.createProgram();
+      gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const aPos = gl.getAttribLocation(prog, 'aPos');
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+      const U = {};
+      for (const name of ['uRes', 'uTime', 'uCamPos', 'uCamTarget', 'uSun', 'uSunR', 'uCorona', 'uFlare', 'uTwinkle',
+        'uFade', 'uRingM', 'uRingR', 'uPlanet', 'uPlanetR', 'uMoon', 'uSpinM', 'uRipple']) {
+        U[name] = gl.getUniformLocation(prog, name);
+      }
+
+      // ── The machine ──────────────────────────────────────────────
+      const SUN = [0, 3.4, 0];
+      // Each ring: radius, fixed tilt, base speed (rad/s), where its planet sits.
+      const RINGS = [
+        { R: 1.7, tiltX: 0.35, tiltZ: 0.1, speed: 0.32, phase: 0.0 },
+        { R: 2.65, tiltX: -0.42, tiltZ: 0.55, speed: -0.2, phase: 2.2 },
+        { R: 3.55, tiltX: 0.18, tiltZ: -0.75, speed: 0.13, phase: 4.1 },
+      ];
+      const PLANET_R = [0.24, 0.42, 0.29];
+      const spins = RINGS.map(r => r.phase);
+      const ringM = new Float32Array(27);
+      const planets = new Float32Array(9);
+      const ripples = new Float32Array(24);   // x, z, age, strength ×6
+      let rippleNext = 0;
+
+      const swellEnv = envelope(0.05, 0.35);
+      const spinEnv = envelope(0.3, 0.8);
+      const twinkleEnv = envelope(0.02, 0.2);
+      const driftEnv = envelope(1.2, 2.5);
+      const pulseHits = hits(), flareHits = hits();
+      let flare = 0, kickGlow = 0, idleRipple = 1.5;
+
+      function dropRipple(x, z, strength) {
+        const o = (rippleNext++ % 6) * 4;
+        ripples[o] = x; ripples[o + 1] = z; ripples[o + 2] = 0; ripples[o + 3] = strength;
+      }
+
+      // ── Camera: slow orbit, drag to steer, wheel to zoom ─────────
+      let yawOffset = 0, pitchOffset = 0, zoom = 0, dragging = null;
+      const container = document.querySelector('.container');
+      window.addEventListener('pointerdown', (e) => {
+        if (!(e.target instanceof HTMLCanvasElement)) return;
+        dragging = { x: e.clientX, y: e.clientY };
+        container.classList.add('dragging');
+      });
+      window.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        yawOffset -= (e.clientX - dragging.x) * 0.005;
+        pitchOffset = clamp(pitchOffset + (e.clientY - dragging.y) * 0.003, -0.2, 0.9);
+        dragging = { x: e.clientX, y: e.clientY };
+      });
+      window.addEventListener('pointerup', () => { dragging = null; container.classList.remove('dragging'); });
+      window.addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.004, -4, 8); }, { passive: true });
+
+      function draw(ctx, { time, dt, width: w, height: h, param }) {
+        const t = time / 1000;
+
+        // Render at a fraction of the screen; the ASCII grid is coarser still.
+        const scale = Math.min(0.5, 760 / w);
+        const rw = Math.max(64, Math.round(w * scale)), rh = Math.max(36, Math.round(h * scale));
+        if (glCanvas.width !== rw || glCanvas.height !== rh) {
+          glCanvas.width = rw;
+          glCanvas.height = rh;
+        }
+
+        // Music.
+        const swell = swellEnv(param('swell'), dt);
+        const spin = spinEnv(param('spin'), dt);
+        const twinkle = twinkleEnv(param('twinkle'), dt);
+        const drift = driftEnv(param('drift'), dt);
+        const flareHit = flareHits(param('flare'), dt);
+        flare = Math.max(flare * Math.exp(-dt * 2.2), flareHit);
+        const pulse = pulseHits(param('pulse'), dt);
+        kickGlow *= Math.exp(-dt * 6);
+
+        // The clockwork.
+        for (let i = 0; i < 3; i++) {
+          const ring = RINGS[i];
+          spins[i] += dt * ring.speed * (0.4 + spin * 3);
+          const m = mul(mul(rotX(ring.tiltX), rotZ(ring.tiltZ)), rotY(spins[i]));
+          ringM.set(m, i * 9);
+          const p = apply(m, [ring.R, 0, 0]);
+          planets.set([SUN[0] + p[0], SUN[1] + p[1], SUN[2] + p[2]], i * 3);
+        }
+        const giant = [planets[3], planets[4], planets[5]];
+        const spinM = mul(mul(rotZ(0.45), rotX(0.25)), rotY(t * 0.4));
+        const moonOrbit = apply(mul(rotZ(-0.3), rotY(t * 0.9)), [1.18, 0, 0]);
+        const moon = [giant[0] + moonOrbit[0], giant[1] + moonOrbit[1], giant[2] + moonOrbit[2]];
+
+        // Kicks drop light onto the sea beneath a planet; when it's quiet the
+        // sea still breathes on its own.
+        idleRipple -= dt;
+        if (pulse || idleRipple <= 0) {
+          const k = Math.floor(Math.random() * 3);
+          dropRipple(planets[k * 3] + (Math.random() - 0.5) * 0.6, planets[k * 3 + 2] + (Math.random() - 0.5) * 0.6, pulse ? 0.6 + pulse * 0.8 : 0.45);
+          if (pulse) kickGlow = Math.max(kickGlow, pulse);
+          idleRipple = 2.5 + Math.random() * 2.5;
+        }
+        for (let i = 0; i < 6; i++) {
+          if (ripples[i * 4 + 3] <= 0) continue;
+          ripples[i * 4 + 2] += dt;
+          if (ripples[i * 4 + 2] > 7) ripples[i * 4 + 3] = 0;
+        }
+
+        // Camera: an opening dolly, then a slow drifting orbit.
+        const intro = 1 - smoothstep(0, 9, t);
+        const yaw = t * 0.05 + yawOffset + 0.6;
+        const pitch = clamp(0.16 + 0.06 * Math.sin(t * 0.07) + pitchOffset + intro * 0.25, -0.12, 1.2);
+        const dist = Math.max(4.5, 9 - drift * 2.5 + 1.2 * Math.sin(t * 0.045) + zoom + intro * intro * 14);
+        const target = [0, lerp(2.9, 3.4, drift), 0];
+        const cam = [
+          target[0] + dist * Math.cos(pitch) * Math.sin(yaw),
+          Math.max(0.25, target[1] + dist * Math.sin(pitch)),
+          target[2] + dist * Math.cos(pitch) * Math.cos(yaw),
+        ];
+
+        gl.viewport(0, 0, rw, rh);
+        gl.uniform2f(U.uRes, rw, rh);
+        gl.uniform1f(U.uTime, t);
+        gl.uniform3fv(U.uCamPos, cam);
+        gl.uniform3fv(U.uCamTarget, target);
+        gl.uniform3fv(U.uSun, SUN);
+        gl.uniform1f(U.uSunR, 0.72 + swell * 0.28 + kickGlow * 0.05);
+        gl.uniform1f(U.uCorona, 0.85 + swell * 0.6 + flare * 1.2 + kickGlow * 0.4);
+        gl.uniform1f(U.uFlare, flare);
+        gl.uniform1f(U.uTwinkle, twinkle);
+        gl.uniform1f(U.uFade, smoothstep(0, 3.5, t));
+        gl.uniformMatrix3fv(U.uRingM, false, ringM);
+        gl.uniform3f(U.uRingR, RINGS[0].R, RINGS[1].R, RINGS[2].R);
+        gl.uniform3fv(U.uPlanet, planets);
+        gl.uniform3f(U.uPlanetR, ...PLANET_R);
+        gl.uniform3fv(U.uMoon, moon);
+        gl.uniformMatrix3fv(U.uSpinM, false, spinM);
+        gl.uniform4fv(U.uRipple, ripples);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(glCanvas, 0, 0, w, h);
+      }
+
+      createApp({
+        sceneParams: PARAMS,
+        sceneTitle: 'Orrery',
+        asciiConfig: {
+          fontSize: 8,
+          density: 1,
+          charset: ' .·:;+*oO%@█',
+          colorScheme: 'source',
+          background: '#020206',
+          sourceOpacity: 0,
+          fade: 0,
+          crtEnabled: false,
+          crtScanlines: 0,
+          crtGlow: 0.35,
+          crtDistortion: 0.04,
+        },
+        draw,
+      });
+    </script>
+  </body>
+</html>
