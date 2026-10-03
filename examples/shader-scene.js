@@ -114,8 +114,10 @@ export function shaderScene(fragment, { scale = 0.5, maxWidth = 760 } = {}) {
       set.f('uTime', time);
       setUniforms(set);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      // Plain bilinear: ascii-ify resamples this straight back down to the
+      // glyph grid, so a 'high' quality upscale only costs GPU time.
       ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
+      ctx.imageSmoothingQuality = 'low';
       ctx.drawImage(canvas, 0, 0, w, h);
     },
   };
